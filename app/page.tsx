@@ -19,6 +19,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
+  // Nouveaux états pour gérer la modification du texte
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+
   const fetchNotes = async () => {
     const { data } = await supabase
       .from('notes')
@@ -36,7 +40,6 @@ export default function Home() {
     if (!newTitle.trim()) return;
 
     setLoading(true);
-    // Sauvegarde avec l'importance (Pas d'email direct ici pour simplifier, on laisse le cron faire)
     await supabase.from('notes').insert([{ 
         title: newTitle, 
         importance: importance 
@@ -59,6 +62,14 @@ export default function Home() {
     }
   };
 
+  // Fonction pour valider la modification du texte
+  const saveEdit = async (id: string) => {
+    if (editingTitle.trim()) {
+      await updateNote(id, 'title', editingTitle);
+    }
+    setEditingId(null);
+  };
+
   const getImportanceColor = (imp: string) => {
     if (imp === 'rouge') return 'border-l-4 border-red-500 bg-red-50';
     if (imp === 'orange') return 'border-l-4 border-orange-500 bg-orange-50';
@@ -68,7 +79,7 @@ export default function Home() {
   const displayedNotes = notes.filter(n => n.is_archived === showArchived);
 
   return (
-    <main className="max-w-2xl mx-auto p-6">
+    <main className="max-w-3xl mx-auto p-6">
       <h1 className="text-2xl font-bold mb-6">Mes Notes & Rappels</h1>
 
       {/* Formulaire d'ajout */}
@@ -103,13 +114,13 @@ export default function Home() {
       <div className="flex gap-4 mb-4">
         <button 
           onClick={() => setShowArchived(false)}
-          className={`px-4 py-2 rounded font-semibold ${!showArchived ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700'}`}
+          className={`px-4 py-2 rounded font-semibold transition-colors ${!showArchived ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
         >
           Notes Actives
         </button>
         <button 
           onClick={() => setShowArchived(true)}
-          className={`px-4 py-2 rounded font-semibold ${showArchived ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700'}`}
+          className={`px-4 py-2 rounded font-semibold transition-colors ${showArchived ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
         >
           Dossier Archives
         </button>
@@ -126,28 +137,71 @@ export default function Home() {
             className={`flex flex-col gap-2 p-4 rounded shadow-sm transition-all ${getImportanceColor(note.importance)}`}
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-1">
                 <input
                   type="checkbox"
                   checked={note.completed}
                   onChange={() => updateNote(note.id, 'completed', !note.completed)}
                   className="w-5 h-5 cursor-pointer mt-1"
                 />
-                <span className={`text-lg ${note.completed ? 'line-through text-gray-500' : 'text-gray-900 font-medium'}`}>
-                  {note.title}
-                </span>
+                
+                {/* Mode Édition vs Mode Lecture */}
+                {editingId === note.id ? (
+                  <div className="flex flex-1 gap-2">
+                    <input
+                      type="text"
+                      value={editingTitle}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      className="flex-1 border border-gray-400 p-1 rounded text-black"
+                      autoFocus
+                      onKeyDown={(e) => e.key === 'Enter' && saveEdit(note.id)}
+                    />
+                    <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm font-semibold">OK</button>
+                    <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 rounded text-sm">Annuler</button>
+                  </div>
+                ) : (
+                  <span 
+                    onDoubleClick={() => { setEditingId(note.id); setEditingTitle(note.title); }}
+                    className={`text-lg flex-1 ${note.completed ? 'line-through text-gray-400' : 'text-gray-900 font-medium'}`}
+                  >
+                    {note.title}
+                  </span>
+                )}
               </div>
               
-              <div className="flex items-center gap-2 text-sm">
+              <div className="flex items-center gap-2 text-sm flex-wrap justify-end">
+                
+                {/* Changement d'importance à la volée */}
+                <select
+                  value={note.importance}
+                  onChange={(e) => updateNote(note.id, 'importance', e.target.value)}
+                  className="border border-gray-300 p-1 rounded text-gray-700 text-xs bg-white cursor-pointer"
+                >
+                  <option value="vert">🟢 Normale</option>
+                  <option value="orange">🟠 Imp.</option>
+                  <option value="rouge">🔴 Urg.</option>
+                </select>
+
+                {/* N'afficher le bouton Modifier que si on n'est pas déjà en train d'éditer */}
+                {editingId !== note.id && (
+                  <button
+                    onClick={() => { setEditingId(note.id); setEditingTitle(note.title); }}
+                    className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+                  >
+                    Modifier
+                  </button>
+                )}
+
                 <button
                   onClick={() => updateNote(note.id, 'is_archived', !note.is_archived)}
-                  className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"
+                  className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition-colors"
                 >
                   {note.is_archived ? 'Désarchiver' : 'Archiver'}
                 </button>
+                
                 <button
                   onClick={() => deleteNote(note.id)}
-                  className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded"
+                  className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition-colors"
                 >
                   Supprimer
                 </button>
