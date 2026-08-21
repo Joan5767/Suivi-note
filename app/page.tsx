@@ -50,10 +50,12 @@ export default function Home() {
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
   const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
+  
+  // MODIFICATION ICI : On passe tout à "true" pour que ce soit enroulé par défaut
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
-    rouge: false,
-    orange: false,
-    vert: false,
+    rouge: true,
+    orange: true,
+    vert: true,
   });
 
   const fetchNotes = async () => {
@@ -129,6 +131,10 @@ export default function Home() {
     setActivateReminder(true);
     setImportance('vert');
     setLoading(false);
+    
+    // On déroule automatiquement la colonne correspondant à la note qu'on vient d'ajouter
+    setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
+    
     fetchNotes();
   };
 
