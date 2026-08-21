@@ -17,19 +17,20 @@ interface Note {
   importance: 'vert' | 'orange' | 'rouge';
   reminder_active: boolean;
   subtasks: Subtask[];
+  is_list: boolean;
 }
 
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
+  const [noteMode, setNoteMode] = useState<'text' | 'list'>('text'); // Choix du format
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   
-  // État pour gérer le texte des nouvelles sous-tâches
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
   const fetchNotes = async () => {
@@ -52,7 +53,8 @@ export default function Home() {
     await supabase.from('notes').insert([{ 
         title: newTitle, 
         importance: importance,
-        subtasks: []
+        subtasks: [],
+        is_list: noteMode === 'list'
     }]);
 
     await fetch('/api/notify', {
@@ -86,7 +88,6 @@ export default function Home() {
   };
 
   // --- Gestion des listes à cocher (sous-tâches) ---
-  
   const addSubtask = async (note: Note) => {
     const text = newSubtaskTexts[note.id];
     if (!text || !text.trim()) return;
@@ -113,7 +114,6 @@ export default function Home() {
     await supabase.from('notes').update({ subtasks: updated }).eq('id', note.id);
     fetchNotes();
   };
-
   // -------------------------------------------------
 
   const getImportanceColor = (imp: string) => {
@@ -128,20 +128,52 @@ export default function Home() {
     <main className="max-w-3xl mx-auto p-6 pb-20">
       <h1 className="text-2xl font-bold mb-6">Mes Notes & Rappels</h1>
 
-      {/* Formulaire d'ajout multilinge */}
+      {/* Formulaire d'ajout avec sélecteur de format */}
       <form onSubmit={addNote} className="flex flex-col gap-3 mb-8 bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200">
-        <textarea
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="Écris ta note ici (Fais 'Entrée' pour sauter une ligne)..."
-          className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[100px]"
-          disabled={loading}
-        />
+        
+        {/* Sélecteur de mode */}
+        <div className="flex gap-2 mb-1">
+          <button
+            type="button"
+            onClick={() => setNoteMode('text')}
+            className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}
+          >
+            📝 Format Texte
+          </button>
+          <button
+            type="button"
+            onClick={() => setNoteMode('list')}
+            className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}
+          >
+            ✅ Format Liste
+          </button>
+        </div>
+
+        {/* Champ de saisie dynamique selon le mode */}
+        {noteMode === 'text' ? (
+          <textarea
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Écris ta note complète ici (Sauts de ligne autorisés)..."
+            className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[100px]"
+            disabled={loading}
+          />
+        ) : (
+          <input
+            type="text"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Titre de ta liste (ex: Courses, Tâches du jour)..."
+            className="w-full border border-gray-300 p-3 rounded text-black font-semibold"
+            disabled={loading}
+          />
+        )}
+
         <div className="flex gap-2 justify-end">
           <select 
             value={importance} 
             onChange={(e) => setImportance(e.target.value as any)}
-            className="border border-gray-300 p-2 rounded text-black bg-white"
+            className="border border-gray-300 p-2 rounded text-black bg-white cursor-pointer"
           >
             <option value="vert">🟢 Normale</option>
             <option value="orange">🟠 Importante</option>
@@ -149,15 +181,15 @@ export default function Home() {
           </select>
           <button
             type="submit"
-            disabled={loading}
-            className="bg-blue-600 text-white px-6 py-2 rounded font-semibold hover:bg-blue-700 disabled:opacity-50"
+            disabled={loading || !newTitle.trim()}
+            className="bg-blue-600 text-white px-6 py-2 rounded font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {loading ? '...' : 'Ajouter la note'}
+            {loading ? '...' : (noteMode === 'text' ? 'Ajouter la note' : 'Créer la liste')}
           </button>
         </div>
       </form>
 
-      {/* Bouton pour basculer entre Actives et Archivées */}
+      {/* Boutons Archives / Actives */}
       <div className="flex gap-4 mb-4">
         <button 
           onClick={() => setShowArchived(false)}
@@ -195,12 +227,22 @@ export default function Home() {
                 
                 {editingId === note.id ? (
                   <div className="flex flex-col flex-1 gap-2 w-full">
-                    <textarea
-                      value={editingTitle}
-                      onChange={(e) => setEditingTitle(e.target.value)}
-                      className="w-full border border-gray-400 p-2 rounded text-black resize-y min-h-[100px]"
-                      autoFocus
-                    />
+                    {note.is_list ? (
+                      <input
+                        type="text"
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        className="w-full border border-gray-400 p-2 rounded text-black font-semibold"
+                        autoFocus
+                      />
+                    ) : (
+                      <textarea
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        className="w-full border border-gray-400 p-2 rounded text-black resize-y min-h-[100px]"
+                        autoFocus
+                      />
+                    )}
                     <div className="flex gap-2">
                       <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-4 py-1 rounded font-semibold">Enregistrer</button>
                       <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-1 rounded">Annuler</button>
@@ -209,7 +251,7 @@ export default function Home() {
                 ) : (
                   <span 
                     onDoubleClick={() => { setEditingId(note.id); setEditingTitle(note.title); }}
-                    className={`text-lg flex-1 whitespace-pre-wrap ${note.completed ? 'line-through text-gray-400' : 'text-gray-900 font-medium'}`}
+                    className={`flex-1 whitespace-pre-wrap ${note.is_list ? 'text-xl font-bold' : 'text-lg'} ${note.completed ? 'line-through text-gray-400' : 'text-gray-900'}`}
                   >
                     {note.title}
                   </span>
@@ -228,58 +270,60 @@ export default function Home() {
                 </select>
 
                 {editingId !== note.id && (
-                  <button onClick={() => { setEditingId(note.id); setEditingTitle(note.title); }} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded">
+                  <button onClick={() => { setEditingId(note.id); setEditingTitle(note.title); }} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors">
                     Modifier
                   </button>
                 )}
-                <button onClick={() => updateNote(note.id, 'is_archived', !note.is_archived)} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded">
+                <button onClick={() => updateNote(note.id, 'is_archived', !note.is_archived)} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition-colors">
                   {note.is_archived ? 'Désarchiver' : 'Archiver'}
                 </button>
-                <button onClick={() => deleteNote(note.id)} className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded">
+                <button onClick={() => deleteNote(note.id)} className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition-colors">
                   Supprimer
                 </button>
               </div>
             </div>
 
-            {/* Zone des listes à cocher (Sous-tâches) */}
-            <div className="ml-8 mt-2 pl-2 border-l-2 border-gray-300/50">
-              {(note.subtasks || []).map((st) => (
-                <div key={st.id} className="flex items-center gap-2 mb-2 group">
-                  <input 
-                    type="checkbox" 
-                    checked={st.completed} 
-                    onChange={() => toggleSubtask(note, st.id)}
-                    className="cursor-pointer"
+            {/* Zone des listes à cocher (AFFICHÉE UNIQUEMENT SI LE MODE LISTE EST ACTIF) */}
+            {note.is_list && (
+              <div className="ml-8 mt-2 pl-2 border-l-2 border-gray-400">
+                {(note.subtasks || []).map((st) => (
+                  <div key={st.id} className="flex items-center gap-2 mb-2 group">
+                    <input 
+                      type="checkbox" 
+                      checked={st.completed} 
+                      onChange={() => toggleSubtask(note, st.id)}
+                      className="cursor-pointer"
+                    />
+                    <span className={`text-sm flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>
+                      {st.text}
+                    </span>
+                    <button 
+                      onClick={() => deleteSubtask(note, st.id)} 
+                      className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-xs px-2"
+                    >
+                      ✖
+                    </button>
+                  </div>
+                ))}
+                
+                <div className="flex gap-2 mt-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Ajouter un élément à la liste..."
+                    value={newSubtaskTexts[note.id] || ''}
+                    onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)}
+                    className="text-sm border border-gray-300 p-1.5 rounded flex-1 text-black bg-white/70"
                   />
-                  <span className={`text-sm flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>
-                    {st.text}
-                  </span>
                   <button 
-                    onClick={() => deleteSubtask(note, st.id)} 
-                    className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-xs px-2"
+                    onClick={() => addSubtask(note)} 
+                    className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded font-bold text-sm"
                   >
-                    ✖
+                    +
                   </button>
                 </div>
-              ))}
-              
-              <div className="flex gap-2 mt-2 items-center">
-                <input
-                  type="text"
-                  placeholder="Ajouter un élément à la liste..."
-                  value={newSubtaskTexts[note.id] || ''}
-                  onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })}
-                  onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)}
-                  className="text-sm border border-gray-300 p-1.5 rounded flex-1 text-black bg-white/70"
-                />
-                <button 
-                  onClick={() => addSubtask(note)} 
-                  className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded font-bold text-sm"
-                >
-                  +
-                </button>
               </div>
-            </div>
+            )}
 
             {/* Option de rappel */}
             {!note.is_archived && (
