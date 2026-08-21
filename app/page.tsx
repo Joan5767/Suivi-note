@@ -152,13 +152,11 @@ export default function Home() {
     return 'border-l-4 border-green-500 bg-green-50';
   };
 
-  // --- OUTILS CALENDRIER ---
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
     const date = new Date(dateString);
     const pad = (n: number) => (n < 10 ? '0' + n : n);
     const start = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
-    // On fixe une durée arbitraire d'1 heure pour le rendez-vous
     const endDate = new Date(date.getTime() + 60 * 60 * 1000);
     const end = `${endDate.getFullYear()}${pad(endDate.getMonth() + 1)}${pad(endDate.getDate())}T${pad(endDate.getHours())}${pad(endDate.getMinutes())}00`;
     return { start, end };
@@ -185,7 +183,6 @@ export default function Home() {
     link.click();
     document.body.removeChild(link);
   };
-  // -------------------------
 
   const displayedNotes = notes.filter(n => n.is_archived === showArchived);
   const columns = [
@@ -258,15 +255,22 @@ export default function Home() {
               Relances quotidiennes
             </label>
           </div>
-          {/* Option Date pour Agenda */}
+          {/* Option Date pour Agenda avec bouton Annuler */}
           <div className="flex flex-col gap-1 sm:border-l sm:border-gray-200 sm:pl-4">
             <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Planifier (Optionnel)</label>
-            <input 
-              type="datetime-local" 
-              value={targetDate} 
-              onChange={(e) => setTargetDate(e.target.value)}
-              className="border border-gray-300 p-1.5 rounded text-black text-sm"
-            />
+            <div className="flex items-center gap-2">
+              <input 
+                type="datetime-local" 
+                value={targetDate} 
+                onChange={(e) => setTargetDate(e.target.value)}
+                className="border border-gray-300 p-1.5 rounded text-black text-sm flex-1"
+              />
+              {targetDate && (
+                <button type="button" onClick={() => setTargetDate('')} className="bg-red-100 text-red-600 hover:bg-red-200 px-2 py-1.5 rounded text-xs font-bold transition-colors">
+                  ✖
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -362,13 +366,20 @@ export default function Home() {
                               />
                             </>
                           )}
-                          <input 
-                            type="datetime-local" 
-                            value={editingTargetDate} 
-                            onChange={(e) => setEditingTargetDate(e.target.value)}
-                            className="border border-gray-400 p-1.5 rounded text-black text-sm"
-                          />
-                          <div className="flex gap-2">
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="datetime-local" 
+                              value={editingTargetDate} 
+                              onChange={(e) => setEditingTargetDate(e.target.value)}
+                              className="border border-gray-400 p-1.5 rounded text-black text-sm flex-1"
+                            />
+                            {editingTargetDate && (
+                              <button type="button" onClick={() => setEditingTargetDate('')} className="bg-red-100 text-red-600 hover:bg-red-200 px-2 py-1.5 rounded text-xs font-bold transition-colors">
+                                ✖ Retirer
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex gap-2 mt-1">
                             <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 text-xs rounded font-bold">OK</button>
                             <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 text-xs rounded">Annuler</button>
                           </div>
@@ -393,26 +404,37 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Boutons Calendrier s'affichent si une date est planifiée */}
+                  {/* Boutons Calendrier avec l'option suppression directe */}
                   {note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="flex flex-wrap gap-2 mt-1 mb-2 bg-blue-50/50 p-2 rounded border border-blue-100">
-                      <span className="w-full text-xs font-semibold text-blue-800 mb-1">
-                        📅 Planifié pour le {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <a 
-                        href={getGoogleCalendarLink(note)} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
-                      >
-                        Mon Google Agenda
-                      </a>
-                      <button 
-                        onClick={() => downloadICS(note)}
-                        className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
-                      >
-                        Partager l'invitation (.ics)
-                      </button>
+                    <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
+                      <div className="flex justify-between items-center w-full">
+                        <span className="text-xs font-bold text-blue-800">
+                          📅 Planifié pour le {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                        <button 
+                          onClick={() => updateNote(note.id, 'target_date', '')}
+                          className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors"
+                          title="Annuler cette planification"
+                        >
+                          ✖ Annuler
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <a 
+                          href={getGoogleCalendarLink(note)} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
+                        >
+                          Mon Google Agenda
+                        </a>
+                        <button 
+                          onClick={() => downloadICS(note)}
+                          className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
+                        >
+                          Partager l'invitation (.ics)
+                        </button>
+                      </div>
                     </div>
                   )}
                   
