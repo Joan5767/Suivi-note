@@ -19,16 +19,17 @@ interface Note {
   reminder_active: boolean;
   subtasks: Subtask[];
   is_list: boolean;
+  target_date?: string;
 }
 
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
+  const [targetDate, setTargetDate] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
-  // Nouvelles options de création cochées par défaut
   const [sendImmediateEmail, setSendImmediateEmail] = useState(true);
   const [activateReminder, setActivateReminder] = useState(true);
   
@@ -38,6 +39,7 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [editingContent, setEditingContent] = useState('');
+  const [editingTargetDate, setEditingTargetDate] = useState('');
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
@@ -59,17 +61,16 @@ export default function Home() {
 
     setLoading(true);
     
-    // On force la valeur du rappel au moment de l'insertion
     await supabase.from('notes').insert([{ 
         title: newTitle, 
         content: newContent,
         importance: importance,
         subtasks: [],
         is_list: noteMode === 'list',
-        reminder_active: activateReminder 
+        reminder_active: activateReminder,
+        target_date: targetDate
     }]);
 
-    // On envoie le mail UNIQUEMENT si la case est cochée
     if (sendImmediateEmail) {
       await fetch('/api/notify', {
         method: 'POST',
@@ -81,9 +82,9 @@ export default function Home() {
       });
     }
 
-    // On réinitialise tout le formulaire
     setNewTitle('');
     setNewContent('');
+    setTargetDate('');
     setSendImmediateEmail(true);
     setActivateReminder(true);
     setLoading(false);
@@ -105,7 +106,8 @@ export default function Home() {
   const saveEdit = async (id: string) => {
     await supabase.from('notes').update({ 
       title: editingTitle,
-      content: editingContent
+      content: editingContent,
+      target_date: editingTargetDate
     }).eq('id', id);
     setEditingId(null);
     fetchNotes();
@@ -115,6 +117,7 @@ export default function Home() {
     setEditingId(note.id);
     setEditingTitle(note.title || '');
     setEditingContent(note.content || '');
+    setEditingTargetDate(note.target_date || '');
   };
 
   const addSubtask = async (note: Note) => {
@@ -149,8 +152,42 @@ export default function Home() {
     return 'border-l-4 border-green-500 bg-green-50';
   };
 
+  // --- OUTILS CALENDRIER ---
+  const formatDatesForCalendar = (dateString: string) => {
+    if (!dateString) return null;
+    const date = new Date(dateString);
+    const pad = (n: number) => (n < 10 ? '0' + n : n);
+    const start = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
+    // On fixe une durée arbitraire d'1 heure pour le rendez-vous
+    const endDate = new Date(date.getTime() + 60 * 60 * 1000);
+    const end = `${endDate.getFullYear()}${pad(endDate.getMonth() + 1)}${pad(endDate.getDate())}T${pad(endDate.getHours())}${pad(endDate.getMinutes())}00`;
+    return { start, end };
+  };
+
+  const getGoogleCalendarLink = (note: Note) => {
+    const dates = formatDatesForCalendar(note.target_date || '');
+    if (!dates) return '#';
+    const text = encodeURIComponent(note.title || 'Note');
+    const details = encodeURIComponent(note.content || 'Pas de description supplémentaire.');
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${dates.start}/${dates.end}&details=${details}`;
+  };
+
+  const downloadICS = (note: Note) => {
+    const dates = formatDatesForCalendar(note.target_date || '');
+    if (!dates) return;
+    const icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${note.title || 'Note'}\nDESCRIPTION:${note.content || ''}\nDTSTART:${dates.start}\nDTEND:${dates.end}\nEND:VEVENT\nEND:VCALENDAR`.replace(/\n/g, '\r\n');
+    const blob = new Blob([icsContent], { type: 'text/calendar' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'rendez-vous.ics';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+  // -------------------------
+
   const displayedNotes = notes.filter(n => n.is_archived === showArchived);
-  
   const columns = [
     { id: 'rouge', title: '🔴 Priorité Urgente', notes: displayedNotes.filter(n => n.importance === 'rouge') },
     { id: 'orange', title: '🟠 Priorité Importante', notes: displayedNotes.filter(n => n.importance === 'orange') },
@@ -209,26 +246,28 @@ export default function Home() {
           />
         )}
 
-        {/* NOUVEAU : Les 2 cases à cocher pour les emails */}
-        <div className="flex flex-col gap-2 my-2 p-3 bg-white border border-gray-200 rounded-md">
-          <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+        <div className="flex flex-col sm:flex-row gap-4 mt-2 p-3 bg-white border border-gray-200 rounded-md">
+          {/* Options Emails */}
+          <div className="flex flex-col gap-2 flex-1">
+            <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+              <input type="checkbox" checked={sendImmediateEmail} onChange={(e) => setSendImmediateEmail(e.target.checked)} className="w-4 h-4 text-blue-600 cursor-pointer"/>
+              E-mail immédiat à la création
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+              <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="w-4 h-4 text-blue-600 cursor-pointer"/>
+              Relances quotidiennes
+            </label>
+          </div>
+          {/* Option Date pour Agenda */}
+          <div className="flex flex-col gap-1 sm:border-l sm:border-gray-200 sm:pl-4">
+            <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Planifier (Optionnel)</label>
             <input 
-              type="checkbox" 
-              checked={sendImmediateEmail}
-              onChange={(e) => setSendImmediateEmail(e.target.checked)}
-              className="w-4 h-4 text-blue-600 cursor-pointer"
+              type="datetime-local" 
+              value={targetDate} 
+              onChange={(e) => setTargetDate(e.target.value)}
+              className="border border-gray-300 p-1.5 rounded text-black text-sm"
             />
-            Envoyer un e-mail immédiat à la création
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
-            <input 
-              type="checkbox" 
-              checked={activateReminder}
-              onChange={(e) => setActivateReminder(e.target.checked)}
-              className="w-4 h-4 text-blue-600 cursor-pointer"
-            />
-            Activer les relances quotidiennes pour cette note
-          </label>
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-3 justify-end sm:items-center mt-2">
@@ -323,6 +362,12 @@ export default function Home() {
                               />
                             </>
                           )}
+                          <input 
+                            type="datetime-local" 
+                            value={editingTargetDate} 
+                            onChange={(e) => setEditingTargetDate(e.target.value)}
+                            className="border border-gray-400 p-1.5 rounded text-black text-sm"
+                          />
                           <div className="flex gap-2">
                             <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 text-xs rounded font-bold">OK</button>
                             <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 text-xs rounded">Annuler</button>
@@ -347,6 +392,29 @@ export default function Home() {
                       )}
                     </div>
                   </div>
+
+                  {/* Boutons Calendrier s'affichent si une date est planifiée */}
+                  {note.target_date && !note.completed && editingId !== note.id && (
+                    <div className="flex flex-wrap gap-2 mt-1 mb-2 bg-blue-50/50 p-2 rounded border border-blue-100">
+                      <span className="w-full text-xs font-semibold text-blue-800 mb-1">
+                        📅 Planifié pour le {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <a 
+                        href={getGoogleCalendarLink(note)} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
+                      >
+                        Mon Google Agenda
+                      </a>
+                      <button 
+                        onClick={() => downloadICS(note)}
+                        className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
+                      >
+                        Partager l'invitation (.ics)
+                      </button>
+                    </div>
+                  )}
                   
                   <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2">
                     <select
