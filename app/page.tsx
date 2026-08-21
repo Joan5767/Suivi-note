@@ -197,21 +197,23 @@ export default function Home() {
           />
         )}
 
-        <div className="flex gap-3 justify-end items-center">
-          <label className="text-gray-600 font-medium text-sm">Niveau d'urgence :</label>
-          <select 
-            value={importance} 
-            onChange={(e) => setImportance(e.target.value as any)}
-            className="border border-gray-300 p-2 rounded text-black bg-white cursor-pointer font-medium"
-          >
-            <option value="vert">🟢 Normale</option>
-            <option value="orange">🟠 Importante</option>
-            <option value="rouge">🔴 Urgente</option>
-          </select>
+        <div className="flex flex-col sm:flex-row gap-3 justify-end sm:items-center mt-2">
+          <div className="flex items-center justify-between sm:justify-end gap-3">
+            <label className="text-gray-600 font-medium text-sm whitespace-nowrap">Niveau d'urgence :</label>
+            <select 
+              value={importance} 
+              onChange={(e) => setImportance(e.target.value as any)}
+              className="border border-gray-300 p-2 rounded text-black bg-white cursor-pointer font-medium flex-1 sm:flex-none"
+            >
+              <option value="vert">🟢 Normale</option>
+              <option value="orange">🟠 Importante</option>
+              <option value="rouge">🔴 Urgente</option>
+            </select>
+          </div>
           <button
             type="submit"
             disabled={loading || (!newTitle.trim() && !newContent.trim())}
-            className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors ml-2"
+            className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors w-full sm:w-auto"
           >
             {loading ? '...' : (noteMode === 'text' ? 'Ajouter la note' : 'Créer la liste')}
           </button>
