@@ -50,6 +50,11 @@ export default function Home() {
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
   const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
+  const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
+    rouge: false,
+    orange: false,
+    vert: false,
+  });
 
   const fetchNotes = async () => {
     const { data } = await supabase
@@ -338,6 +343,13 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
+  const togglePriority = (priorityId: string) => {
+    setCollapsedPriorities(prev => ({
+      ...prev,
+      [priorityId]: !prev[priorityId],
+    }));
+  };
+
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
       
@@ -447,12 +459,29 @@ export default function Home() {
       <div className={`grid gap-6 ${isFocusMode ? 'grid-cols-1 lg:grid-cols-2 max-w-5xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
           <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
-            {!isFocusMode && (
-              <h2 className="text-xl font-bold mb-4 border-b-2 border-gray-200 pb-2 text-gray-800">
-                {col.title} ({col.notes.length})
-              </h2>
-            )}
+            {!isFocusMode && (() => {
+              const reminderCount = col.notes.filter(note => note.reminder_active).length;
+              const isCollapsed = collapsedPriorities[col.id] ?? false;
+
+              return (
+                <button
+                  type="button"
+                  onClick={() => togglePriority(col.id)}
+                  className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-4 border-b-2 border-gray-200 pb-2 text-gray-800 hover:text-gray-950 transition-colors"
+                  aria-expanded={!isCollapsed}
+                  title={isCollapsed ? 'Déplier cette priorité' : 'Replier cette priorité'}
+                >
+                  <span className="text-xl font-bold">
+                    {isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})
+                  </span>
+                  <span className="text-xs sm:text-sm font-semibold text-gray-500">
+                    {reminderCount}/{col.notes.length} {reminderCount === 1 ? 'relance activée' : 'relances activées'}
+                  </span>
+                </button>
+              );
+            })()}
             
+            {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
             <ul className="space-y-4">
               {!isFocusMode && col.notes.length === 0 && <p className="text-gray-400 italic text-sm text-center py-4">Vide</p>}
               
@@ -606,6 +635,7 @@ export default function Home() {
                 </li>
               ))}
             </ul>
+            )}
           </div>
         ))}
       </div>
