@@ -40,10 +40,19 @@ export default function Home() {
     if (!newTitle.trim()) return;
 
     setLoading(true);
+    
+    // 1. Sauvegarde dans la base de données Supabase
     await supabase.from('notes').insert([{ 
         title: newTitle, 
         importance: importance 
     }]);
+
+    // 2. Déclenchement du mail immédiat
+    await fetch('/api/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle, importance })
+    });
 
     setNewTitle('');
     setLoading(false);
