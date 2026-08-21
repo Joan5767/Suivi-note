@@ -292,8 +292,16 @@ export default function Home() {
     return !n.is_archived && !isSnoozed;
   });
   
+  // En mode Focus, on ignore le dossier actuellement sélectionné :
+  // seules les notes actives, non archivées et non masquées sont affichées.
+  const focusNotes = notes.filter(n => {
+    const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > nowTime;
+    return !n.is_archived && !isSnoozed;
+  });
+
   const columns = isFocusMode ? [
-    { id: 'rouge', title: '🎯 Mode FOCUS : Urgences', notes: displayedNotes.filter(n => n.importance === 'rouge') }
+    { id: 'rouge', title: '🔴 Urgentes', notes: focusNotes.filter(n => n.importance === 'rouge') },
+    { id: 'orange', title: '🟠 Importantes', notes: focusNotes.filter(n => n.importance === 'orange') },
   ] : [
     { id: 'rouge', title: '🔴 Priorité Urgente', notes: displayedNotes.filter(n => n.importance === 'rouge') },
     { id: 'orange', title: '🟠 Priorité Importante', notes: displayedNotes.filter(n => n.importance === 'orange') },
@@ -303,8 +311,10 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
       
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold text-gray-800">Mes Notes & Rappels</h1>
+      <div className={`flex items-center mb-6 ${isFocusMode ? 'justify-end' : 'justify-between'}`}>
+        {!isFocusMode && (
+          <h1 className="text-3xl font-bold text-gray-800">Mes Notes & Rappels</h1>
+        )}
         <button 
           onClick={() => setIsFocusMode(!isFocusMode)}
           className={`px-4 py-2 rounded-full font-bold shadow transition-all ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}
@@ -313,8 +323,9 @@ export default function Home() {
         </button>
       </div>
 
-      {/* Formulaire d'ajout */}
-      <form onSubmit={addNote} className={`flex flex-col gap-3 mb-8 p-6 rounded-lg shadow-sm border ${isFocusMode ? 'bg-white opacity-50 pointer-events-none' : 'bg-gray-50 border-gray-200'}`}>
+      {/* Formulaire d'ajout : totalement masqué en mode Focus */}
+      {!isFocusMode && (
+      <form onSubmit={addNote} className="flex flex-col gap-3 mb-8 p-6 rounded-lg shadow-sm border bg-gray-50 border-gray-200">
         <div className="flex justify-between items-center mb-1">
           <div className="flex gap-2">
             <button type="button" onClick={() => setNoteMode('text')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
@@ -373,6 +384,7 @@ export default function Home() {
           </button>
         </div>
       </form>
+      )}
 
       {!isFocusMode && (
         <div className="flex flex-wrap gap-4 mb-6">
@@ -400,15 +412,17 @@ export default function Home() {
       )}
 
       {/* Affichage des colonnes */}
-      <div className={`grid gap-6 ${isFocusMode ? 'grid-cols-1 max-w-2xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
+      <div className={`grid gap-6 ${isFocusMode ? 'grid-cols-1 lg:grid-cols-2 max-w-5xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
-          <div key={col.id} className={`flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner ${isFocusMode ? 'bg-white shadow-xl border-red-200' : ''}`}>
-            <h2 className="text-xl font-bold mb-4 border-b-2 border-gray-200 pb-2 text-gray-800">
-              {col.title} ({col.notes.length})
-            </h2>
+          <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
+            {!isFocusMode && (
+              <h2 className="text-xl font-bold mb-4 border-b-2 border-gray-200 pb-2 text-gray-800">
+                {col.title} ({col.notes.length})
+              </h2>
+            )}
             
             <ul className="space-y-4">
-              {col.notes.length === 0 && <p className="text-gray-400 italic text-sm text-center py-4">Vide</p>}
+              {!isFocusMode && col.notes.length === 0 && <p className="text-gray-400 italic text-sm text-center py-4">Vide</p>}
               
               {col.notes.map((note) => (
                 <li key={note.id} className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${getImportanceColor(note.importance).split(' ')[1]}`}>
@@ -495,7 +509,7 @@ export default function Home() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2 pt-2 border-t border-gray-100">
-                    {showArchived === 'snoozed' && (
+                    {!isFocusMode && showArchived === 'snoozed' && (
                        <button
                          onClick={() => updateNote(note.id, 'snooze_until', '')}
                          className="px-2 py-1 bg-green-100 hover:bg-green-200 text-green-800 rounded font-medium transition-colors"
@@ -505,7 +519,7 @@ export default function Home() {
                        </button>
                     )}
 
-                    {showArchived === false && !note.completed && (
+                    {!isFocusMode && showArchived === false && !note.completed && (
                        <button onClick={() => snoozeNote(note.id, 3)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors" title="Masquer l'alerte pendant 3 jours">
                          💤 À plus tard (3j)
                        </button>
