@@ -495,6 +495,16 @@ export default function Home() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2 pt-2 border-t border-gray-100">
+                    {showArchived === 'snoozed' && (
+                       <button
+                         onClick={() => updateNote(note.id, 'snooze_until', '')}
+                         className="px-2 py-1 bg-green-100 hover:bg-green-200 text-green-800 rounded font-medium transition-colors"
+                         title="Remettre immédiatement cette note dans le dossier actif"
+                       >
+                         ↩ Réactiver maintenant
+                       </button>
+                    )}
+
                     {showArchived === false && !note.completed && (
                        <button onClick={() => snoozeNote(note.id, 3)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors" title="Masquer l'alerte pendant 3 jours">
                          💤 À plus tard (3j)
