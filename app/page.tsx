@@ -27,10 +27,14 @@ export default function Home() {
   const [newContent, setNewContent] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
+  
+  // Nouvelles options de création cochées par défaut
+  const [sendImmediateEmail, setSendImmediateEmail] = useState(true);
+  const [activateReminder, setActivateReminder] = useState(true);
+  
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
-  // États pour l'édition
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [editingContent, setEditingContent] = useState('');
@@ -51,29 +55,37 @@ export default function Home() {
 
   const addNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    // On exige au moins un titre OU un texte
     if (!newTitle.trim() && !newContent.trim()) return;
 
     setLoading(true);
+    
+    // On force la valeur du rappel au moment de l'insertion
     await supabase.from('notes').insert([{ 
         title: newTitle, 
         content: newContent,
         importance: importance,
         subtasks: [],
-        is_list: noteMode === 'list'
+        is_list: noteMode === 'list',
+        reminder_active: activateReminder 
     }]);
 
-    await fetch('/api/notify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        title: newTitle.trim() ? newTitle : "Nouvelle note texte", 
-        importance 
-      })
-    });
+    // On envoie le mail UNIQUEMENT si la case est cochée
+    if (sendImmediateEmail) {
+      await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          title: newTitle.trim() ? newTitle : "Nouvelle note", 
+          importance 
+        })
+      });
+    }
 
+    // On réinitialise tout le formulaire
     setNewTitle('');
     setNewContent('');
+    setSendImmediateEmail(true);
+    setActivateReminder(true);
     setLoading(false);
     fetchNotes();
   };
@@ -197,6 +209,28 @@ export default function Home() {
           />
         )}
 
+        {/* NOUVEAU : Les 2 cases à cocher pour les emails */}
+        <div className="flex flex-col gap-2 my-2 p-3 bg-white border border-gray-200 rounded-md">
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+            <input 
+              type="checkbox" 
+              checked={sendImmediateEmail}
+              onChange={(e) => setSendImmediateEmail(e.target.checked)}
+              className="w-4 h-4 text-blue-600 cursor-pointer"
+            />
+            Envoyer un e-mail immédiat à la création
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+            <input 
+              type="checkbox" 
+              checked={activateReminder}
+              onChange={(e) => setActivateReminder(e.target.checked)}
+              className="w-4 h-4 text-blue-600 cursor-pointer"
+            />
+            Activer les relances quotidiennes pour cette note
+          </label>
+        </div>
+
         <div className="flex flex-col sm:flex-row gap-3 justify-end sm:items-center mt-2">
           <div className="flex items-center justify-between sm:justify-end gap-3">
             <label className="text-gray-600 font-medium text-sm whitespace-nowrap">Niveau d'urgence :</label>
@@ -299,13 +333,11 @@ export default function Home() {
                           onDoubleClick={() => startEditing(note)}
                           className={`flex-1 ${note.completed ? 'opacity-50' : ''}`}
                         >
-                          {/* Affichage du Titre si présent */}
                           {note.title && (
                             <div className={`whitespace-pre-wrap font-bold ${note.is_list ? 'text-lg' : 'text-base text-gray-900'}`}>
                               {note.completed ? <span className="line-through">{note.title}</span> : note.title}
                             </div>
                           )}
-                          {/* Affichage du Contenu si présent */}
                           {!note.is_list && note.content && (
                             <div className={`whitespace-pre-wrap text-sm text-gray-700 mt-1 ${!note.title ? 'text-base' : ''}`}>
                               {note.completed ? <span className="line-through">{note.content}</span> : note.content}
@@ -316,9 +348,7 @@ export default function Home() {
                     </div>
                   </div>
                   
-                  {/* Menu des actions et changement de priorité */}
                   <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2">
-                    {/* LE MENU POUR CHANGER LA PRIORITÉ EST ICI 👇 */}
                     <select
                       value={note.importance}
                       onChange={(e) => updateNote(note.id, 'importance', e.target.value)}
