@@ -37,6 +37,7 @@ export default function Home() {
   
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   
   // Nouveaux états
   const [isFocusMode, setIsFocusMode] = useState(false);
@@ -48,6 +49,7 @@ export default function Home() {
   const [editingTargetDate, setEditingTargetDate] = useState('');
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
+  const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
 
   const fetchNotes = async () => {
     const { data } = await supabase
@@ -76,6 +78,16 @@ export default function Home() {
 
   useEffect(() => {
     fetchNotes();
+  }, []);
+
+  // Met à jour l'heure régulièrement pour que les notes masquées
+  // reviennent automatiquement dans Actif même si l'application reste ouverte.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 60 * 1000);
+
+    return () => window.clearInterval(interval);
   }, []);
 
   const addNote = async (e: React.FormEvent) => {
@@ -274,7 +286,17 @@ export default function Home() {
   // -------------------------
 
   // Filtrage
-  const nowTime = new Date().getTime();
+  const nowTime = currentTime;
+
+  // Notes réellement masquées à cet instant (hors archives).
+  // Sert aussi à décider si le bouton « Masqué temporairement » doit être affiché.
+  const snoozedNotes = notes.filter(n =>
+    !n.is_archived &&
+    !!n.snooze_until &&
+    new Date(n.snooze_until).getTime() > nowTime
+  );
+  const hasSnoozedNotes = snoozedNotes.length > 0;
+
   const displayedNotes = notes.filter(n => {
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > nowTime;
 
@@ -283,7 +305,7 @@ export default function Home() {
       return n.is_archived;
     }
 
-    // 💤 Masqué 3j
+    // 💤 Masqué temporairement
     if (showArchived === 'snoozed') {
       return !n.is_archived && isSnoozed;
     }
@@ -298,6 +320,14 @@ export default function Home() {
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > nowTime;
     return !n.is_archived && !isSnoozed;
   });
+
+  // Si la dernière note masquée revient dans Actif pendant qu'on consulte
+  // le dossier « Masqué temporairement », on revient automatiquement au dossier Actif.
+  useEffect(() => {
+    if (showArchived === 'snoozed' && !hasSnoozedNotes) {
+      setShowArchived(false);
+    }
+  }, [showArchived, hasSnoozedNotes]);
 
   const columns = isFocusMode ? [
     { id: 'rouge', title: '🔴 Urgentes', notes: focusNotes.filter(n => n.importance === 'rouge') },
@@ -395,12 +425,14 @@ export default function Home() {
             📂 Dossier Actif
           </button>
 
-          <button
-            onClick={() => setShowArchived('snoozed')}
-            className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}
-          >
-            💤 Masqué 3j
-          </button>
+          {hasSnoozedNotes && (
+            <button
+              onClick={() => setShowArchived('snoozed')}
+              className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}
+            >
+              💤 Masqué temporairement
+            </button>
+          )}
 
           <button
             onClick={() => setShowArchived(true)}
@@ -520,9 +552,32 @@ export default function Home() {
                     )}
 
                     {!isFocusMode && showArchived === false && !note.completed && (
-                       <button onClick={() => snoozeNote(note.id, 3)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors" title="Masquer l'alerte pendant 3 jours">
-                         💤 À plus tard (3j)
-                       </button>
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={snoozeDaysByNote[note.id] ?? 3}
+                          onChange={(e) =>
+                            setSnoozeDaysByNote(prev => ({
+                              ...prev,
+                              [note.id]: Number(e.target.value)
+                            }))
+                          }
+                          className="border border-yellow-300 bg-yellow-50 text-yellow-900 p-1 rounded cursor-pointer"
+                          title="Nombre de jours pendant lesquels masquer cette note"
+                        >
+                          {Array.from({ length: 30 }, (_, index) => index + 1).map(days => (
+                            <option key={days} value={days}>
+                              {days} {days === 1 ? 'jour' : 'jours'}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => snoozeNote(note.id, snoozeDaysByNote[note.id] ?? 3)}
+                          className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors"
+                          title={`Masquer temporairement cette note pendant ${snoozeDaysByNote[note.id] ?? 3} jour(s)`}
+                        >
+                          💤 Masquer temporairement
+                        </button>
+                      </div>
                     )}
                     <select value={note.importance} onChange={(e) => updateNote(note.id, 'importance', e.target.value)} className="border border-gray-300 p-1 rounded text-gray-700 bg-white cursor-pointer">
                       <option value="vert">Normale</option>
