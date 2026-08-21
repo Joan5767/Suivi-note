@@ -456,7 +456,7 @@ export default function Home() {
       )}
 
       {/* Affichage des colonnes */}
-      <div className={`grid gap-6 ${isFocusMode ? 'grid-cols-1 lg:grid-cols-2 max-w-5xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
+      <div className={`grid items-start gap-6 ${isFocusMode ? 'grid-cols-1 lg:grid-cols-2 max-w-5xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
           <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
             {!isFocusMode && (() => {
