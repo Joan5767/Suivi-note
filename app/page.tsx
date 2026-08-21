@@ -22,6 +22,7 @@ interface Note {
   target_date?: string;
   snooze_until?: string;
   completed_at?: string;
+  popup_active?: boolean;
 }
 
 export default function Home() {
@@ -35,11 +36,14 @@ export default function Home() {
   const [sendImmediateEmail, setSendImmediateEmail] = useState(true);
   const [activateReminder, setActivateReminder] = useState(true);
   
+  // Nouveaux états pour l'alarme
+  const [showAlarmMenu, setShowAlarmMenu] = useState(false);
+  const [popupActive, setPopupActive] = useState(false);
+  
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   
-  // Nouveaux états
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
@@ -51,7 +55,6 @@ export default function Home() {
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
   const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
   
-  // MODIFICATION ICI : On passe tout à "true" pour que ce soit enroulé par défaut
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
     rouge: true,
     orange: true,
@@ -67,7 +70,6 @@ export default function Home() {
     if (data) {
       const now = new Date().getTime();
       
-      // AUTO-NETTOYAGE : Archiver silencieusement les notes terminées depuis plus de 24h
       const cleanedData = data.map(note => {
         if (note.completed && note.completed_at && !note.is_archived) {
           const completedTime = new Date(note.completed_at).getTime();
@@ -87,15 +89,52 @@ export default function Home() {
     fetchNotes();
   }, []);
 
-  // Met à jour l'heure régulièrement pour que les notes masquées
-  // reviennent automatiquement dans Actif même si l'application reste ouverte.
+  // Met à jour l'heure et déclenche les alarmes
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      setCurrentTime(Date.now());
-    }, 60 * 1000);
+    const interval = window.setInterval(async () => {
+      const now = Date.now();
+      setCurrentTime(now);
+      
+      // Vérification des alarmes Pop-up
+      let needsUpdate = false;
+      for (const note of notes) {
+        if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
+          const targetTime = new Date(note.target_date).getTime();
+          if (targetTime <= now) {
+            // Affichage de la notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
+            } else {
+              alert('⏰ RAPPEL : ' + (note.title || 'Note') + '\n' + (note.content || ''));
+            }
+            // Désactive le pop-up en base pour ne pas sonner en boucle
+            await supabase.from('notes').update({ popup_active: false }).eq('id', note.id);
+            needsUpdate = true;
+          }
+        }
+      }
+      if (needsUpdate) fetchNotes();
+    }, 60 * 1000); // Vérifie toutes les minutes
 
     return () => window.clearInterval(interval);
-  }, []);
+  }, [notes]);
+
+  const toggleAlarmMenu = () => {
+    setShowAlarmMenu(!showAlarmMenu);
+    if (!showAlarmMenu && 'Notification' in window && Notification.permission !== 'granted') {
+      Notification.requestPermission();
+    }
+  };
+
+  const handleQuickHourSelect = (hours: number) => {
+    if (!hours) return;
+    const d = new Date();
+    d.setHours(d.getHours() + hours);
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    const localISOTime = new Date(d.getTime() - tzOffset).toISOString().slice(0,16);
+    setTargetDate(localISOTime);
+    setPopupActive(true);
+  };
 
   const addNote = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,7 +149,8 @@ export default function Home() {
         subtasks: [],
         is_list: noteMode === 'list',
         reminder_active: activateReminder,
-        target_date: targetDate
+        target_date: targetDate,
+        popup_active: popupActive
     }]);
 
     if (sendImmediateEmail) {
@@ -130,9 +170,10 @@ export default function Home() {
     setSendImmediateEmail(true);
     setActivateReminder(true);
     setImportance('vert');
+    setShowAlarmMenu(false);
+    setPopupActive(false);
     setLoading(false);
     
-    // On déroule automatiquement la colonne correspondant à la note qu'on vient d'ajouter
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
     
     fetchNotes();
@@ -196,7 +237,6 @@ export default function Home() {
       st.id === subtaskId ? { ...st, completed: !st.completed } : st
     );
     
-    // Si tout est coché, on marque la note comme terminée avec la date
     const allCompleted = updated.every(st => st.completed);
     const completedAt = allCompleted ? new Date().toISOString() : '';
 
@@ -221,7 +261,6 @@ export default function Home() {
     return 'border-l-4 border-green-500 bg-green-50';
   };
 
-  // --- OUTILS CALENDRIER (Préservés) ---
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
     const date = new Date(dateString);
@@ -253,9 +292,7 @@ export default function Home() {
     link.click();
     document.body.removeChild(link);
   };
-  // -------------------------
 
-  // --- IA Vocale (Micro) ---
   const startVoiceDictation = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -294,13 +331,9 @@ export default function Home() {
     };
     recognition.start();
   };
-  // -------------------------
 
-  // Filtrage
   const nowTime = currentTime;
 
-  // Notes réellement masquées à cet instant (hors archives).
-  // Sert aussi à décider si le bouton « Masqué temporairement » doit être affiché.
   const snoozedNotes = notes.filter(n =>
     !n.is_archived &&
     !!n.snooze_until &&
@@ -311,29 +344,16 @@ export default function Home() {
   const displayedNotes = notes.filter(n => {
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > nowTime;
 
-    // 📦 Archives
-    if (showArchived === true) {
-      return n.is_archived;
-    }
-
-    // 💤 Masqué temporairement
-    if (showArchived === 'snoozed') {
-      return !n.is_archived && isSnoozed;
-    }
-
-    // 📂 Dossier Actif
+    if (showArchived === true) return n.is_archived;
+    if (showArchived === 'snoozed') return !n.is_archived && isSnoozed;
     return !n.is_archived && !isSnoozed;
   });
   
-  // En mode Focus, on ignore le dossier actuellement sélectionné :
-  // seules les notes actives, non archivées et non masquées sont affichées.
   const focusNotes = notes.filter(n => {
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > nowTime;
     return !n.is_archived && !isSnoozed;
   });
 
-  // Si la dernière note masquée revient dans Actif pendant qu'on consulte
-  // le dossier « Masqué temporairement », on revient automatiquement au dossier Actif.
   useEffect(() => {
     if (showArchived === 'snoozed' && !hasSnoozedNotes) {
       setShowArchived(false);
@@ -371,7 +391,6 @@ export default function Home() {
         </button>
       </div>
 
-      {/* Formulaire d'ajout : totalement masqué en mode Focus */}
       {!isFocusMode && (
       <form onSubmit={addNote} className="flex flex-col gap-3 mb-8 p-6 rounded-lg shadow-sm border bg-gray-50 border-gray-200">
         <div className="flex justify-between items-center mb-1">
@@ -400,8 +419,9 @@ export default function Home() {
           <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold" disabled={loading} />
         )}
 
+        {/* NOUVEAU MENU CACHÉ : ALARME & PLANIFICATION */}
         <div className="flex flex-col sm:flex-row gap-4 mt-2 p-3 bg-white border border-gray-200 rounded-md">
-          <div className="flex flex-col gap-2 flex-1">
+          <div className="flex flex-col gap-2 flex-1 justify-center">
             <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
               <input type="checkbox" checked={sendImmediateEmail} onChange={(e) => setSendImmediateEmail(e.target.checked)} className="w-4 h-4 text-blue-600 cursor-pointer"/> E-mail immédiat à la création
             </label>
@@ -409,12 +429,39 @@ export default function Home() {
               <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="w-4 h-4 text-blue-600 cursor-pointer"/> Relances quotidiennes
             </label>
           </div>
-          <div className="flex flex-col gap-1 sm:border-l sm:border-gray-200 sm:pl-4">
-            <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Planifier (Optionnel)</label>
-            <div className="flex items-center gap-2">
-              <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-gray-300 p-1.5 rounded text-black text-sm flex-1" />
-              {targetDate && <button type="button" onClick={() => setTargetDate('')} className="bg-red-100 text-red-600 hover:bg-red-200 px-2 py-1.5 rounded text-xs font-bold transition-colors">✖</button>}
-            </div>
+          
+          <div className="flex flex-col gap-1 sm:border-l sm:border-gray-200 sm:pl-4 min-w-[250px]">
+            <button type="button" onClick={toggleAlarmMenu} className={`text-sm font-bold p-2 rounded transition-colors text-left flex items-center justify-between ${showAlarmMenu ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+              <span>🔔 {showAlarmMenu ? 'Masquer l\'Alarme' : 'Planifier / Alarme'}</span>
+              <span>{showAlarmMenu ? '▲' : '▼'}</span>
+            </button>
+
+            {showAlarmMenu && (
+              <div className="flex flex-col gap-3 mt-2 bg-indigo-50/50 p-3 rounded border border-indigo-100 animate-fade-in">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Raccourci rapide</label>
+                  <select onChange={(e) => handleQuickHourSelect(parseInt(e.target.value))} className="border border-indigo-300 bg-white p-1.5 rounded text-sm text-black cursor-pointer font-medium">
+                    <option value="">-- Sélectionner --</option>
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
+                      <option key={h} value={h}>Dans {h} heure{h > 1 ? 's' : ''}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="flex flex-col gap-1 border-t border-indigo-200 pt-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Date précise</label>
+                  <div className="flex items-center gap-2">
+                    <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-indigo-300 p-1.5 rounded text-black text-sm flex-1 bg-white" />
+                    {targetDate && <button type="button" onClick={() => { setTargetDate(''); setPopupActive(false); }} className="bg-red-100 text-red-600 px-2 py-1.5 rounded text-xs font-bold">✖</button>}
+                  </div>
+                </div>
+
+                <label className={`flex items-center gap-2 cursor-pointer text-sm font-bold p-2 rounded ${popupActive ? 'bg-indigo-600 text-white' : 'bg-white border border-indigo-300 text-indigo-800'}`}>
+                  <input type="checkbox" checked={popupActive} onChange={(e) => setPopupActive(e.target.checked)} className="w-4 h-4 cursor-pointer accent-indigo-500"/>
+                  Sonnerie & Pop-up
+                </label>
+              </div>
+            )}
           </div>
         </div>
 
@@ -461,7 +508,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Affichage des colonnes */}
       <div className={`grid items-start gap-6 ${isFocusMode ? 'grid-cols-1 lg:grid-cols-2 max-w-5xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
           <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
@@ -525,15 +571,16 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Boutons Calendrier s'affichent si une date est planifiée */}
+                  {/* NOUVEAU : Affichage de la date et options d'alarme dans la note */}
                   {note.target_date && !note.completed && editingId !== note.id && (
                     <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
                       <div className="flex justify-between items-center w-full">
                         <span className="text-xs font-bold text-blue-800">
                           📅 Planifié pour le {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          {note.popup_active && ' 🔔'}
                         </span>
                         <button 
-                          onClick={() => updateNote(note.id, 'target_date', '')}
+                          onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }}
                           className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors"
                           title="Annuler cette planification"
                         >
@@ -553,7 +600,13 @@ export default function Home() {
                           onClick={() => downloadICS(note)}
                           className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center"
                         >
-                          Partager l'invitation (.ics)
+                          Partager (.ics)
+                        </button>
+                        <button 
+                          onClick={() => updateNote(note.id, 'popup_active', !note.popup_active)}
+                          className={`px-2 py-1.5 rounded text-xs font-bold transition-colors text-center ${note.popup_active ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                        >
+                          {note.popup_active ? 'Pop-up ON' : 'Pop-up OFF'}
                         </button>
                       </div>
                     </div>
@@ -624,7 +677,6 @@ export default function Home() {
                     <button onClick={() => deleteNote(note.id)} className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition-colors">Suppr</button>
                   </div>
 
-                  {/* La case de rappel en bas des notes préservée ! */}
                   {!note.is_archived && (
                     <div className="flex items-center gap-2 mt-2 text-[11px] text-gray-500 pt-2 border-t border-gray-100">
                       <label className="flex items-center gap-2 cursor-pointer">
