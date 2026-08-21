@@ -12,6 +12,7 @@ interface Subtask {
 interface Note {
   id: string;
   title: string;
+  content: string;
   completed: boolean;
   is_archived: boolean;
   importance: 'vert' | 'orange' | 'rouge';
@@ -23,13 +24,16 @@ interface Note {
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
+  const [newContent, setNewContent] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
+  // États pour l'édition
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const [editingContent, setEditingContent] = useState('');
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
@@ -47,11 +51,13 @@ export default function Home() {
 
   const addNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    // On exige au moins un titre OU un texte
+    if (!newTitle.trim() && !newContent.trim()) return;
 
     setLoading(true);
     await supabase.from('notes').insert([{ 
         title: newTitle, 
+        content: newContent,
         importance: importance,
         subtasks: [],
         is_list: noteMode === 'list'
@@ -60,10 +66,14 @@ export default function Home() {
     await fetch('/api/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle, importance })
+      body: JSON.stringify({ 
+        title: newTitle.trim() ? newTitle : "Nouvelle note texte", 
+        importance 
+      })
     });
 
     setNewTitle('');
+    setNewContent('');
     setLoading(false);
     fetchNotes();
   };
@@ -81,10 +91,18 @@ export default function Home() {
   };
 
   const saveEdit = async (id: string) => {
-    if (editingTitle.trim()) {
-      await updateNote(id, 'title', editingTitle);
-    }
+    await supabase.from('notes').update({ 
+      title: editingTitle,
+      content: editingContent
+    }).eq('id', id);
     setEditingId(null);
+    fetchNotes();
+  };
+
+  const startEditing = (note: Note) => {
+    setEditingId(note.id);
+    setEditingTitle(note.title || '');
+    setEditingContent(note.content || '');
   };
 
   const addSubtask = async (note: Note) => {
@@ -95,7 +113,6 @@ export default function Home() {
     const updatedSubtasks = [...(note.subtasks || []), newSubtask];
 
     await supabase.from('notes').update({ subtasks: updatedSubtasks }).eq('id', note.id);
-    
     setNewSubtaskTexts(prev => ({ ...prev, [note.id]: '' }));
     fetchNotes();
   };
@@ -120,7 +137,6 @@ export default function Home() {
     return 'border-l-4 border-green-500 bg-green-50';
   };
 
-  // On prépare les données pour les 3 colonnes
   const displayedNotes = notes.filter(n => n.is_archived === showArchived);
   
   const columns = [
@@ -130,7 +146,6 @@ export default function Home() {
   ];
 
   return (
-    // Largeur augmentée (max-w-7xl) pour afficher les 3 colonnes confortablement
     <main className="max-w-7xl mx-auto p-6 pb-20">
       <h1 className="text-3xl font-bold mb-6 text-gray-800">Mes Notes & Rappels</h1>
 
@@ -154,13 +169,23 @@ export default function Home() {
         </div>
 
         {noteMode === 'text' ? (
-          <textarea
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Écris ta note complète ici..."
-            className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[100px]"
-            disabled={loading}
-          />
+          <div className="flex flex-col gap-2">
+            <input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Titre (Optionnel)"
+              className="w-full border border-gray-300 p-2 rounded text-black font-semibold"
+              disabled={loading}
+            />
+            <textarea
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              placeholder="Écris le contenu de ta note ici..."
+              className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[100px]"
+              disabled={loading}
+            />
+          </div>
         ) : (
           <input
             type="text"
@@ -185,7 +210,7 @@ export default function Home() {
           </select>
           <button
             type="submit"
-            disabled={loading || !newTitle.trim()}
+            disabled={loading || (!newTitle.trim() && !newContent.trim())}
             className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors ml-2"
           >
             {loading ? '...' : (noteMode === 'text' ? 'Ajouter la note' : 'Créer la liste')}
@@ -209,9 +234,8 @@ export default function Home() {
         </button>
       </div>
 
-      {/* Affichage en 3 colonnes avec CSS Grid */}
+      {/* Affichage en 3 colonnes */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
         {columns.map((col) => (
           <div key={col.id} className="flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner">
             <h2 className="text-xl font-bold mb-4 border-b-2 border-gray-200 pb-2 text-gray-800">
@@ -226,7 +250,7 @@ export default function Home() {
               {col.notes.map((note) => (
                 <li
                   key={note.id}
-                  className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${getImportanceColor(note.importance).split(' ')[1] /* Récupère juste la couleur de bordure */}`}
+                  className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${getImportanceColor(note.importance).split(' ')[1]}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-2 flex-1 mt-1">
@@ -248,12 +272,20 @@ export default function Home() {
                               autoFocus
                             />
                           ) : (
-                            <textarea
-                              value={editingTitle}
-                              onChange={(e) => setEditingTitle(e.target.value)}
-                              className="w-full border border-gray-400 p-2 rounded text-black resize-y min-h-[100px] text-sm"
-                              autoFocus
-                            />
+                            <>
+                              <input
+                                type="text"
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                placeholder="Titre (optionnel)"
+                                className="w-full border border-gray-400 p-2 rounded text-black font-semibold text-sm"
+                              />
+                              <textarea
+                                value={editingContent}
+                                onChange={(e) => setEditingContent(e.target.value)}
+                                className="w-full border border-gray-400 p-2 rounded text-black resize-y min-h-[100px] text-sm"
+                              />
+                            </>
                           )}
                           <div className="flex gap-2">
                             <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 text-xs rounded font-bold">OK</button>
@@ -261,18 +293,30 @@ export default function Home() {
                           </div>
                         </div>
                       ) : (
-                        <span 
-                          onDoubleClick={() => { setEditingId(note.id); setEditingTitle(note.title); }}
-                          className={`flex-1 whitespace-pre-wrap ${note.is_list ? 'text-lg font-bold' : 'text-base'} ${note.completed ? 'line-through text-gray-400' : 'text-gray-900'}`}
+                        <div 
+                          onDoubleClick={() => startEditing(note)}
+                          className={`flex-1 ${note.completed ? 'opacity-50' : ''}`}
                         >
-                          {note.title}
-                        </span>
+                          {/* Affichage du Titre si présent */}
+                          {note.title && (
+                            <div className={`whitespace-pre-wrap font-bold ${note.is_list ? 'text-lg' : 'text-base text-gray-900'}`}>
+                              {note.completed ? <span className="line-through">{note.title}</span> : note.title}
+                            </div>
+                          )}
+                          {/* Affichage du Contenu si présent */}
+                          {!note.is_list && note.content && (
+                            <div className={`whitespace-pre-wrap text-sm text-gray-700 mt-1 ${!note.title ? 'text-base' : ''}`}>
+                              {note.completed ? <span className="line-through">{note.content}</span> : note.content}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
                   
-                  {/* Actions sous le titre de la note */}
+                  {/* Menu des actions et changement de priorité */}
                   <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2">
+                    {/* LE MENU POUR CHANGER LA PRIORITÉ EST ICI 👇 */}
                     <select
                       value={note.importance}
                       onChange={(e) => updateNote(note.id, 'importance', e.target.value)}
@@ -284,7 +328,7 @@ export default function Home() {
                     </select>
 
                     {editingId !== note.id && (
-                      <button onClick={() => { setEditingId(note.id); setEditingTitle(note.title); }} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors">
+                      <button onClick={() => startEditing(note)} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors">
                         Modif
                       </button>
                     )}
@@ -296,49 +340,46 @@ export default function Home() {
                     </button>
                   </div>
 
-                  {/* Sous-tâches pour le mode liste */}
                   {note.is_list && (
                     <div className="mt-3 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-2 rounded">
                       {(note.subtasks || []).map((st) => (
-                        <div key={st.id} className="flex items-center gap-2 mb-2 group">
-                          <input 
-                            type="checkbox" 
-                            checked={st.completed} 
-                            onChange={() => toggleSubtask(note, st.id)}
-                            className="cursor-pointer"
-                          />
-                          <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>
-                            {st.text}
-                          </span>
-                          <button 
-                            onClick={() => deleteSubtask(note, st.id)} 
-                            className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2"
-                          >
-                            ✖
-                          </button>
-                        </div>
-                      ))}
-                      
-                      <div className="flex gap-2 mt-2 items-center">
-                        <input
-                          type="text"
-                          placeholder="Ajouter..."
-                          value={newSubtaskTexts[note.id] || ''}
-                          onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })}
-                          onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)}
-                          className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white"
-                        />
-                        <button 
-                          onClick={() => addSubtask(note)} 
-                          className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs"
-                        >
-                          +
-                        </button>
-                      </div>
+                         <div key={st.id} className="flex items-center gap-2 mb-2 group">
+                           <input 
+                             type="checkbox" 
+                             checked={st.completed} 
+                             onChange={() => toggleSubtask(note, st.id)}
+                             className="cursor-pointer"
+                           />
+                           <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>
+                             {st.text}
+                           </span>
+                           <button 
+                             onClick={() => deleteSubtask(note, st.id)} 
+                             className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2"
+                           >
+                             ✖
+                           </button>
+                         </div>
+                       ))}
+                       <div className="flex gap-2 mt-2 items-center">
+                         <input
+                           type="text"
+                           placeholder="Ajouter..."
+                           value={newSubtaskTexts[note.id] || ''}
+                           onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })}
+                           onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)}
+                           className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white"
+                         />
+                         <button 
+                           onClick={() => addSubtask(note)} 
+                           className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs"
+                         >
+                           +
+                         </button>
+                       </div>
                     </div>
                   )}
 
-                  {/* Option de rappel */}
                   {!note.is_archived && (
                     <div className="flex items-center gap-2 mt-2 text-[11px] text-gray-500 pt-2 border-t border-gray-100">
                       <label className="flex items-center gap-2 cursor-pointer">
