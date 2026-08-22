@@ -38,4 +38,12 @@ export async function POST(req: Request) {
     }
 
     let jsonText = data.candidates[0].content.parts[0].text;
-    jsonText = jsonText.replace(/```json/g, '').replace(/
+    jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+    const result = JSON.parse(jsonText);
+    return NextResponse.json(result);
+    
+  } catch (error: any) {
+    return NextResponse.json({ error: `Crash du serveur: ${error.message}` }, { status: 500 });
+  }
+}
