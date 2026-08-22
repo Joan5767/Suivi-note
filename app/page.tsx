@@ -69,7 +69,14 @@ export default function Home() {
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
   
+  // Nouveaux états d'édition pour la priorité et les relances
+  const [editingImportance, setEditingImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
+  const [editingReminderActive, setEditingReminderActive] = useState(false);
+  const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
+  const [editingDailyTime, setEditingDailyTime] = useState('09:00');
+  
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
+  const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
   
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
     rouge: true,
@@ -371,7 +378,11 @@ export default function Home() {
       title: editingTitle, 
       content: editingContent, 
       target_date: finalTargetDate, 
-      popup_active: finalPopupActive
+      popup_active: finalPopupActive,
+      importance: editingImportance,
+      reminder_active: editingReminderActive,
+      reminder_popup_active: editingReminderPopupActive,
+      daily_reminder_time: editingDailyTime
     }).eq('id', id);
     
     setEditingId(null); 
@@ -384,6 +395,12 @@ export default function Home() {
     setEditingContent(note.content || '');
     setEditingTargetDate(note.target_date || ''); 
     setEditingPopupActive(note.popup_active || false);
+    
+    setEditingImportance(note.importance || 'vert');
+    setEditingReminderActive(note.reminder_active || false);
+    setEditingReminderPopupActive(note.reminder_popup_active || false);
+    setEditingDailyTime(note.daily_reminder_time || '09:00');
+
     setShowEditingPopupConfig(false);
     setEditingPopupHours('');
     setEditingPopupMinutes('');
@@ -663,8 +680,32 @@ export default function Home() {
                           </>
                         )}
                         
-                        <div className="flex flex-col gap-2 mt-1">
-                          
+                        <select
+                          value={editingImportance}
+                          onChange={(e) => setEditingImportance(e.target.value as any)}
+                          className="border border-gray-400 p-2 rounded text-black text-sm w-full font-bold"
+                        >
+                          <option value="vert">🟢 Priorité Normale</option>
+                          <option value="orange">🟠 Priorité Importante</option>
+                          <option value="rouge">🔴 Priorité Urgente</option>
+                        </select>
+
+                        <div className="flex flex-col gap-2 bg-gray-100 p-2 rounded border border-gray-300">
+                          <span className="text-xs font-bold text-gray-700">🔄 Relances quotidiennes :</span>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-gray-400 rounded text-black text-xs bg-white" />
+                            <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-gray-800">
+                              <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer" />
+                              E-mail
+                            </label>
+                            <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-gray-800">
+                              <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer" />
+                              Pop-up
+                            </label>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-2">
                           <div className="flex flex-col">
                             <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
                               <span>⏰ Programmer une alarme pop-up</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
@@ -750,31 +791,11 @@ export default function Home() {
                     {!isFocusMode && showArchived === false && !note.completed && (
                       <button onClick={() => handleSnoozeClick(note.id)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors">💤 Masquer</button>
                     )}
-                    <select value={note.importance} onChange={(e) => updateNote(note.id, 'importance', e.target.value)} className="border border-gray-300 p-1 rounded text-gray-700 bg-white cursor-pointer">
-                      <option value="vert">Normale</option>
-                      <option value="orange">Imp.</option>
-                      <option value="rouge">Urg.</option>
-                    </select>
+                    
                     {editingId !== note.id && <button onClick={() => startEditing(note)} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors">Modif</button>}
                     <button onClick={() => updateNote(note.id, 'is_archived', !note.is_archived)} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition-colors">{note.is_archived ? 'Désarchiver' : 'Archiver'}</button>
                     <button onClick={() => deleteNote(note.id)} className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition-colors">Suppr</button>
                   </div>
-
-                  {!note.is_archived && (
-                    <div className="flex flex-col gap-2 mt-2 text-[11px] text-gray-500 pt-2 border-t border-gray-100">
-                      <span className="font-semibold text-gray-600">Relances quotidiennes ({note.daily_reminder_time || '09:00'}) :</span>
-                      <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-1.5 cursor-pointer">
-                          <input type="checkbox" checked={note.reminder_active} onChange={() => updateNote(note.id, 'reminder_active', !note.reminder_active)} className="cursor-pointer" />
-                          E-mail
-                        </label>
-                        <label className="flex items-center gap-1.5 cursor-pointer">
-                          <input type="checkbox" checked={note.reminder_popup_active || false} onChange={() => updateNote(note.id, 'reminder_popup_active', !note.reminder_popup_active)} className="cursor-pointer" />
-                          Pop-up
-                        </label>
-                      </div>
-                    </div>
-                  )}
 
                 </li>
               ))}
