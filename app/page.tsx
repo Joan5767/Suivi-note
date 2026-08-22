@@ -248,7 +248,6 @@ export default function Home() {
           return;
         }
 
-        // TRACEUR 1 : On vérifie que l'enregistrement a marché
         alert(`🎤 Enregistrement terminé. Texte capté : "${finalTranscript}"\n\nEnvoi à l'IA en cours...`);
         setIsAiProcessing(true);
 
@@ -264,19 +263,16 @@ export default function Home() {
           
           if (!res.ok) {
             const errData = await res.json();
-            // TRACEUR 2 : Si le serveur Vercel/Google bloque
             alert("❌ Erreur Vercel/Google : " + (errData.error || "Erreur inconnue"));
             setIsAiProcessing(false);
             return;
           }
 
           const data = await res.json();
-          // TRACEUR 3 : Si Google répond correctement
           alert("✅ L'IA a répondu ! Ouverture de la fenêtre récapitulative.");
           setAiProposal(data);
           
         } catch (e: any) {
-          // TRACEUR 4 : S'il y a un problème de connexion (ex: pas de 4G)
           alert("❌ Erreur réseau lors de la connexion à l'IA : " + e.message);
         }
         setIsAiProcessing(false);
@@ -428,7 +424,7 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/80 z-[9999] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
             <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
-              <span>🤖</span> Proposition de l'IA
+              <span>🤖</span> Proposition de l&apos;IA
             </h2>
 
             <div className="flex flex-col gap-3 text-base text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-200">
@@ -463,7 +459,7 @@ export default function Home() {
       )}
       
       <div className={`flex items-center mb-6 ${isFocusMode ? 'justify-end' : 'justify-between'}`}>
-        {!isFocusMode && <h1 className="text-3xl font-bold text-gray-800">Mes Notes & Rappels</h1>}
+        {!isFocusMode && <h1 className="text-3xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>}
         <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-4 py-2 rounded-full font-bold shadow transition-all ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
           {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
         </button>
