@@ -56,7 +56,7 @@ export default function Home() {
   
   const [listeningMode, setListeningMode] = useState<'none' | 'micro' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
-  const [aiProposal, setAiProposal] = useState<any>(null); // État pour la fenêtre récapitulative
+  const [aiProposal, setAiProposal] = useState<any>(null);
   const recognitionRef = useRef<any>(null);
 
   // États d'édition
@@ -222,7 +222,9 @@ export default function Home() {
     recognition.lang = 'fr-FR';
     recognition.continuous = true; 
     recognitionRef.current = recognition;
-    let finalTranscript = '';
+    
+    // Un objet pour conserver la mémoire de la phrase sans risque d'effacement
+    const transcript = { text: '' };
     
     recognition.onstart = () => setListeningMode(mode);
     
@@ -231,16 +233,23 @@ export default function Home() {
       for (let i = 0; i < event.results.length; i++) {
         current += event.results[i][0].transcript + ' ';
       }
-      finalTranscript = current;
-      if (mode === 'micro') {
-        if (noteMode === 'list') setNewTitle(current);
-        else setNewContent(current);
-      }
+      transcript.text = current;
+      
+      // On affiche le texte en temps réel, même en mode IA
+      if (noteMode === 'list') setNewTitle(current);
+      else setNewContent(current);
     };
 
     recognition.onend = async () => {
       setListeningMode('none');
-      if (mode === 'ai' && finalTranscript.trim()) {
+      const finalTranscript = transcript.text;
+
+      if (mode === 'ai') {
+        if (!finalTranscript.trim()) {
+          alert("Je n'ai rien entendu. Veuillez réessayer.");
+          return;
+        }
+
         setIsAiProcessing(true);
         try {
           const res = await fetch('/api/gemini', {
@@ -260,7 +269,7 @@ export default function Home() {
           }
 
           const data = await res.json();
-          // Ouvre la fenêtre récapitulative au lieu de remplir le formulaire en silence
+          // Ouvre la fenêtre récapitulative
           setAiProposal(data);
           
         } catch (e: any) {
@@ -283,7 +292,7 @@ export default function Home() {
       reminder_active: false,
       reminder_popup_active: false,
       target_date: data.target_date || '',
-      popup_active: !!data.target_date // Active le popup automatiquement si l'IA a détecté une date
+      popup_active: !!data.target_date 
     }]);
 
     if (error) {
@@ -293,6 +302,10 @@ export default function Home() {
          Notification.requestPermission();
       }
       setAiProposal(null);
+      
+      // On vide aussi le formulaire qui avait affiché le brouillon
+      setNewTitle('');
+      setNewContent('');
       fetchNotes();
     }
     setLoading(false);
@@ -307,7 +320,7 @@ export default function Home() {
       setTargetDate(data.target_date);
       setShowCalendarConfig(true);
     }
-    setAiProposal(null); // Ferme la fenêtre pour laisser l'utilisateur ajuster le formulaire
+    setAiProposal(null);
   };
 
   // -- OUTILS DIVERS --
@@ -408,11 +421,11 @@ export default function Home() {
   const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
   return (
-    <main className="max-w-7xl mx-auto p-6 pb-20">
+    <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
-      {/* FENÊTRE RÉCAPITULATIVE DE L'IA */}
+      {/* FENÊTRE RÉCAPITULATIVE DE L'IA (Assurée d'être au premier plan) */}
       {aiProposal && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 z-[9999] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
             <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
               <span>🤖</span> Proposition de l'IA
