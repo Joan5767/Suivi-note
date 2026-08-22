@@ -3,7 +3,9 @@ import { NextResponse } from 'next/server';
 export async function POST(req: Request) {
   try {
     const { text, currentDate } = await req.json();
-    const apiKey = process.env.GEMINI_API_KEY;
+    
+    // Le .trim() est la magie ici : il supprime les espaces invisibles copiés par erreur
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
 
     if (!apiKey) {
       return NextResponse.json({ error: "La clé GEMINI_API_KEY est introuvable sur Vercel." }, { status: 500 });
@@ -19,7 +21,10 @@ export async function POST(req: Request) {
     - "target_date": si l'utilisateur mentionne une date/heure de rappel, déduis la date exacte au format ISO 8601 (YYYY-MM-DDTHH:mm). Sinon, null.
     - "is_list": true si l'utilisateur énumère des choses (courses, tâches), sinon false.`;
 
-    const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`, {
+    // Lien garanti sans espaces
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -30,14 +35,11 @@ export async function POST(req: Request) {
 
     const data = await response.json();
 
-    // Si Google refuse la requête, on renvoie son motif exact
     if (data.error) {
        return NextResponse.json({ error: `Refus de Google : ${data.error.message}` }, { status: 400 });
     }
 
     let jsonText = data.candidates[0].content.parts[0].text;
-
-    // Sécurité : Nettoyage des balises Markdown si Gemini désobéit aux consignes
     jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
 
     const result = JSON.parse(jsonText);
