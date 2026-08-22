@@ -4,7 +4,7 @@ export async function POST(req: Request) {
   try {
     const { text, currentDate } = await req.json();
     
-    // Le .trim() est la magie ici : il supprime les espaces invisibles copiés par erreur
+    // Nettoyage de la clé pour éviter les espaces invisibles
     const apiKey = process.env.GEMINI_API_KEY?.trim();
 
     if (!apiKey) {
@@ -21,8 +21,8 @@ export async function POST(req: Request) {
     - "target_date": si l'utilisateur mentionne une date/heure de rappel, déduis la date exacte au format ISO 8601 (YYYY-MM-DDTHH:mm). Sinon, null.
     - "is_list": true si l'utilisateur énumère des choses (courses, tâches), sinon false.`;
 
-    // Lien garanti sans espaces
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    // CHANGEMENT ICI : On utilise le modèle "gemini-2.5-flash" qui est la version stable actuelle
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
