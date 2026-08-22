@@ -384,6 +384,15 @@ export default function Home() {
     fetchNotes();
   };
 
+  // --- FONCTION RESTAURÉE ---
+  const toggleSubtask = async (note: Note, subtaskId: string) => {
+    const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
+    const allCompleted = updated.every(st => st.completed);
+    const completedAt = allCompleted ? new Date().toISOString() : '';
+    await supabase.from('notes').update({ subtasks: updated, completed: allCompleted, completed_at: completedAt }).eq('id', note.id);
+    fetchNotes();
+  };
+
   const addSubtask = async (note: Note) => {
     const text = newSubtaskTexts[note.id]; if (!text || !text.trim()) return;
     const newSubtask = { id: crypto.randomUUID(), text, completed: false };
