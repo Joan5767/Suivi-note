@@ -511,9 +511,17 @@ export default function Home() {
         </div>
       )}
       
-      <div className={`flex items-center mb-6 ${isFocusMode ? 'justify-end' : 'justify-between'}`}>
-        {!isFocusMode && <h1 className="text-3xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>}
-        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-4 py-2 rounded-full font-bold shadow transition-all ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
+      {/* EN-TÊTE MODIFIÉ AVEC LE SOUS-TITRE DU MODE FOCUS */}
+      <div className={`flex items-start sm:items-center mb-6 justify-between flex-col sm:flex-row gap-4`}>
+        {!isFocusMode ? (
+          <h1 className="text-3xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
+        ) : (
+          <div className="flex flex-col">
+            <h1 className="text-3xl font-bold text-gray-800">Mode Focus 🎯</h1>
+            <span className="text-sm font-bold text-red-500 mt-1">🔴 Seules les notes urgentes sont affichées</span>
+          </div>
+        )}
+        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-4 py-2 rounded-full font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
           {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
         </button>
       </div>
@@ -662,7 +670,13 @@ export default function Home() {
             
             {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
             <ul className="space-y-4">
-              {!isFocusMode && col.notes.length === 0 && <p className="text-gray-400 italic text-sm text-center py-4">Vide</p>}
+              
+              {/* MESSAGE CLAIR SI LE DOSSIER EST VIDE (DONT LE MODE FOCUS) */}
+              {col.notes.length === 0 && (
+                <p className="text-gray-400 font-medium text-sm text-center py-6 bg-white rounded-lg border border-dashed border-gray-300">
+                  {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
+                </p>
+              )}
               
               {col.notes.map((note) => (
                 <li key={note.id} className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
