@@ -47,7 +47,7 @@ export default function Home() {
   const [showCalendarConfig, setShowCalendarConfig] = useState(false);
   const [targetDate, setTargetDate] = useState('');
   const [enableGoogleCal, setEnableGoogleCal] = useState(true);
-  const [enableICal, setEnableICal] = useState(true);
+  const [enableICal, setEnableICal] = useState(false); // iCal décoché par défaut !
   
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
@@ -248,7 +248,6 @@ export default function Home() {
           return;
         }
 
-        alert(`🎤 Enregistrement terminé. Texte capté : "${finalTranscript}"\n\nEnvoi à l'IA en cours...`);
         setIsAiProcessing(true);
 
         try {
@@ -269,7 +268,6 @@ export default function Home() {
           }
 
           const data = await res.json();
-          alert("✅ L'IA a répondu ! Ouverture de la fenêtre récapitulative.");
           setAiProposal(data);
           
         } catch (e: any) {
@@ -283,6 +281,11 @@ export default function Home() {
 
   const confirmAiNote = async (data: any) => {
     setLoading(true);
+    
+    // Détermine la date cible et l'activation du popup
+    const targetDateValue = data.popup_time || data.calendar_time || '';
+    const isPopupActive = !!data.popup_time; // Actif uniquement si c'est un rappel/alarme
+
     const { error } = await supabase.from('notes').insert([{
       title: data.title || '',
       content: data.content || '',
@@ -291,8 +294,8 @@ export default function Home() {
       is_list: data.is_list || false,
       reminder_active: false,
       reminder_popup_active: false,
-      target_date: data.target_date || '',
-      popup_active: !!data.target_date 
+      target_date: targetDateValue,
+      popup_active: isPopupActive
     }]);
 
     if (error) {
@@ -314,10 +317,21 @@ export default function Home() {
     if (data.content) setNewContent(data.content);
     if (data.importance) setImportance(data.importance);
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
-    if (data.target_date) {
-      setTargetDate(data.target_date);
+    
+    if (data.popup_time) {
+      // Si l'IA a détecté une alarme, calcule la différence en heures/minutes
+      const diffMs = new Date(data.popup_time).getTime() - Date.now();
+      if (diffMs > 0) {
+        const totalMin = Math.floor(diffMs / (1000 * 60));
+        setPopupHours(Math.floor(totalMin / 60).toString());
+        setPopupMinutes((totalMin % 60).toString());
+        setShowPopupConfig(true);
+      }
+    } else if (data.calendar_time) {
+      setTargetDate(data.calendar_time);
       setShowCalendarConfig(true);
     }
+    
     setAiProposal(null);
   };
 
@@ -384,7 +398,6 @@ export default function Home() {
     fetchNotes();
   };
 
-  // --- FONCTION RESTAURÉE ---
   const toggleSubtask = async (note: Note, subtaskId: string) => {
     const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
     const allCompleted = updated.every(st => st.completed);
@@ -424,8 +437,6 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
-  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
-
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
@@ -444,9 +455,14 @@ export default function Home() {
                 aiProposal.importance === 'rouge' ? '🔴 Urgente' :
                 aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'
               }</p>
-              {aiProposal.target_date && (
+              {aiProposal.popup_time && (
+                <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
+                  <strong>⏰ Alarme pop-up :</strong> {new Date(aiProposal.popup_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                </p>
+              )}
+              {aiProposal.calendar_time && (
                 <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200">
-                  <strong>⏰ Alarme programmée :</strong> {new Date(aiProposal.target_date).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                  <strong>📅 Ajout Agenda :</strong> {new Date(aiProposal.calendar_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
                 </p>
               )}
             </div>
