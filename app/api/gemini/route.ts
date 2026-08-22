@@ -6,19 +6,20 @@ export async function POST(req: Request) {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json({ error: "Clé manquante" }, { status: 500 });
+      return NextResponse.json({ error: "La clé GEMINI_API_KEY est introuvable sur Vercel." }, { status: 500 });
     }
 
     const prompt = `Tu es un assistant intelligent de prise de notes. L'utilisateur a dicté ce texte : "${text}".
     Aujourd'hui nous sommes le : ${currentDate}.
-    Analyse le texte et renvoie UNIQUEMENT un objet JSON strict (sans aucun formatage markdown autour) avec ces propriétés :
-    - "title": un titre très court et pertinent (chaine de caractères).
-    - "content": le contenu détaillé et corrigé (chaine de caractères).
-    - "importance": 'rouge' (si urgent/très important), 'orange' (si important), ou 'vert' (normal).
+    Analyse le texte et renvoie STRICTEMENT ET UNIQUEMENT un objet JSON valide. NE METS AUCUN FORMATAGE MARKDOWN (ne mets surtout pas les balises \`\`\`json).
+    Propriétés attendues :
+    - "title": un titre très court et pertinent.
+    - "content": le contenu détaillé et corrigé.
+    - "importance": 'rouge' (urgent), 'orange' (important), ou 'vert' (normal).
     - "target_date": si l'utilisateur mentionne une date/heure de rappel, déduis la date exacte au format ISO 8601 (YYYY-MM-DDTHH:mm). Sinon, null.
     - "is_list": true si l'utilisateur énumère des choses (courses, tâches), sinon false.`;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -28,11 +29,22 @@ export async function POST(req: Request) {
     });
 
     const data = await response.json();
-    const jsonText = data.candidates[0].content.parts[0].text;
+
+    // Si Google refuse la requête, on renvoie son motif exact
+    if (data.error) {
+       return NextResponse.json({ error: `Refus de Google : ${data.error.message}` }, { status: 400 });
+    }
+
+    let jsonText = data.candidates[0].content.parts[0].text;
+
+    // Sécurité : Nettoyage des balises Markdown si Gemini désobéit aux consignes
+    jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+
     const result = JSON.parse(jsonText);
 
     return NextResponse.json(result);
-  } catch (error) {
-    return NextResponse.json({ error: "Erreur lors de l'analyse IA" }, { status: 500 });
+    
+  } catch (error: any) {
+    return NextResponse.json({ error: `Crash du serveur: ${error.message}` }, { status: 500 });
   }
 }
