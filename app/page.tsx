@@ -56,6 +56,7 @@ export default function Home() {
   
   const [listeningMode, setListeningMode] = useState<'none' | 'micro' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [aiProposal, setAiProposal] = useState<any>(null); // État pour la fenêtre récapitulative
   const recognitionRef = useRef<any>(null);
 
   // États d'édition
@@ -123,8 +124,8 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  const addNote = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const addNote = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!newTitle.trim() && !newContent.trim()) return;
 
     setLoading(true);
@@ -180,16 +181,6 @@ export default function Home() {
     fetchNotes();
   };
 
-  const updateNote = async (id: string, field: string, value: any) => {
-    if (field === 'completed') {
-      const completedAt = value ? new Date().toISOString() : '';
-      await supabase.from('notes').update({ completed: value, completed_at: completedAt }).eq('id', id);
-    } else {
-      await supabase.from('notes').update({ [field]: value }).eq('id', id);
-    }
-    fetchNotes();
-  };
-
   const deleteNote = async (id: string) => {
     if (window.confirm('Es-tu sûr de vouloir supprimer cette note définitivement ?')) {
       await supabase.from('notes').delete().eq('id', id); 
@@ -208,14 +199,17 @@ export default function Home() {
     }
   };
 
-  const toggleSubtask = async (note: Note, subtaskId: string) => {
-    const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
-    const allCompleted = updated.every(st => st.completed);
-    const completedAt = allCompleted ? new Date().toISOString() : '';
-    await supabase.from('notes').update({ subtasks: updated, completed: allCompleted, completed_at: completedAt }).eq('id', note.id);
+  const updateNote = async (id: string, field: string, value: any) => {
+    if (field === 'completed') {
+      const completedAt = value ? new Date().toISOString() : '';
+      await supabase.from('notes').update({ completed: value, completed_at: completedAt }).eq('id', id);
+    } else {
+      await supabase.from('notes').update({ [field]: value }).eq('id', id);
+    }
     fetchNotes();
   };
 
+  // -- FONCTIONS IA --
   const toggleDictation = (mode: 'micro' | 'ai') => {
     if (listeningMode !== 'none') {
       if (recognitionRef.current) recognitionRef.current.stop();
@@ -241,8 +235,6 @@ export default function Home() {
       if (mode === 'micro') {
         if (noteMode === 'list') setNewTitle(current);
         else setNewContent(current);
-      } else {
-        setNewContent(current);
       }
     };
 
@@ -262,21 +254,15 @@ export default function Home() {
           
           if (!res.ok) {
             const errData = await res.json();
-            alert("Erreur de l'API Gemini : " + (errData.error || "Impossible d'analyser la note. Vérifie Vercel."));
+            alert("Erreur de l'API Gemini : " + (errData.error || "Impossible d'analyser la note."));
             setIsAiProcessing(false);
             return;
           }
 
           const data = await res.json();
-          if (data.title) setNewTitle(data.title);
-          if (data.content) setNewContent(data.content);
-          if (data.importance) setImportance(data.importance);
-          if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+          // Ouvre la fenêtre récapitulative au lieu de remplir le formulaire en silence
+          setAiProposal(data);
           
-          if (data.target_date) {
-            setTargetDate(data.target_date);
-            setShowCalendarConfig(true);
-          }
         } catch (e: any) {
           alert("Erreur réseau lors de la connexion à l'IA : " + e.message);
         }
@@ -286,6 +272,45 @@ export default function Home() {
     recognition.start();
   };
 
+  const confirmAiNote = async (data: any) => {
+    setLoading(true);
+    const { error } = await supabase.from('notes').insert([{
+      title: data.title || '',
+      content: data.content || '',
+      importance: data.importance || 'vert',
+      subtasks: [],
+      is_list: data.is_list || false,
+      reminder_active: false,
+      reminder_popup_active: false,
+      target_date: data.target_date || '',
+      popup_active: !!data.target_date // Active le popup automatiquement si l'IA a détecté une date
+    }]);
+
+    if (error) {
+      alert("Erreur Supabase : " + error.message);
+    } else {
+      if ('Notification' in window && Notification.permission !== 'granted') {
+         Notification.requestPermission();
+      }
+      setAiProposal(null);
+      fetchNotes();
+    }
+    setLoading(false);
+  };
+
+  const loadProposalIntoForm = (data: any) => {
+    if (data.title) setNewTitle(data.title);
+    if (data.content) setNewContent(data.content);
+    if (data.importance) setImportance(data.importance);
+    if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+    if (data.target_date) {
+      setTargetDate(data.target_date);
+      setShowCalendarConfig(true);
+    }
+    setAiProposal(null); // Ferme la fenêtre pour laisser l'utilisateur ajuster le formulaire
+  };
+
+  // -- OUTILS DIVERS --
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
     const date = new Date(dateString); const pad = (n: number) => (n < 10 ? '0' + n : n);
@@ -384,6 +409,45 @@ export default function Home() {
 
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
+
+      {/* FENÊTRE RÉCAPITULATIVE DE L'IA */}
+      {aiProposal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
+            <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
+              <span>🤖</span> Proposition de l'IA
+            </h2>
+
+            <div className="flex flex-col gap-3 text-base text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-200">
+              <p><strong className="text-purple-700">Titre :</strong> {aiProposal.title || '(Vide)'}</p>
+              {aiProposal.content && <p><strong className="text-purple-700">Contenu :</strong> {aiProposal.content}</p>}
+              <p><strong className="text-purple-700">Format :</strong> {aiProposal.is_list ? 'Liste de tâches ✅' : 'Note texte 📝'}</p>
+              <p><strong className="text-purple-700">Priorité :</strong> {
+                aiProposal.importance === 'rouge' ? '🔴 Urgente' :
+                aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'
+              }</p>
+              {aiProposal.target_date && (
+                <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200">
+                  <strong>⏰ Alarme programmée :</strong> {new Date(aiProposal.target_date).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 mt-2">
+              <button onClick={() => confirmAiNote(aiProposal)} disabled={loading} className="flex-1 bg-green-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-green-700 transition-colors shadow-md disabled:opacity-50">
+                {loading ? 'Création...' : '✅ Valider et Créer'}
+              </button>
+              <button onClick={() => loadProposalIntoForm(aiProposal)} disabled={loading} className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-xl hover:bg-gray-300 transition-colors">
+                ✏️ Modifier manuellement
+              </button>
+            </div>
+            
+            <button onClick={() => setAiProposal(null)} className="text-gray-400 hover:text-gray-600 text-sm mt-1 underline">
+              Annuler et fermer
+            </button>
+          </div>
+        </div>
+      )}
       
       <div className={`flex items-center mb-6 ${isFocusMode ? 'justify-end' : 'justify-between'}`}>
         {!isFocusMode && <h1 className="text-3xl font-bold text-gray-800">Mes Notes & Rappels</h1>}
@@ -479,7 +543,7 @@ export default function Home() {
 
           <div className="flex flex-col">
             <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>📅 Calendrier</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
+              <span>📅 Calendrier (Agenda / .ics)</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
             </button>
             {showCalendarConfig && (
               <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-3 items-center">
