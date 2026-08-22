@@ -556,7 +556,7 @@ export default function Home() {
             </button>
             {showCalendarConfig && (
               <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-3 items-center">
-                <label className="text-xs font-bold text-purple-900 uppercase">Date & Heure :</label>
+                <label className="text-xs font-bold text-purple-900 uppercase">Date &amp; Heure :</label>
                 <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-2 rounded-lg text-black bg-white font-bold" />
                 
                 <div className="flex flex-wrap gap-4 pt-1 justify-center">
