@@ -191,7 +191,6 @@ export default function Home() {
   };
 
   const deleteNote = async (id: string) => {
-    // Fenêtre de confirmation explicite avant la suppression
     if (window.confirm('Es-tu sûr de vouloir supprimer cette note définitivement ?')) {
       await supabase.from('notes').delete().eq('id', id); 
       fetchNotes();
@@ -199,7 +198,6 @@ export default function Home() {
   };
 
   const triggerImmediateEmail = async (note: Note) => {
-    // Fenêtre de confirmation explicite avant l'envoi du mail depuis le mode Édition
     if (window.confirm('Es-tu sûr de vouloir envoyer un e-mail immédiat pour cette note ?')) {
       await fetch('/api/notify', {
         method: 'POST',
@@ -261,6 +259,14 @@ export default function Home() {
               currentDate: new Date().toLocaleString('fr-FR')
             })
           });
+          
+          if (!res.ok) {
+            const errData = await res.json();
+            alert("Erreur de l'API Gemini : " + (errData.error || "Impossible d'analyser la note. Vérifie Vercel."));
+            setIsAiProcessing(false);
+            return;
+          }
+
           const data = await res.json();
           if (data.title) setNewTitle(data.title);
           if (data.content) setNewContent(data.content);
@@ -271,8 +277,8 @@ export default function Home() {
             setTargetDate(data.target_date);
             setShowCalendarConfig(true);
           }
-        } catch (e) {
-          alert("Erreur de connexion avec l'IA Gemini.");
+        } catch (e: any) {
+          alert("Erreur réseau lors de la connexion à l'IA : " + e.message);
         }
         setIsAiProcessing(false);
       }
@@ -306,7 +312,6 @@ export default function Home() {
     let finalTargetDate = editingTargetDate;
     let finalPopupActive = editingPopupActive;
 
-    // Si le menu "dans X heures" a été utilisé pendant l'édition
     if (showEditingPopupConfig && (editingPopupHours || editingPopupMinutes)) {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(editingPopupHours) || 0));
@@ -333,8 +338,6 @@ export default function Home() {
     setEditingContent(note.content || '');
     setEditingTargetDate(note.target_date || ''); 
     setEditingPopupActive(note.popup_active || false);
-    
-    // Réinitialise les champs spécifiques à l'édition d'alarme
     setShowEditingPopupConfig(false);
     setEditingPopupHours('');
     setEditingPopupMinutes('');
@@ -418,7 +421,7 @@ export default function Home() {
           <button type="button" onClick={() => toggleDictation('micro')} disabled={listeningMode === 'ai' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
             <span>🎙️</span> {listeningMode === 'micro' ? 'Cliquer pour arrêter' : 'Dictée simple (Micro)'}
           </button>
-          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
             <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour analyser' : 'Dictée intelligente (IA)'}
           </button>
         </div>
@@ -476,7 +479,7 @@ export default function Home() {
 
           <div className="flex flex-col">
             <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>📅 Calendrier (Agenda / .ics)</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
+              <span>📅 Calendrier</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
             </button>
             {showCalendarConfig && (
               <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-3 items-center">
@@ -553,7 +556,6 @@ export default function Home() {
                         
                         <div className="flex flex-col gap-2 mt-1">
                           
-                          {/* NOUVEAU BOUTON POP-UP EN MODE MODIF */}
                           <div className="flex flex-col">
                             <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
                               <span>⏰ Programmer une alarme pop-up</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
@@ -576,7 +578,6 @@ export default function Home() {
                             )}
                           </div>
 
-                          {/* NOUVEAU BOUTON EMAIL IMMÉDIAT EN MODE MODIF */}
                           <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-2 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
                             <span>📨</span> Envoyer un rappel e-mail immédiat
                           </button>
@@ -622,8 +623,12 @@ export default function Home() {
                         <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
-                        <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        {enableGoogleCal && (
+                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
+                        )}
+                        {enableICal && (
+                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        )}
                       </div>
                     </div>
                   )}
