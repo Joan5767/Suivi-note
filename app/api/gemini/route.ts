@@ -21,8 +21,8 @@ export async function POST(req: Request) {
     - "target_date": si l'utilisateur mentionne une date/heure de rappel, déduis la date exacte au format ISO 8601 (YYYY-MM-DDTHH:mm). Sinon, null.
     - "is_list": true si l'utilisateur énumère des choses (courses, tâches), sinon false.`;
 
-    // CHANGEMENT ICI : On utilise le modèle "gemini-2.5-flash" qui est la version stable actuelle
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    // CHANGEMENT ICI : On utilise le modèle "gemini-3.6-flash" exigé par Google
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
