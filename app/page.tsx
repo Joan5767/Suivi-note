@@ -34,7 +34,9 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
+  // États des Options
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
+  
   const [showPopupConfig, setShowPopupConfig] = useState(false);
   const [popupHours, setPopupHours] = useState('');
   const [popupMinutes, setPopupMinutes] = useState('');
@@ -46,6 +48,8 @@ export default function Home() {
   
   const [showCalendarConfig, setShowCalendarConfig] = useState(false);
   const [targetDate, setTargetDate] = useState('');
+  const [enableGoogleCal, setEnableGoogleCal] = useState(true);
+  const [enableICal, setEnableICal] = useState(true);
   
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
@@ -157,7 +161,8 @@ export default function Home() {
     }
 
     setNewTitle(''); setNewContent(''); setImportance('vert');
-    setSendImmediateEmail(false); setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
+    setSendImmediateEmail(false); 
+    setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
     setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
     setShowCalendarConfig(false); setTargetDate('');
     setLoading(false);
@@ -218,7 +223,6 @@ export default function Home() {
         if (noteMode === 'list') setNewTitle(current);
         else setNewContent(current);
       } else {
-        // En mode IA, on affiche provisoirement ce qui est entendu
         setNewContent(current);
       }
     };
@@ -244,7 +248,7 @@ export default function Home() {
           
           if (data.target_date) {
             setTargetDate(data.target_date);
-            setShowCalendarConfig(true); // Ouvre le panneau pour montrer que l'IA a mis la date
+            setShowCalendarConfig(true);
           }
         } catch (e) {
           alert("Erreur de connexion avec l'IA Gemini.");
@@ -326,8 +330,6 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
-  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
-
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
       
@@ -379,17 +381,25 @@ export default function Home() {
             <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
           </button>
 
+          {/* Pop-up avec Bouton Annuler */}
           <div className="flex flex-col">
-            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${showPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>⏰ Notification alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
             </button>
             {showPopupConfig && (
-              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-4 rounded-b-lg flex flex-col sm:flex-row items-center gap-3 justify-center">
-                <span className="text-sm font-bold text-indigo-900">Dans :</span>
-                <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
-                <span className="text-sm font-bold text-indigo-900">heures et</span>
-                <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
-                <span className="text-sm font-bold text-indigo-900">minutes</span>
+              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-4 rounded-b-lg flex flex-col items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 justify-center">
+                  <span className="text-sm font-bold text-indigo-900">Dans :</span>
+                  <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
+                  <span className="text-sm font-bold text-indigo-900">h</span>
+                  <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
+                  <span className="text-sm font-bold text-indigo-900">min</span>
+                </div>
+                {(popupHours || popupMinutes) && (
+                  <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-3 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors">
+                    ✖ Annuler la saisie
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -416,17 +426,30 @@ export default function Home() {
             )}
           </div>
 
+          {/* Calendrier avec Options Google/iCal & Annuler */}
           <div className="flex flex-col">
             <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>📅 Calendrier (Agenda / .ics)</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
+              <span>📅 Calendrier</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
             </button>
             {showCalendarConfig && (
-              <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-2 items-center">
-                <label className="text-xs font-bold text-purple-900 uppercase">Choisir une date précise :</label>
-                <div className="flex items-center gap-2">
-                  <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-2 rounded-lg text-black bg-white font-bold" />
-                  {targetDate && <button type="button" onClick={() => setTargetDate('')} className="bg-red-100 text-red-600 px-3 py-2 rounded-lg text-xs font-bold">✖</button>}
+              <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-3 items-center">
+                <label className="text-xs font-bold text-purple-900 uppercase">Date & Heure :</label>
+                <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-2 rounded-lg text-black bg-white font-bold" />
+                
+                <div className="flex flex-wrap gap-4 pt-1 justify-center">
+                  <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-purple-900">
+                    <input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-purple-900">
+                    <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier iCal (.ics)
+                  </label>
                 </div>
+
+                {targetDate && (
+                  <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-3 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors">
+                    ✖ Annuler la date
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -529,8 +552,12 @@ export default function Home() {
                         <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
-                        <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        {enableGoogleCal && (
+                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
+                        )}
+                        {enableICal && (
+                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        )}
                       </div>
                     </div>
                   )}
