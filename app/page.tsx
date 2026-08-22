@@ -47,7 +47,7 @@ export default function Home() {
   const [showCalendarConfig, setShowCalendarConfig] = useState(false);
   const [targetDate, setTargetDate] = useState('');
   const [enableGoogleCal, setEnableGoogleCal] = useState(true);
-  const [enableICal, setEnableICal] = useState(false); // iCal décoché par défaut !
+  const [enableICal, setEnableICal] = useState(false);
   
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
@@ -70,7 +70,6 @@ export default function Home() {
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
-  const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
   
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
     rouge: true,
@@ -282,9 +281,8 @@ export default function Home() {
   const confirmAiNote = async (data: any) => {
     setLoading(true);
     
-    // Détermine la date cible et l'activation du popup
     const targetDateValue = data.popup_time || data.calendar_time || '';
-    const isPopupActive = !!data.popup_time; // Actif uniquement si c'est un rappel/alarme
+    const isPopupActive = !!data.popup_time; 
 
     const { error } = await supabase.from('notes').insert([{
       title: data.title || '',
@@ -319,7 +317,6 @@ export default function Home() {
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
     
     if (data.popup_time) {
-      // Si l'IA a détecté une alarme, calcule la différence en heures/minutes
       const diffMs = new Date(data.popup_time).getTime() - Date.now();
       if (diffMs > 0) {
         const totalMin = Math.floor(diffMs / (1000 * 60));
@@ -398,6 +395,18 @@ export default function Home() {
     fetchNotes();
   };
 
+  const handleSnoozeClick = (id: string) => {
+    const result = window.prompt("Pendant combien de jours veux-tu masquer cette note ?", "3");
+    if (result !== null) {
+      const days = parseInt(result, 10);
+      if (!isNaN(days) && days > 0) {
+        snoozeNote(id, days);
+      } else {
+        alert("Veuillez entrer un nombre de jours valide.");
+      }
+    }
+  };
+
   const toggleSubtask = async (note: Note, subtaskId: string) => {
     const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
     const allCompleted = updated.every(st => st.completed);
@@ -436,6 +445,8 @@ export default function Home() {
     { id: 'orange', title: '🟠 Priorité Importante', notes: displayedNotes.filter(n => n.importance === 'orange') },
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
+
+  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
@@ -737,14 +748,7 @@ export default function Home() {
                     )}
 
                     {!isFocusMode && showArchived === false && !note.completed && (
-                      <div className="flex items-center gap-1">
-                        <select value={snoozeDaysByNote[note.id] ?? 3} onChange={(e) => setSnoozeDaysByNote(prev => ({ ...prev, [note.id]: Number(e.target.value) }))} className="border border-yellow-300 bg-yellow-50 text-yellow-900 p-1 rounded cursor-pointer">
-                          {Array.from({ length: 30 }, (_, index) => index + 1).map(days => (
-                            <option key={days} value={days}>{days} {days === 1 ? 'jour' : 'jours'}</option>
-                          ))}
-                        </select>
-                        <button onClick={() => snoozeNote(note.id, snoozeDaysByNote[note.id] ?? 3)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors">💤 Masquer</button>
-                      </div>
+                      <button onClick={() => handleSnoozeClick(note.id)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors">💤 Masquer</button>
                     )}
                     <select value={note.importance} onChange={(e) => updateNote(note.id, 'importance', e.target.value)} className="border border-gray-300 p-1 rounded text-gray-700 bg-white cursor-pointer">
                       <option value="vert">Normale</option>
