@@ -223,7 +223,6 @@ export default function Home() {
     recognition.continuous = true; 
     recognitionRef.current = recognition;
     
-    // Un objet pour conserver la mémoire de la phrase sans risque d'effacement
     const transcript = { text: '' };
     
     recognition.onstart = () => setListeningMode(mode);
@@ -235,7 +234,6 @@ export default function Home() {
       }
       transcript.text = current;
       
-      // On affiche le texte en temps réel, même en mode IA
       if (noteMode === 'list') setNewTitle(current);
       else setNewContent(current);
     };
@@ -246,11 +244,14 @@ export default function Home() {
 
       if (mode === 'ai') {
         if (!finalTranscript.trim()) {
-          alert("Je n'ai rien entendu. Veuillez réessayer.");
+          alert("❌ Le micro n'a rien enregistré. Vérifie tes permissions.");
           return;
         }
 
+        // TRACEUR 1 : On vérifie que l'enregistrement a marché
+        alert(`🎤 Enregistrement terminé. Texte capté : "${finalTranscript}"\n\nEnvoi à l'IA en cours...`);
         setIsAiProcessing(true);
+
         try {
           const res = await fetch('/api/gemini', {
             method: 'POST',
@@ -263,17 +264,20 @@ export default function Home() {
           
           if (!res.ok) {
             const errData = await res.json();
-            alert("Erreur de l'API Gemini : " + (errData.error || "Impossible d'analyser la note."));
+            // TRACEUR 2 : Si le serveur Vercel/Google bloque
+            alert("❌ Erreur Vercel/Google : " + (errData.error || "Erreur inconnue"));
             setIsAiProcessing(false);
             return;
           }
 
           const data = await res.json();
-          // Ouvre la fenêtre récapitulative
+          // TRACEUR 3 : Si Google répond correctement
+          alert("✅ L'IA a répondu ! Ouverture de la fenêtre récapitulative.");
           setAiProposal(data);
           
         } catch (e: any) {
-          alert("Erreur réseau lors de la connexion à l'IA : " + e.message);
+          // TRACEUR 4 : S'il y a un problème de connexion (ex: pas de 4G)
+          alert("❌ Erreur réseau lors de la connexion à l'IA : " + e.message);
         }
         setIsAiProcessing(false);
       }
@@ -302,8 +306,6 @@ export default function Home() {
          Notification.requestPermission();
       }
       setAiProposal(null);
-      
-      // On vide aussi le formulaire qui avait affiché le brouillon
       setNewTitle('');
       setNewContent('');
       fetchNotes();
@@ -323,7 +325,6 @@ export default function Home() {
     setAiProposal(null);
   };
 
-  // -- OUTILS DIVERS --
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
     const date = new Date(dateString); const pad = (n: number) => (n < 10 ? '0' + n : n);
@@ -423,7 +424,6 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
-      {/* FENÊTRE RÉCAPITULATIVE DE L'IA (Assurée d'être au premier plan) */}
       {aiProposal && (
         <div className="fixed inset-0 bg-black/80 z-[9999] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
@@ -473,7 +473,7 @@ export default function Home() {
       <form onSubmit={addNote} className="flex flex-col gap-4 mb-8 p-6 rounded-lg shadow-md border bg-gray-50 border-gray-200">
         
         <div className="flex gap-2">
-          <button type="button" onClick={() => setNoteMode('text')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
+          <button type="button" onClick={() => setNoteMode('text')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
           <button type="button" onClick={() => setNoteMode('list')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
         </div>
 
@@ -687,6 +687,26 @@ export default function Home() {
                          <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white" />
                          <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs">+</button>
                        </div>
+                    </div>
+                  )}
+
+                  {note.target_date && !note.completed && editingId !== note.id && (
+                    <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
+                      <div className="flex justify-between items-center w-full">
+                        <span className="text-xs font-bold text-blue-800">
+                          📅 {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          {note.popup_active && ' 🔔'}
+                        </span>
+                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {enableGoogleCal && (
+                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
+                        )}
+                        {enableICal && (
+                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        )}
+                      </div>
                     </div>
                   )}
 
