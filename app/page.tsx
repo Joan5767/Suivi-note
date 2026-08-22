@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface Subtask {
@@ -34,9 +34,7 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
-  // États des 4 Boutons d'options
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
-  
   const [showPopupConfig, setShowPopupConfig] = useState(false);
   const [popupHours, setPopupHours] = useState('');
   const [popupMinutes, setPopupMinutes] = useState('');
@@ -55,6 +53,8 @@ export default function Home() {
   const [isFocusMode, setIsFocusMode] = useState(false);
   
   const [listeningMode, setListeningMode] = useState<'none' | 'micro' | 'ai'>('none');
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -91,7 +91,6 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
-  // Déclencheur des alarmes
   useEffect(() => {
     const interval = window.setInterval(async () => {
       const now = Date.now();
@@ -122,11 +121,9 @@ export default function Home() {
     if (!newTitle.trim() && !newContent.trim()) return;
 
     setLoading(true);
-    
     let finalTargetDate = '';
     let finalPopupActive = false;
 
-    // Calcul de la date d'alarme si le panneau Pop-up est utilisé
     if (showPopupConfig && (popupHours || popupMinutes)) {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(popupHours) || 0));
@@ -136,7 +133,6 @@ export default function Home() {
       finalPopupActive = true;
     } else if (showCalendarConfig && targetDate) {
       finalTargetDate = targetDate;
-      // Le calendrier seul ne déclenche pas le popup, c'est juste pour l'agenda.
     }
 
     await supabase.from('notes').insert([{ 
@@ -160,10 +156,8 @@ export default function Home() {
       });
     }
 
-    // Réinitialisation de tout le formulaire
     setNewTitle(''); setNewContent(''); setImportance('vert');
-    setSendImmediateEmail(false); 
-    setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
+    setSendImmediateEmail(false); setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
     setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
     setShowCalendarConfig(false); setTargetDate('');
     setLoading(false);
@@ -196,52 +190,71 @@ export default function Home() {
     fetchNotes();
   };
 
-  const startVoiceDictation = (mode: 'micro' | 'ai') => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) { alert("Ton navigateur ne supporte pas la dictée vocale."); return; }
-    
+  const toggleDictation = (mode: 'micro' | 'ai') => {
     if (listeningMode !== 'none') {
-      window.location.reload(); 
+      if (recognitionRef.current) recognitionRef.current.stop();
       return;
     }
 
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) { alert("Ton navigateur ne supporte pas la dictée vocale."); return; }
+    
     const recognition = new SpeechRecognition();
     recognition.lang = 'fr-FR';
     recognition.continuous = true; 
+    recognitionRef.current = recognition;
+    let finalTranscript = '';
     
     recognition.onstart = () => setListeningMode(mode);
-    recognition.onend = () => setListeningMode('none');
     
     recognition.onresult = (event: any) => {
-      let fullTranscript = '';
+      let current = '';
       for (let i = 0; i < event.results.length; i++) {
-        fullTranscript += event.results[i][0].transcript + ' ';
+        current += event.results[i][0].transcript + ' ';
       }
-      
-      const lowerText = fullTranscript.toLowerCase();
-      
-      if (mode === 'ai') {
-        if (lowerText.includes('urgent')) {
-            setImportance('rouge');
-        } else if (lowerText.includes('important')) {
-            setImportance('orange');
-        }
-        
-        if (lowerText.includes('demain')) {
-          const tmr = new Date(); tmr.setDate(tmr.getDate() + 1); tmr.setHours(12, 0, 0, 0);
-          const tzOffset = tmr.getTimezoneOffset() * 60000;
-          setTargetDate(new Date(tmr.getTime() - tzOffset).toISOString().slice(0,16));
-          setShowCalendarConfig(true); // Ouvre le menu pour que tu le voies
-        }
+      finalTranscript = current;
+
+      if (mode === 'micro') {
+        if (noteMode === 'list') setNewTitle(current);
+        else setNewContent(current);
+      } else {
+        // En mode IA, on affiche provisoirement ce qui est entendu
+        setNewContent(current);
       }
-      
-      if (noteMode === 'list') { setNewTitle(fullTranscript.trim()); } 
-      else { setNewContent(fullTranscript.trim()); }
+    };
+
+    recognition.onend = async () => {
+      setListeningMode('none');
+      if (mode === 'ai' && finalTranscript.trim()) {
+        setIsAiProcessing(true);
+        try {
+          const res = await fetch('/api/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: finalTranscript,
+              currentDate: new Date().toLocaleString('fr-FR')
+            })
+          });
+          const data = await res.json();
+          if (data.title) setNewTitle(data.title);
+          if (data.content) setNewContent(data.content);
+          if (data.importance) setImportance(data.importance);
+          if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+          
+          if (data.target_date) {
+            setTargetDate(data.target_date);
+            setShowCalendarConfig(true); // Ouvre le panneau pour montrer que l'IA a mis la date
+          }
+        } catch (e) {
+          alert("Erreur de connexion avec l'IA Gemini.");
+        }
+        setIsAiProcessing(false);
+      }
     };
     recognition.start();
   };
 
-  // --- OUTILS CALENDRIER ---
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
     const date = new Date(dateString); const pad = (n: number) => (n < 10 ? '0' + n : n);
@@ -264,7 +277,6 @@ export default function Home() {
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
   
-  // Fonctions d'édition
   const saveEdit = async (id: string) => {
     await supabase.from('notes').update({ 
       title: editingTitle, content: editingContent, target_date: editingTargetDate, popup_active: editingPopupActive
@@ -314,6 +326,8 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
+  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
+
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
       
@@ -324,57 +338,49 @@ export default function Home() {
         </button>
       </div>
 
-      {/* ZONE D'AJOUT RÉORGANISÉE VERTICALEMENT */}
       {!isFocusMode && (
       <form onSubmit={addNote} className="flex flex-col gap-4 mb-8 p-6 rounded-lg shadow-md border bg-gray-50 border-gray-200">
         
-        {/* Toggle Format */}
         <div className="flex gap-2">
           <button type="button" onClick={() => setNoteMode('text')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
           <button type="button" onClick={() => setNoteMode('list')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
         </div>
 
-        {/* Titre et Contenu */}
         {noteMode === 'text' ? (
           <div className="flex flex-col gap-2">
-            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-lg" disabled={loading} />
-            <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[120px] text-base" disabled={loading} />
+            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+            <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[120px] text-base" disabled={loading || isAiProcessing} />
           </div>
         ) : (
-          <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading} />
+          <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
         )}
 
-        {/* Priorité */}
         <div className="flex items-center gap-3 w-full">
-          <select value={importance} onChange={(e) => setImportance(e.target.value as any)} className="w-full border border-gray-300 p-3 rounded-lg text-black bg-white cursor-pointer font-bold">
+          <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-3 rounded-lg text-black bg-white cursor-pointer font-bold">
             <option value="vert">🟢 Priorité Normale</option>
             <option value="orange">🟠 Priorité Importante</option>
             <option value="rouge">🔴 Priorité Urgente</option>
           </select>
         </div>
 
-        {/* Bulles Vocales */}
         <div className="flex flex-col sm:flex-row gap-3 border-b border-gray-200 pb-4">
-          <button type="button" onClick={() => startVoiceDictation('micro')} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
-            <span>🎙️</span> {listeningMode === 'micro' ? 'Stop' : 'Dictée simple (Micro)'}
+          <button type="button" onClick={() => toggleDictation('micro')} disabled={listeningMode === 'ai' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
+            <span>🎙️</span> {listeningMode === 'micro' ? 'Cliquer pour arrêter' : 'Dictée simple (Micro)'}
           </button>
-          <button type="button" onClick={() => startVoiceDictation('ai')} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
-            <span>🤖</span> {listeningMode === 'ai' ? 'Analyse en cours...' : 'Dictée intelligente (IA)'}
+          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+            <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour analyser' : 'Dictée intelligente (IA)'}
           </button>
         </div>
 
-        {/* 4 BOUTONS D'OPTIONS CLAIRES (Grid 2 colonnes) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
           
-          {/* Bouton 1 : Email immédiat */}
-          <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} className={`p-3 rounded-lg font-bold border transition-colors text-left flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+          <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
             <span>📨 E-mail immédiat à la création</span>
             <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
           </button>
 
-          {/* Bouton 2 : Pop-up Alarme ponctuelle */}
           <div className="flex flex-col">
-            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${showPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${showPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>⏰ Notification alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
             </button>
             {showPopupConfig && (
@@ -388,9 +394,8 @@ export default function Home() {
             )}
           </div>
 
-          {/* Bouton 3 : Relance quotidienne */}
           <div className="flex flex-col">
-            <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>🔄 Relance quotidienne</span> <span>{showDailyConfig ? '▲' : '▼'}</span>
             </button>
             {showDailyConfig && (
@@ -411,9 +416,8 @@ export default function Home() {
             )}
           </div>
 
-          {/* Bouton 4 : Calendrier */}
           <div className="flex flex-col">
-            <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>📅 Calendrier (Agenda / .ics)</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
             </button>
             {showCalendarConfig && (
@@ -429,13 +433,12 @@ export default function Home() {
 
         </div>
 
-        <button type="submit" disabled={loading || (!newTitle.trim() && !newContent.trim())} className="mt-4 bg-gray-900 text-white px-6 py-4 rounded-xl font-bold text-lg hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
-          {loading ? 'Création...' : 'Créer la note'}
+        <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim())} className="mt-4 bg-gray-900 text-white px-6 py-4 rounded-xl font-bold text-lg hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
+          {loading ? 'Création...' : isAiProcessing ? 'Veuillez patienter...' : 'Créer la note'}
         </button>
       </form>
       )}
 
-      {/* DOSSIERS */}
       {!isFocusMode && (
         <div className="flex flex-wrap gap-4 mb-6">
           <button onClick={() => setShowArchived(false)} className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Dossier Actif</button>
@@ -446,7 +449,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* AFFICHAGE DES NOTES */}
       <div className={`grid items-start gap-6 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
           <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
