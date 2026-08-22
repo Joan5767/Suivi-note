@@ -34,6 +34,10 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
+  // Nouveaux états pour gérer les éléments de liste à la création
+  const [newListItems, setNewListItems] = useState<string[]>([]);
+  const [currentNewListItem, setCurrentNewListItem] = useState('');
+  
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
   const [popupHours, setPopupHours] = useState('');
@@ -69,7 +73,6 @@ export default function Home() {
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
   
-  // Nouveaux états d'édition pour la priorité et les relances
   const [editingImportance, setEditingImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [editingReminderActive, setEditingReminderActive] = useState(false);
   const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
@@ -132,7 +135,7 @@ export default function Home() {
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!newTitle.trim() && !newContent.trim()) return;
+    if (!newTitle.trim() && !newContent.trim() && newListItems.length === 0) return;
 
     setLoading(true);
     let finalTargetDate = '';
@@ -149,11 +152,16 @@ export default function Home() {
       finalTargetDate = targetDate;
     }
 
+    // Préparation des sous-tâches si on est en mode liste
+    const finalSubtasks = noteMode === 'list' 
+      ? newListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })) 
+      : [];
+
     const { error } = await supabase.from('notes').insert([{ 
         title: newTitle, 
         content: newContent,
         importance: importance,
-        subtasks: [],
+        subtasks: finalSubtasks,
         is_list: noteMode === 'list',
         reminder_active: activateReminder,
         reminder_popup_active: reminderPopupActive,
@@ -176,7 +184,9 @@ export default function Home() {
       });
     }
 
+    // Réinitialisation de tout le formulaire
     setNewTitle(''); setNewContent(''); setImportance('vert');
+    setNewListItems([]); setCurrentNewListItem('');
     setSendImmediateEmail(false); 
     setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
     setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
@@ -312,6 +322,8 @@ export default function Home() {
       setAiProposal(null);
       setNewTitle('');
       setNewContent('');
+      setNewListItems([]);
+      setCurrentNewListItem('');
       fetchNotes();
     }
     setLoading(false);
@@ -511,7 +523,6 @@ export default function Home() {
         </div>
       )}
       
-      {/* EN-TÊTE MODIFIÉ AVEC LE SOUS-TITRE DU MODE FOCUS */}
       <div className={`flex items-start sm:items-center mb-6 justify-between flex-col sm:flex-row gap-4`}>
         {!isFocusMode ? (
           <h1 className="text-3xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
@@ -540,7 +551,58 @@ export default function Home() {
             <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[120px] text-base" disabled={loading || isAiProcessing} />
           </div>
         ) : (
-          <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+          <div className="flex flex-col gap-3">
+            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+            
+            {/* NOUVELLE ZONE D'AJOUT D'ÉLÉMENTS */}
+            <div className="bg-white border border-gray-300 rounded-lg p-3 flex flex-col gap-2 shadow-sm">
+              <span className="text-sm font-bold text-gray-700">Éléments de la liste :</span>
+              
+              {newListItems.length > 0 && (
+                <ul className="flex flex-col gap-1.5 mb-2">
+                  {newListItems.map((item, idx) => (
+                    <li key={idx} className="flex justify-between items-center bg-gray-50 p-2 rounded border border-gray-200 text-sm text-black">
+                      <span className="flex-1 mr-2">• {item}</span>
+                      <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-lg font-bold leading-none px-2">×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={currentNewListItem} 
+                  onChange={(e) => setCurrentNewListItem(e.target.value)} 
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (currentNewListItem.trim()) {
+                        setNewListItems(prev => [...prev, currentNewListItem.trim()]);
+                        setCurrentNewListItem('');
+                      }
+                    }
+                  }}
+                  placeholder="Ajouter un élément..." 
+                  className="flex-1 border border-gray-300 p-2 rounded text-black text-sm" 
+                  disabled={loading || isAiProcessing} 
+                />
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    if (currentNewListItem.trim()) {
+                      setNewListItems(prev => [...prev, currentNewListItem.trim()]);
+                      setCurrentNewListItem('');
+                    }
+                  }}
+                  className="bg-blue-100 text-blue-700 border border-blue-300 px-3 py-2 rounded text-sm font-bold hover:bg-blue-200 transition-colors"
+                  disabled={loading || isAiProcessing || !currentNewListItem.trim()}
+                >
+                  + Ajouter
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         <div className="flex items-center gap-3 w-full">
@@ -640,7 +702,7 @@ export default function Home() {
 
         </div>
 
-        <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim())} className="mt-4 bg-gray-900 text-white px-6 py-4 rounded-xl font-bold text-lg hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
+        <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-4 bg-gray-900 text-white px-6 py-4 rounded-xl font-bold text-lg hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
           {loading ? 'Création...' : isAiProcessing ? 'Veuillez patienter...' : 'Créer la note'}
         </button>
       </form>
@@ -671,7 +733,6 @@ export default function Home() {
             {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
             <ul className="space-y-4">
               
-              {/* MESSAGE CLAIR SI LE DOSSIER EST VIDE (DONT LE MODE FOCUS) */}
               {col.notes.length === 0 && (
                 <p className="text-gray-400 font-medium text-sm text-center py-6 bg-white rounded-lg border border-dashed border-gray-300">
                   {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
