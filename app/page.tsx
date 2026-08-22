@@ -76,7 +76,13 @@ export default function Home() {
   });
 
   const fetchNotes = async () => {
-    const { data } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error("Erreur de récupération des notes :", error);
+      return;
+    }
+
     if (data) {
       const now = new Date().getTime();
       const cleanedData = data.map(note => {
@@ -139,7 +145,7 @@ export default function Home() {
       finalTargetDate = targetDate;
     }
 
-    await supabase.from('notes').insert([{ 
+    const { error } = await supabase.from('notes').insert([{ 
         title: newTitle, 
         content: newContent,
         importance: importance,
@@ -151,6 +157,12 @@ export default function Home() {
         target_date: finalTargetDate,
         popup_active: finalPopupActive
     }]);
+
+    if (error) {
+      alert("Erreur de sauvegarde Supabase : " + error.message);
+      setLoading(false);
+      return;
+    }
 
     if (sendImmediateEmail) {
       await fetch('/api/notify', {
@@ -330,6 +342,8 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
+  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
+
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20">
       
@@ -381,7 +395,6 @@ export default function Home() {
             <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
           </button>
 
-          {/* Pop-up avec Bouton Annuler */}
           <div className="flex flex-col">
             <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>⏰ Notification alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
@@ -426,7 +439,6 @@ export default function Home() {
             )}
           </div>
 
-          {/* Calendrier avec Options Google/iCal & Annuler */}
           <div className="flex flex-col">
             <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>📅 Calendrier</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
