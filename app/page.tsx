@@ -27,12 +27,6 @@ interface Note {
   popup_active?: boolean; 
 }
 
-// Fonction infaillible pour le formatage de l'heure locale
-const formatLocalISO = (d: Date) => {
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
@@ -115,6 +109,7 @@ export default function Home() {
   useEffect(() => { fetchNotes(); }, []);
 
   useEffect(() => {
+    // Chronomètre ultra-réactif : 5 secondes
     const interval = window.setInterval(async () => {
       const now = Date.now();
       setCurrentTime(now);
@@ -122,11 +117,8 @@ export default function Home() {
       let needsUpdate = false;
       for (const note of notes) {
         if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
-          // Sécurité Safari : ajout des secondes si absentes
-          let safeDateStr = note.target_date;
-          if (safeDateStr.length === 16) safeDateStr += ':00';
           
-          const targetTime = new Date(safeDateStr).getTime();
+          const targetTime = new Date(note.target_date).getTime();
           
           if (!isNaN(targetTime) && targetTime <= now) {
             if ('Notification' in window && Notification.permission === 'granted') {
@@ -140,7 +132,7 @@ export default function Home() {
         }
       }
       if (needsUpdate) fetchNotes();
-    }, 10000); 
+    }, 5000); 
     
     return () => window.clearInterval(interval);
   }, [notes]);
@@ -157,10 +149,11 @@ export default function Home() {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(popupHours) || 0));
       d.setMinutes(d.getMinutes() + (parseInt(popupMinutes) || 0));
-      finalTargetDate = formatLocalISO(d); // FINI LE BUG DU FUSEAU HORAIRE
+      // CONVERSION EN FORMAT UNIVERSEL ABSOLU (Pour contrer le bug de fuseau horaire)
+      finalTargetDate = d.toISOString(); 
       finalPopupActive = true;
     } else if (showCalendarConfig && targetDate) {
-      finalTargetDate = targetDate;
+      finalTargetDate = new Date(targetDate).toISOString();
     }
 
     const finalSubtasks = noteMode === 'list' 
@@ -306,7 +299,14 @@ export default function Home() {
   const confirmAiNote = async (data: any) => {
     setLoading(true);
     
-    const targetDateValue = data.popup_time || data.calendar_time || '';
+    // Convertir l'heure de l'IA en temps universel
+    let targetDateValue = '';
+    if (data.popup_time) {
+      targetDateValue = new Date(data.popup_time).toISOString();
+    } else if (data.calendar_time) {
+      targetDateValue = new Date(data.calendar_time).toISOString();
+    }
+    
     const isPopupActive = !!data.popup_time; 
 
     const { error } = await supabase.from('notes').insert([{
@@ -344,10 +344,7 @@ export default function Home() {
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
     
     if (data.popup_time) {
-      // Nettoyage sécurité timezone pour le récapitulatif
-      let safeDateStr = data.popup_time;
-      if (safeDateStr.length === 16) safeDateStr += ':00';
-      const diffMs = new Date(safeDateStr).getTime() - Date.now();
+      const diffMs = new Date(data.popup_time).getTime() - Date.now();
       if (diffMs > 0) {
         const totalMin = Math.floor(diffMs / (1000 * 60));
         setPopupHours(Math.floor(totalMin / 60).toString());
@@ -355,7 +352,10 @@ export default function Home() {
         setShowPopupConfig(true);
       }
     } else if (data.calendar_time) {
-      setTargetDate(data.calendar_time);
+      // Conversion inverse pour l'affichage dans le champ input html
+      const d = new Date(data.calendar_time);
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
       setShowCalendarConfig(true);
     }
     
@@ -364,9 +364,8 @@ export default function Home() {
 
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
-    let safeDateStr = dateString;
-    if (safeDateStr.length === 16) safeDateStr += ':00';
-    const date = new Date(safeDateStr); const pad = (n: number) => (n < 10 ? '0' + n : n);
+    const date = new Date(dateString); 
+    const pad = (n: number) => (n < 10 ? '0' + n : n);
     const start = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
     const endDate = new Date(date.getTime() + 60 * 60 * 1000);
     const end = `${endDate.getFullYear()}${pad(endDate.getMonth() + 1)}${pad(endDate.getDate())}T${pad(endDate.getHours())}${pad(endDate.getMinutes())}00`;
@@ -387,14 +386,14 @@ export default function Home() {
   };
   
   const saveEdit = async (id: string) => {
-    let finalTargetDate = editingTargetDate;
+    let finalTargetDate = editingTargetDate; // Conserve la date UTC de la base de données
     let finalPopupActive = editingPopupActive;
 
     if (showEditingPopupConfig && (editingPopupHours || editingPopupMinutes)) {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(editingPopupHours) || 0));
       d.setMinutes(d.getMinutes() + (parseInt(editingPopupMinutes) || 0));
-      finalTargetDate = formatLocalISO(d); // FINI LE BUG DU FUSEAU HORAIRE
+      finalTargetDate = d.toISOString(); // Conversion UTC garantie
       finalPopupActive = true;
     }
 
@@ -526,12 +525,12 @@ export default function Home() {
               }</p>
               {aiProposal.popup_time && (
                 <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
-                  <strong>⏰ Alarme pop-up :</strong> {new Date(aiProposal.popup_time.length === 16 ? aiProposal.popup_time + ':00' : aiProposal.popup_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                  <strong>⏰ Alarme pop-up :</strong> {new Date(aiProposal.popup_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
                 </p>
               )}
               {aiProposal.calendar_time && (
                 <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200">
-                  <strong>📅 Ajout Agenda :</strong> {new Date(aiProposal.calendar_time.length === 16 ? aiProposal.calendar_time + ':00' : aiProposal.calendar_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                  <strong>📅 Ajout Agenda :</strong> {new Date(aiProposal.calendar_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
                 </p>
               )}
             </div>
@@ -870,7 +869,7 @@ export default function Home() {
                     <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
                       <div className="flex justify-between items-center w-full">
                         <span className="text-xs font-bold text-blue-800">
-                          📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          📅 {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                           {note.popup_active && ' 🔔'}
                         </span>
                         <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
