@@ -34,7 +34,6 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
-  // Nouveaux états pour gérer les éléments de liste à la création
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   
@@ -62,6 +61,9 @@ export default function Home() {
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiProposal, setAiProposal] = useState<any>(null);
   const recognitionRef = useRef<any>(null);
+
+  // État de notre propre Alarme 100% infaillible
+  const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
 
   // États d'édition
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -108,7 +110,9 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
+  // Le chronomètre qui vérifie l'alarme
   useEffect(() => {
+    // Vérification toutes les 10 secondes pour être sûr de ne pas rater la minute
     const interval = window.setInterval(async () => {
       const now = Date.now();
       setCurrentTime(now);
@@ -118,18 +122,23 @@ export default function Home() {
         if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
           const targetTime = new Date(note.target_date).getTime();
           if (targetTime <= now) {
+            
+            // On déclenche la notification système si autorisée
             if ('Notification' in window && Notification.permission === 'granted') {
               new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
-            } else {
-              alert('⏰ RAPPEL : ' + (note.title || 'Note') + '\n' + (note.content || ''));
             }
+            
+            // ON AFFICHE NOTRE ALARME INTERNE INBLOQUABLE
+            setTriggeredAlarm(note);
+            
             await supabase.from('notes').update({ popup_active: false }).eq('id', note.id);
             needsUpdate = true;
           }
         }
       }
       if (needsUpdate) fetchNotes();
-    }, 60 * 1000);
+    }, 10000); // 10 secondes
+    
     return () => window.clearInterval(interval);
   }, [notes]);
 
@@ -152,7 +161,6 @@ export default function Home() {
       finalTargetDate = targetDate;
     }
 
-    // Préparation des sous-tâches si on est en mode liste
     const finalSubtasks = noteMode === 'list' 
       ? newListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })) 
       : [];
@@ -184,7 +192,6 @@ export default function Home() {
       });
     }
 
-    // Réinitialisation de tout le formulaire
     setNewTitle(''); setNewContent(''); setImportance('vert');
     setNewListItems([]); setCurrentNewListItem('');
     setSendImmediateEmail(false); 
@@ -480,8 +487,25 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
+      {/* 🚨 NOTRE ALARME INTERNE (Impossible à bloquer) 🚨 */}
+      {triggeredAlarm && (
+        <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
+          <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
+            <span className="text-6xl">⏰</span>
+            <h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
+            {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
+            <button 
+              onClick={() => setTriggeredAlarm(null)} 
+              className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full"
+            >
+              J'AI COMPRIS (STOP)
+            </button>
+          </div>
+        </div>
+      )}
+
       {aiProposal && (
-        <div className="fixed inset-0 bg-black/80 z-[9999] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 z-[9998] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
             <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
               <span>🤖</span> Proposition de l&apos;IA
@@ -554,7 +578,6 @@ export default function Home() {
           <div className="flex flex-col gap-3">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
             
-            {/* NOUVELLE ZONE D'AJOUT D'ÉLÉMENTS */}
             <div className="bg-white border border-gray-300 rounded-lg p-3 flex flex-col gap-2 shadow-sm">
               <span className="text-sm font-bold text-gray-700">Éléments de la liste :</span>
               
