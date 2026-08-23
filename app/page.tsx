@@ -27,6 +27,16 @@ interface Note {
   popup_active?: boolean; 
 }
 
+// Fonction blindée pour analyser la date sans erreur de fuseau horaire
+const getSafeTime = (dateStr?: string) => {
+  if (!dateStr) return 0;
+  let s = dateStr.replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    s += 'Z';
+  }
+  return new Date(s).getTime();
+};
+
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
@@ -108,8 +118,8 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
+  // Chronomètre mis à jour TOUTES LES SECONDES pour le compte à rebours
   useEffect(() => {
-    // Chronomètre ultra-réactif : 5 secondes
     const interval = window.setInterval(async () => {
       const now = Date.now();
       setCurrentTime(now);
@@ -118,8 +128,9 @@ export default function Home() {
       for (const note of notes) {
         if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
           
-          const targetTime = new Date(note.target_date).getTime();
+          const targetTime = getSafeTime(note.target_date);
           
+          // Si le temps est écoulé
           if (!isNaN(targetTime) && targetTime <= now) {
             if ('Notification' in window && Notification.permission === 'granted') {
               new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
@@ -132,7 +143,7 @@ export default function Home() {
         }
       }
       if (needsUpdate) fetchNotes();
-    }, 5000); 
+    }, 1000); 
     
     return () => window.clearInterval(interval);
   }, [notes]);
@@ -149,7 +160,6 @@ export default function Home() {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(popupHours) || 0));
       d.setMinutes(d.getMinutes() + (parseInt(popupMinutes) || 0));
-      // CONVERSION EN FORMAT UNIVERSEL ABSOLU (Pour contrer le bug de fuseau horaire)
       finalTargetDate = d.toISOString(); 
       finalPopupActive = true;
     } else if (showCalendarConfig && targetDate) {
@@ -299,7 +309,6 @@ export default function Home() {
   const confirmAiNote = async (data: any) => {
     setLoading(true);
     
-    // Convertir l'heure de l'IA en temps universel
     let targetDateValue = '';
     if (data.popup_time) {
       targetDateValue = new Date(data.popup_time).toISOString();
@@ -344,7 +353,7 @@ export default function Home() {
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
     
     if (data.popup_time) {
-      const diffMs = new Date(data.popup_time).getTime() - Date.now();
+      const diffMs = getSafeTime(data.popup_time) - Date.now();
       if (diffMs > 0) {
         const totalMin = Math.floor(diffMs / (1000 * 60));
         setPopupHours(Math.floor(totalMin / 60).toString());
@@ -352,7 +361,6 @@ export default function Home() {
         setShowPopupConfig(true);
       }
     } else if (data.calendar_time) {
-      // Conversion inverse pour l'affichage dans le champ input html
       const d = new Date(data.calendar_time);
       const pad = (n: number) => n.toString().padStart(2, '0');
       setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
@@ -364,7 +372,7 @@ export default function Home() {
 
   const formatDatesForCalendar = (dateString: string) => {
     if (!dateString) return null;
-    const date = new Date(dateString); 
+    const date = new Date(getSafeTime(dateString)); 
     const pad = (n: number) => (n < 10 ? '0' + n : n);
     const start = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
     const endDate = new Date(date.getTime() + 60 * 60 * 1000);
@@ -386,14 +394,14 @@ export default function Home() {
   };
   
   const saveEdit = async (id: string) => {
-    let finalTargetDate = editingTargetDate; // Conserve la date UTC de la base de données
+    let finalTargetDate = editingTargetDate; 
     let finalPopupActive = editingPopupActive;
 
     if (showEditingPopupConfig && (editingPopupHours || editingPopupMinutes)) {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(editingPopupHours) || 0));
       d.setMinutes(d.getMinutes() + (parseInt(editingPopupMinutes) || 0));
-      finalTargetDate = d.toISOString(); // Conversion UTC garantie
+      finalTargetDate = d.toISOString();
       finalPopupActive = true;
     }
 
@@ -491,7 +499,7 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
-      {/* 🚨 NOTRE ALARME INTERNE (Impossible à bloquer) 🚨 */}
+      {/* 🚨 NOTRE ALARME INTERNE 🚨 */}
       {triggeredAlarm && (
         <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
           <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
@@ -525,12 +533,12 @@ export default function Home() {
               }</p>
               {aiProposal.popup_time && (
                 <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
-                  <strong>⏰ Alarme pop-up :</strong> {new Date(aiProposal.popup_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                  <strong>⏰ Alarme pop-up :</strong> {new Date(getSafeTime(aiProposal.popup_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
                 </p>
               )}
               {aiProposal.calendar_time && (
                 <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200">
-                  <strong>📅 Ajout Agenda :</strong> {new Date(aiProposal.calendar_time).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
+                  <strong>📅 Ajout Agenda :</strong> {new Date(getSafeTime(aiProposal.calendar_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
                 </p>
               )}
             </div>
@@ -768,6 +776,25 @@ export default function Home() {
               
               {col.notes.map((note) => (
                 <li key={note.id} className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
+                  
+                  {/* COMPTE À REBOURS VISUEL DE L'ALARME */}
+                  {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
+                    <div className="bg-red-100 border-2 border-red-400 p-2 rounded-lg flex items-center justify-between shadow-sm">
+                      <span className="text-sm font-black text-red-800 flex items-center gap-2">
+                        <span className="animate-pulse text-lg">🔴</span> ALARME DANS :
+                      </span>
+                      <span className="text-lg font-black text-red-600 tracking-wider">
+                        {(() => {
+                          const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
+                          if (diff <= 0) return "En cours...";
+                          const m = Math.floor(diff / 60);
+                          const s = diff % 60;
+                          return `${m}m ${s}s`;
+                        })()}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="flex items-start gap-2 flex-1 mt-1">
                     <input type="checkbox" checked={note.completed} onChange={() => updateNote(note.id, 'completed', !note.completed)} className="w-5 h-5 cursor-pointer mt-1 flex-shrink-0" />
                     
@@ -862,26 +889,6 @@ export default function Home() {
                          <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white" />
                          <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs">+</button>
                        </div>
-                    </div>
-                  )}
-
-                  {note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
-                      <div className="flex justify-between items-center w-full">
-                        <span className="text-xs font-bold text-blue-800">
-                          📅 {new Date(note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                          {note.popup_active && ' 🔔'}
-                        </span>
-                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {enableGoogleCal && (
-                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
-                        )}
-                        {enableICal && (
-                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
-                        )}
-                      </div>
                     </div>
                   )}
 
