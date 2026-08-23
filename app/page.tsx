@@ -27,7 +27,6 @@ interface Note {
   popup_active?: boolean; 
 }
 
-// Fonction blindée pour analyser la date sans erreur de fuseau horaire
 const getSafeTime = (dateStr?: string) => {
   if (!dateStr) return 0;
   let s = dateStr.replace(' ', 'T');
@@ -118,7 +117,6 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
-  // Chronomètre mis à jour TOUTES LES SECONDES pour le compte à rebours
   useEffect(() => {
     const interval = window.setInterval(async () => {
       const now = Date.now();
@@ -130,12 +128,18 @@ export default function Home() {
           
           const targetTime = getSafeTime(note.target_date);
           
-          // Si le temps est écoulé
           if (!isNaN(targetTime) && targetTime <= now) {
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
+            
+            // BOUCLIER ANTI-CRASH POUR iPHONE / ANDROID
+            try {
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
+              }
+            } catch (err) {
+              console.warn("Notification native bloquée, passage à l'alarme visuelle.");
             }
             
+            // LA SUITE S'EXÉCUTE MAINTENANT SANS CRASHER
             setTriggeredAlarm(note);
             await supabase.from('notes').update({ popup_active: false }).eq('id', note.id);
             needsUpdate = true;
@@ -889,6 +893,26 @@ export default function Home() {
                          <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white" />
                          <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs">+</button>
                        </div>
+                    </div>
+                  )}
+
+                  {note.target_date && !note.completed && editingId !== note.id && (
+                    <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
+                      <div className="flex justify-between items-center w-full">
+                        <span className="text-xs font-bold text-blue-800">
+                          📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          {note.popup_active && ' 🔔'}
+                        </span>
+                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {enableGoogleCal && (
+                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
+                        )}
+                        {enableICal && (
+                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                        )}
+                      </div>
                     </div>
                   )}
 
