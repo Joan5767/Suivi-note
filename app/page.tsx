@@ -130,12 +130,20 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
-  // Inscription au Service Worker au chargement
+  // Inscription au Service Worker avec AUTO-RÉPARATION
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
         reg.pushManager.getSubscription().then((sub) => {
-          if (sub) setIsPushEnabled(true);
+          if (sub) {
+            setIsPushEnabled(true);
+            // Envoi silencieux à Supabase au cas où l'enregistrement précédent aurait échoué
+            fetch('/api/subscribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(sub)
+            }).catch(e => console.error("Erreur de synchronisation Push:", e));
+          }
         });
       }).catch(err => console.error("Service Worker Error", err));
     }
