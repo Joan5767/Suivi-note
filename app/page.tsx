@@ -36,6 +36,17 @@ const getSafeTime = (dateStr?: string) => {
   return new Date(s).getTime();
 };
 
+const urlBase64ToUint8Array = (base64String: string) => {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+};
+
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newTitle, setNewTitle] = useState('');
@@ -96,6 +107,8 @@ export default function Home() {
     vert: true,
   });
 
+  const [isPushEnabled, setIsPushEnabled] = useState(false);
+
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
     if (error) { console.error("Erreur Fetch:", error); return; }
@@ -117,6 +130,56 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
+  // Inscription au Service Worker au chargement
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        reg.pushManager.getSubscription().then((sub) => {
+          if (sub) setIsPushEnabled(true);
+        });
+      }).catch(err => console.error("Service Worker Error", err));
+    }
+  }, []);
+
+  const subscribeToPush = async () => {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const publicVapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      
+      if (!publicVapidKey) {
+        alert("Erreur : La clé VAPID publique manque dans Vercel.");
+        return;
+      }
+
+      const convertedVapidKey = urlBase64ToUint8Array(publicVapidKey);
+      
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedVapidKey
+      });
+
+      const res = await fetch('/api/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(subscription)
+      });
+
+      if (res.ok) {
+        setIsPushEnabled(true);
+        alert("✅ Téléphone connecté avec succès ! Tu recevras les alertes en arrière-plan.");
+      } else {
+        const err = await res.json();
+        alert("Erreur de sauvegarde : " + err.error);
+      }
+    } catch (error: any) {
+      if (Notification.permission === 'denied') {
+        alert("❌ Tu as bloqué les notifications. Tu dois les autoriser manuellement dans les paramètres de ton navigateur.");
+      } else {
+        alert("❌ Erreur d'abonnement : " + error.message);
+      }
+    }
+  };
+
   useEffect(() => {
     const interval = window.setInterval(async () => {
       const now = Date.now();
@@ -130,16 +193,12 @@ export default function Home() {
           
           if (!isNaN(targetTime) && targetTime <= now) {
             
-            // BOUCLIER ANTI-CRASH POUR iPHONE / ANDROID
             try {
               if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
               }
-            } catch (err) {
-              console.warn("Notification native bloquée, passage à l'alarme visuelle.");
-            }
+            } catch (err) {}
             
-            // LA SUITE S'EXÉCUTE MAINTENANT SANS CRASHER
             setTriggeredAlarm(note);
             await supabase.from('notes').update({ popup_active: false }).eq('id', note.id);
             needsUpdate = true;
@@ -503,7 +562,6 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-6 pb-20 relative">
 
-      {/* 🚨 NOTRE ALARME INTERNE 🚨 */}
       {triggeredAlarm && (
         <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
           <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
@@ -576,6 +634,18 @@ export default function Home() {
           {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
         </button>
       </div>
+
+      {!isPushEnabled && (
+        <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl mb-6 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🔔</span>
+            <p className="text-blue-900 text-sm font-semibold">Active les alertes en arrière-plan pour recevoir tes rappels quand l&apos;application est fermée.</p>
+          </div>
+          <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg whitespace-nowrap shadow-md transition-colors">
+            Activer les notifications
+          </button>
+        </div>
+      )}
 
       {!isFocusMode && (
       <form onSubmit={addNote} className="flex flex-col gap-4 mb-8 p-6 rounded-lg shadow-md border bg-gray-50 border-gray-200">
@@ -781,7 +851,6 @@ export default function Home() {
               {col.notes.map((note) => (
                 <li key={note.id} className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
                   
-                  {/* COMPTE À REBOURS VISUEL DE L'ALARME */}
                   {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
                     <div className="bg-red-100 border-2 border-red-400 p-2 rounded-lg flex items-center justify-between shadow-sm">
                       <span className="text-sm font-black text-red-800 flex items-center gap-2">
