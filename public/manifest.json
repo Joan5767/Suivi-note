@@ -1,0 +1,15 @@
+{
+  "name": "Suivi Notes",
+  "short_name": "Notes",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "https://www.google.com/s2/favicons?sz=192&domain=google.com",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
