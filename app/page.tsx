@@ -24,7 +24,8 @@ interface Note {
   target_date?: string;
   snooze_until?: string;
   completed_at?: string;
-  popup_active?: boolean; 
+  popup_active?: boolean;
+  created_at?: string; 
 }
 
 const getSafeTime = (dateStr?: string) => {
@@ -110,6 +111,12 @@ export default function Home() {
   });
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
+
+  // === NOUVEAUX ÉTATS POUR LE NETTOYAGE ===
+  const [showCleanupModal, setShowCleanupModal] = useState(false);
+  const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
+  const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
+  const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -218,6 +225,37 @@ export default function Home() {
     
     return () => window.clearInterval(interval);
   }, [notes]);
+
+  // === FONCTIONS DE NETTOYAGE ===
+  const loadCleanupNotes = (threshold: number) => {
+    const thresholdMs = threshold * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const oldNotes = notes.filter(n => {
+      if (n.is_archived) return false; 
+      if (!n.created_at) return false;
+      const age = now - new Date(n.created_at).getTime();
+      return age > thresholdMs;
+    });
+    setCleanupNotes(oldNotes);
+    setCurrentCleanupIndex(0);
+  };
+
+  const openCleanupModal = () => {
+    loadCleanupNotes(cleanupThresholdDays);
+    setShowCleanupModal(true);
+  };
+
+  const handleCleanupAction = async (action: 'delete' | 'archive' | 'keep', note: Note) => {
+    if (action === 'delete') {
+      await supabase.from('notes').delete().eq('id', note.id);
+      fetchNotes();
+    } else if (action === 'archive') {
+      await supabase.from('notes').update({ is_archived: true }).eq('id', note.id);
+      fetchNotes();
+    }
+    setCurrentCleanupIndex(prev => prev + 1);
+  };
+  // =============================
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -572,6 +610,74 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
+      {/* === MODAL DE NETTOYAGE === */}
+      {showCleanupModal && (
+        <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                <span>🧹</span> Nettoyage
+              </h2>
+              <button onClick={() => setShowCleanupModal(false)} className="text-gray-400 hover:text-black font-bold text-xl transition-colors">✖</button>
+            </div>
+            
+            <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
+              <span className="text-sm font-semibold text-gray-700">Ancienneté requise :</span>
+              <select 
+                value={cleanupThresholdDays} 
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setCleanupThresholdDays(val);
+                  loadCleanupNotes(val);
+                }}
+                className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1"
+              >
+                <option value={14}>+ de 2 semaines</option>
+                <option value={30}>+ de 1 mois</option>
+                <option value={90}>+ de 3 mois</option>
+              </select>
+            </div>
+
+            {currentCleanupIndex < cleanupNotes.length ? (
+              <div className="flex flex-col gap-4 mt-2">
+                <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">
+                  Note {currentCleanupIndex + 1} sur {cleanupNotes.length}
+                </div>
+                
+                <div className="bg-white border border-gray-300 p-4 rounded-xl shadow-sm min-h-[150px] max-h-[300px] overflow-y-auto flex flex-col">
+                  <h3 className="font-bold text-lg text-black">{cleanupNotes[currentCleanupIndex].title || '(Sans titre)'}</h3>
+                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
+                  <span className="text-[10px] text-gray-400 mt-4 text-right font-semibold">
+                    Créée le {new Date(cleanupNotes[currentCleanupIndex].created_at || '').toLocaleDateString('fr-FR')}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <button onClick={() => handleCleanupAction('delete', cleanupNotes[currentCleanupIndex])} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
+                    <span className="text-xl">🗑️</span> <span className="text-[10px] uppercase">Supprimer</span>
+                  </button>
+                  <button onClick={() => handleCleanupAction('keep', cleanupNotes[currentCleanupIndex])} className="bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
+                    <span className="text-xl">✅</span> <span className="text-[10px] uppercase">Conserver</span>
+                  </button>
+                  <button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
+                    <span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 flex flex-col items-center gap-3">
+                <span className="text-5xl">✨</span>
+                <p className="font-bold text-lg text-gray-800">Tout est propre !</p>
+                <p className="text-sm text-gray-500">Il n'y a plus aucune note ancienne à trier pour cette durée.</p>
+                <button onClick={() => setShowCleanupModal(false)} className="mt-4 bg-gray-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-colors">
+                  Fermer
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {triggeredAlarm && (
         <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
           <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
@@ -640,9 +746,14 @@ export default function Home() {
             <span className="text-xs font-bold text-red-500 mt-1">🔴 Seules les urgentes sont affichées</span>
           </div>
         )}
-        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
-          {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
-        </button>
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <button onClick={openCleanupModal} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap bg-blue-100 text-blue-800 hover:bg-blue-200 border border-blue-200`}>
+            🧹 Nettoyage
+          </button>
+          <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
+            {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
+          </button>
+        </div>
       </div>
 
       {!isPushEnabled && (
