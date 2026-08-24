@@ -92,6 +92,7 @@ export default function Home() {
   const [showEditingPopupConfig, setShowEditingPopupConfig] = useState(false);
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
+  const [showEditingDailyConfig, setShowEditingDailyConfig] = useState(false);
   
   const [editingImportance, setEditingImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [editingReminderActive, setEditingReminderActive] = useState(false);
@@ -130,14 +131,12 @@ export default function Home() {
 
   useEffect(() => { fetchNotes(); }, []);
 
-  // Inscription au Service Worker avec AUTO-RÉPARATION
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
         reg.pushManager.getSubscription().then((sub) => {
           if (sub) {
             setIsPushEnabled(true);
-            // Envoi silencieux à Supabase au cas où l'enregistrement précédent aurait échoué
             fetch('/api/subscribe', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -504,6 +503,7 @@ export default function Home() {
     setEditingDailyTime(note.daily_reminder_time || '09:00');
 
     setShowEditingPopupConfig(false);
+    setShowEditingDailyConfig(false);
     setEditingPopupHours('');
     setEditingPopupMinutes('');
   };
@@ -568,7 +568,7 @@ export default function Home() {
   const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
   return (
-    <main className="max-w-7xl mx-auto p-6 pb-20 relative">
+    <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
       {triggeredAlarm && (
         <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
@@ -629,58 +629,58 @@ export default function Home() {
         </div>
       )}
       
-      <div className={`flex items-start sm:items-center mb-6 justify-between flex-col sm:flex-row gap-4`}>
+      <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
         {!isFocusMode ? (
-          <h1 className="text-3xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
+          <h1 className="text-xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
         ) : (
           <div className="flex flex-col">
-            <h1 className="text-3xl font-bold text-gray-800">Mode Focus 🎯</h1>
-            <span className="text-sm font-bold text-red-500 mt-1">🔴 Seules les notes urgentes sont affichées</span>
+            <h1 className="text-xl font-bold text-gray-800">Mode Focus 🎯</h1>
+            <span className="text-xs font-bold text-red-500 mt-1">🔴 Seules les urgentes sont affichées</span>
           </div>
         )}
-        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-4 py-2 rounded-full font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
+        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
           {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
         </button>
       </div>
 
       {!isPushEnabled && (
-        <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl mb-6 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">🔔</span>
-            <p className="text-blue-900 text-sm font-semibold">Active les alertes en arrière-plan pour recevoir tes rappels quand l&apos;application est fermée.</p>
+        <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl mb-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🔔</span>
+            <p className="text-blue-900 text-xs font-semibold">Active les alertes en arrière-plan.</p>
           </div>
-          <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg whitespace-nowrap shadow-md transition-colors">
-            Activer les notifications
+          <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm whitespace-nowrap shadow-md transition-colors">
+            Activer
           </button>
         </div>
       )}
 
       {!isFocusMode && (
-      <form onSubmit={addNote} className="flex flex-col gap-4 mb-8 p-6 rounded-lg shadow-md border bg-gray-50 border-gray-200">
+      <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-3 rounded-lg shadow-md border bg-gray-50 border-gray-200">
         
         <div className="flex gap-2">
-          <button type="button" onClick={() => setNoteMode('text')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
-          <button type="button" onClick={() => setNoteMode('list')} className={`px-4 py-2 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
+          <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
+          <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
         </div>
 
         {noteMode === 'text' ? (
           <div className="flex flex-col gap-2">
-            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
-            <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-3 rounded text-black resize-y min-h-[120px] text-base" disabled={loading || isAiProcessing} />
+            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+            <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-2 rounded text-black resize-y min-h-[80px] text-sm" disabled={loading || isAiProcessing} />
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
-            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 rounded text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+          <div className="flex flex-col gap-2">
+            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
             
-            <div className="bg-white border border-gray-300 rounded-lg p-3 flex flex-col gap-2 shadow-sm">
-              <span className="text-sm font-bold text-gray-700">Éléments de la liste :</span>
+            <div className="bg-white border border-gray-300 rounded p-2 flex flex-col gap-2 shadow-sm">
+              <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
               
               {newListItems.length > 0 && (
-                <ul className="flex flex-col gap-1.5 mb-2">
+                <ul className="flex flex-col gap-1 mb-1">
                   {newListItems.map((item, idx) => (
-                    <li key={idx} className="flex justify-between items-center bg-gray-50 p-2 rounded border border-gray-200 text-sm text-black">
+                    <li key={idx} className="flex justify-between items-center bg-gray-50 p-1.5 rounded border border-gray-200 text-xs text-black">
                       <span className="flex-1 mr-2">• {item}</span>
-                      <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-lg font-bold leading-none px-2">×</button>
+                      <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-base font-bold leading-none px-2">×</button>
                     </li>
                   ))}
                 </ul>
@@ -701,7 +701,7 @@ export default function Home() {
                     }
                   }}
                   placeholder="Ajouter un élément..." 
-                  className="flex-1 border border-gray-300 p-2 rounded text-black text-sm" 
+                  className="flex-1 border border-gray-300 p-1.5 rounded text-black text-xs" 
                   disabled={loading || isAiProcessing} 
                 />
                 <button 
@@ -712,7 +712,7 @@ export default function Home() {
                       setCurrentNewListItem('');
                     }
                   }}
-                  className="bg-blue-100 text-blue-700 border border-blue-300 px-3 py-2 rounded text-sm font-bold hover:bg-blue-200 transition-colors"
+                  className="bg-blue-100 text-blue-700 border border-blue-300 px-2 py-1.5 rounded text-xs font-bold hover:bg-blue-200 transition-colors"
                   disabled={loading || isAiProcessing || !currentNewListItem.trim()}
                 >
                   + Ajouter
@@ -722,46 +722,46 @@ export default function Home() {
           </div>
         )}
 
-        <div className="flex items-center gap-3 w-full">
-          <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-3 rounded-lg text-black bg-white cursor-pointer font-bold">
+        <div className="flex items-center w-full mt-1">
+          <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-2 rounded text-black bg-white cursor-pointer text-sm font-bold">
             <option value="vert">🟢 Priorité Normale</option>
             <option value="orange">🟠 Priorité Importante</option>
             <option value="rouge">🔴 Priorité Urgente</option>
           </select>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3 border-b border-gray-200 pb-4">
-          <button type="button" onClick={() => toggleDictation('micro')} disabled={listeningMode === 'ai' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
-            <span>🎙️</span> {listeningMode === 'micro' ? 'Cliquer pour arrêter' : 'Dictée simple (Micro)'}
+        <div className="flex flex-col sm:flex-row gap-2 border-b border-gray-200 pb-3">
+          <button type="button" onClick={() => toggleDictation('micro')} disabled={listeningMode === 'ai' || isAiProcessing} className={`flex-1 py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
+            <span>🎙️</span> {listeningMode === 'micro' ? 'Cliquer pour arrêter' : 'Dictée simple'}
           </button>
-          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
-            <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour analyser' : 'Dictée intelligente (IA)'}
+          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+            <span>🤖</span> {isAiProcessing ? 'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour analyser' : 'Dictée intelligente'}
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
           
-          <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-            <span>📨 E-mail immédiat à la création</span>
+          <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <span>📨 E-mail immédiat</span>
             <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
           </button>
 
           <div className="flex flex-col">
-            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>⏰ Notification alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
+            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+              <span>⏰ Alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
             </button>
             {showPopupConfig && (
-              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-4 rounded-b-lg flex flex-col items-center gap-3">
-                <div className="flex flex-wrap items-center gap-2 justify-center">
-                  <span className="text-sm font-bold text-indigo-900">Dans :</span>
-                  <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
-                  <span className="text-sm font-bold text-indigo-900">h</span>
-                  <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-16 p-2 border border-indigo-300 rounded-lg text-center text-black font-bold" />
-                  <span className="text-sm font-bold text-indigo-900">min</span>
+              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1 justify-center">
+                  <span className="text-xs font-bold text-indigo-900">Dans:</span>
+                  <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
+                  <span className="text-xs font-bold text-indigo-900">h</span>
+                  <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
+                  <span className="text-xs font-bold text-indigo-900">min</span>
                 </div>
                 {(popupHours || popupMinutes) && (
-                  <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-3 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors">
-                    ✖ Annuler la saisie
+                  <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
+                    ✖ Annuler
                   </button>
                 )}
               </div>
@@ -769,48 +769,47 @@ export default function Home() {
           </div>
 
           <div className="flex flex-col">
-            <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+            <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
               <span>🔄 Relance quotidienne</span> <span>{showDailyConfig ? '▲' : '▼'}</span>
             </button>
             {showDailyConfig && (
-              <div className="bg-green-50 border border-t-0 border-green-200 p-4 rounded-b-lg flex flex-col gap-4">
-                <div className="flex flex-wrap gap-6 justify-center">
-                  <label className="flex items-center gap-2 cursor-pointer font-bold text-green-900 text-sm">
-                    <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="w-5 h-5 accent-green-600"/> E-mail
+              <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
+                <div className="flex flex-wrap gap-4 justify-center">
+                  <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
+                    <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail
                   </label>
-                  <label className="flex items-center gap-2 cursor-pointer font-bold text-green-900 text-sm">
-                    <input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="w-5 h-5 accent-green-600"/> Pop-up alarme
+                  <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
+                    <input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up
                   </label>
                 </div>
-                <div className="flex items-center justify-center gap-2 pt-2 border-t border-green-200">
-                  <span className="text-sm font-bold text-green-900">Heure du rappel :</span>
-                  <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-2 border border-green-300 rounded-lg text-black bg-white font-bold" />
+                <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200">
+                  <span className="text-xs font-bold text-green-900">À :</span>
+                  <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" />
                 </div>
               </div>
             )}
           </div>
 
           <div className="flex flex-col">
-            <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-3 rounded-lg font-bold border transition-colors text-left flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>📅 Calendrier (Agenda / .ics)</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
+            <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+              <span>📅 Agenda / .ics</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
             </button>
             {showCalendarConfig && (
-              <div className="bg-purple-50 border border-t-0 border-purple-200 p-4 rounded-b-lg flex flex-col gap-3 items-center">
-                <label className="text-xs font-bold text-purple-900 uppercase">Date &amp; Heure :</label>
-                <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-2 rounded-lg text-black bg-white font-bold" />
+              <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
+                <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
                 
-                <div className="flex flex-wrap gap-4 pt-1 justify-center">
-                  <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-purple-900">
+                <div className="flex flex-wrap gap-2 pt-1 justify-center">
+                  <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
                     <input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda
                   </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-purple-900">
-                    <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier iCal (.ics)
+                  <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
+                    <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics
                   </label>
                 </div>
 
                 {targetDate && (
-                  <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-3 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors">
-                    ✖ Annuler la date
+                  <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
+                    ✖ Annuler date
                   </button>
                 )}
               </div>
@@ -819,52 +818,52 @@ export default function Home() {
 
         </div>
 
-        <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-4 bg-gray-900 text-white px-6 py-4 rounded-xl font-bold text-lg hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
-          {loading ? 'Création...' : isAiProcessing ? 'Veuillez patienter...' : 'Créer la note'}
+        <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
+          {loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}
         </button>
       </form>
       )}
 
       {!isFocusMode && (
-        <div className="flex flex-wrap gap-4 mb-6">
-          <button onClick={() => setShowArchived(false)} className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Dossier Actif</button>
+        <div className="flex flex-wrap gap-2 mb-6">
+          <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
           {hasSnoozedNotes && (
-            <button onClick={() => setShowArchived('snoozed')} className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
+            <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
           )}
-          <button onClick={() => setShowArchived(true)} className={`px-5 py-2.5 rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
+          <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
         </div>
       )}
 
-      <div className={`grid items-start gap-6 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
+      <div className={`grid items-start gap-4 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {columns.map((col) => (
-          <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner'}>
+          <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner'}>
             {!isFocusMode && (() => {
               const isCollapsed = collapsedPriorities[col.id] ?? false;
               return (
-                <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-4 border-b-2 border-gray-200 pb-2 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!isCollapsed}>
-                  <span className="text-xl font-bold">{isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
+                <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!isCollapsed}>
+                  <span className="text-base font-bold">{isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
                 </button>
               );
             })()}
             
             {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
-            <ul className="space-y-4">
+            <ul className="space-y-3">
               
               {col.notes.length === 0 && (
-                <p className="text-gray-400 font-medium text-sm text-center py-6 bg-white rounded-lg border border-dashed border-gray-300">
+                <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
                   {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
                 </p>
               )}
               
               {col.notes.map((note) => (
-                <li key={note.id} className={`flex flex-col gap-3 p-4 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
+                <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
                   
                   {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="bg-red-100 border-2 border-red-400 p-2 rounded-lg flex items-center justify-between shadow-sm">
-                      <span className="text-sm font-black text-red-800 flex items-center gap-2">
-                        <span className="animate-pulse text-lg">🔴</span> ALARME DANS :
+                    <div className="bg-red-100 border-2 border-red-400 p-1.5 rounded flex items-center justify-between shadow-sm">
+                      <span className="text-xs font-black text-red-800 flex items-center gap-1">
+                        <span className="animate-pulse">🔴</span> DANS :
                       </span>
-                      <span className="text-lg font-black text-red-600 tracking-wider">
+                      <span className="text-sm font-black text-red-600 tracking-wider">
                         {(() => {
                           const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
                           if (diff <= 0) return "En cours...";
@@ -877,60 +876,66 @@ export default function Home() {
                   )}
 
                   <div className="flex items-start gap-2 flex-1 mt-1">
-                    <input type="checkbox" checked={note.completed} onChange={() => updateNote(note.id, 'completed', !note.completed)} className="w-5 h-5 cursor-pointer mt-1 flex-shrink-0" />
+                    <input type="checkbox" checked={note.completed} onChange={() => updateNote(note.id, 'completed', !note.completed)} className="w-5 h-5 cursor-pointer mt-0.5 flex-shrink-0" />
                     
                     {editingId === note.id ? (
-                      <div className="flex flex-col flex-1 gap-3 w-full">
+                      <div className="flex flex-col flex-1 gap-2 w-full">
                         {note.is_list ? (
-                          <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-2 rounded text-black font-semibold text-sm" autoFocus />
+                          <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" autoFocus />
                         ) : (
                           <>
-                            <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-2 rounded text-black font-semibold text-sm" />
-                            <textarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-2 rounded text-black resize-y min-h-[100px] text-sm" />
+                            <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" />
+                            <textarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black resize-y min-h-[60px] text-sm" />
                           </>
                         )}
                         
                         <select
                           value={editingImportance}
                           onChange={(e) => setEditingImportance(e.target.value as any)}
-                          className="border border-gray-400 p-2 rounded text-black text-sm w-full font-bold"
+                          className="border border-gray-400 p-1.5 rounded text-black text-sm w-full font-bold"
                         >
                           <option value="vert">🟢 Priorité Normale</option>
                           <option value="orange">🟠 Priorité Importante</option>
                           <option value="rouge">🔴 Priorité Urgente</option>
                         </select>
 
-                        <div className="flex flex-col gap-2 bg-gray-100 p-2 rounded border border-gray-300">
-                          <span className="text-xs font-bold text-gray-700">🔄 Relances quotidiennes :</span>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-gray-400 rounded text-black text-xs bg-white" />
-                            <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-gray-800">
-                              <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer" />
-                              E-mail
-                            </label>
-                            <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-gray-800">
-                              <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer" />
-                              Pop-up
-                            </label>
-                          </div>
+                        <div className="flex flex-col">
+                          <button type="button" onClick={() => setShowEditingDailyConfig(!showEditingDailyConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingDailyConfig ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-green-50 text-green-800 border-green-200 hover:bg-green-100'}`}>
+                            <span>🔄 Configurer les relances</span> <span>{showEditingDailyConfig ? '▲' : '▼'}</span>
+                          </button>
+                          {showEditingDailyConfig && (
+                            <div className="flex flex-col gap-2 bg-green-50 p-2 rounded-b border border-green-200 border-t-0">
+                              <div className="flex flex-wrap items-center gap-3 justify-center">
+                                <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black text-xs bg-white" />
+                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
+                                  <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />
+                                  E-mail
+                                </label>
+                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
+                                  <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />
+                                  Pop-up
+                                </label>
+                              </div>
+                            </div>
+                          )}
                         </div>
                         
-                        <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-1.5">
                           <div className="flex flex-col">
-                            <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
-                              <span>⏰ Programmer une alarme pop-up</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
+                            <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
+                              <span>⏰ Alarme pop-up</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
                             </button>
                             {showEditingPopupConfig && (
-                              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
-                                <div className="flex items-center gap-2">
+                              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-1.5 justify-center">
+                                <div className="flex items-center gap-1">
                                   <span className="text-xs font-bold text-indigo-900">Dans:</span>
-                                  <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
+                                  <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
                                   <span className="text-xs font-bold text-indigo-900">h</span>
-                                  <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
+                                  <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
                                   <span className="text-xs font-bold text-indigo-900">min</span>
                                 </div>
                                 {(editingPopupHours || editingPopupMinutes) && (
-                                  <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
+                                  <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">
                                     ✖ Annuler
                                   </button>
                                 )}
@@ -938,62 +943,62 @@ export default function Home() {
                             )}
                           </div>
 
-                          <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-2 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
-                            <span>📨</span> Envoyer un rappel e-mail immédiat
+                          <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
+                            <span>📨</span> E-mail immédiat
                           </button>
 
                         </div>
 
-                        <div className="flex gap-2 mt-2">
-                          <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-3 py-1.5 text-xs rounded font-bold">Enregistrer les modifs</button>
-                          <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1.5 text-xs rounded font-bold">Annuler</button>
+                        <div className="flex gap-2 mt-1">
+                          <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
+                          <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
                         </div>
                       </div>
                     ) : (
                       <div onDoubleClick={() => startEditing(note)} className={`flex-1 ${note.completed ? 'opacity-50 line-through' : ''}`}>
-                         <div className="font-bold text-gray-900 text-lg">{note.title}</div>
-                         <div className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{note.content}</div>
+                         <div className="font-bold text-gray-900 text-base">{note.title}</div>
+                         <div className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap">{note.content}</div>
                       </div>
                     )}
                   </div>
                   
                   {note.is_list && (
-                    <div className="mt-3 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-2 rounded">
+                    <div className="mt-2 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-1.5 rounded">
                       {(note.subtasks || []).map((st) => (
-                         <div key={st.id} className="flex items-center gap-2 mb-2 group">
+                         <div key={st.id} className="flex items-center gap-2 mb-1 group">
                            <input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(note, st.id)} className="cursor-pointer" />
                            <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
                            <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2">✖</button>
                          </div>
                        ))}
-                       <div className="flex gap-2 mt-2 items-center">
-                         <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1.5 rounded flex-1 text-black bg-white" />
-                         <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded font-bold text-xs">+</button>
+                       <div className="flex gap-1.5 mt-1.5 items-center">
+                         <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1 rounded flex-1 text-black bg-white" />
+                         <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-1.5 py-0.5 rounded font-bold text-xs">+</button>
                        </div>
                     </div>
                   )}
 
                   {note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="flex flex-col gap-2 mt-1 mb-2 bg-blue-50/50 p-2.5 rounded border border-blue-100">
+                    <div className="flex flex-col gap-1.5 mt-1 mb-1 bg-blue-50/50 p-2 rounded border border-blue-100">
                       <div className="flex justify-between items-center w-full">
-                        <span className="text-xs font-bold text-blue-800">
+                        <span className="text-[11px] font-bold text-blue-800">
                           📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                           {note.popup_active && ' 🔔'}
                         </span>
-                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-2 py-0.5 rounded text-xs font-bold transition-colors">✖ Annuler</button>
+                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-1.5">
                         {enableGoogleCal && (
-                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Mon Google Agenda</a>
+                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Google Agenda</a>
                         )}
                         {enableICal && (
-                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors text-center">Partager (.ics)</button>
+                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Fichier (.ics)</button>
                         )}
                       </div>
                     </div>
                   )}
 
-                  <div className="flex flex-wrap items-center gap-2 text-xs justify-end mt-2 pt-2 border-t border-gray-100">
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] justify-end mt-1 pt-1.5 border-t border-gray-100">
                     {!isFocusMode && showArchived === 'snoozed' && (
                        <button onClick={() => updateNote(note.id, 'snooze_until', '')} className="px-2 py-1 bg-green-100 hover:bg-green-200 text-green-800 rounded font-medium transition-colors">↩ Réactiver</button>
                     )}
