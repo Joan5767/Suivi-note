@@ -55,7 +55,6 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
-  // === NAVIGATION (Créer par défaut) ===
   const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
   
   const [newListItems, setNewListItems] = useState<string[]>([]);
@@ -79,7 +78,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
+  
+  // === GESTION DU MODE FOCUS ===
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
   const [listeningMode, setListeningMode] = useState<'none' | 'micro' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
@@ -105,12 +107,11 @@ export default function Home() {
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
-  const [snoozeDaysByNote, setSnoozeDaysByNote] = useState<Record<string, number>>({});
   
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
-    rouge: true,
-    orange: true,
-    vert: true,
+    rouge: false,
+    orange: false,
+    vert: false,
   });
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
@@ -609,9 +610,27 @@ export default function Home() {
   const snoozedNotes = notes.filter(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
   const hasSnoozedNotes = snoozedNotes.length > 0;
 
-  const columns = isFocusMode ? [
-    { id: 'rouge', title: '🔴 Urgentes', notes: displayedNotes.filter(n => n.importance === 'rouge') },
-  ] : [
+  // === LOGIQUE DE CASCADE DU MODE FOCUS ===
+  const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id));
+  const urgentNotes = focusableNotes.filter(n => n.importance === 'rouge');
+  const importantNotes = focusableNotes.filter(n => n.importance === 'orange');
+  const normalNotes = focusableNotes.filter(n => n.importance === 'vert');
+
+  let currentFocusNote: Note | null = null;
+  let focusStatus = '';
+
+  if (urgentNotes.length > 0) {
+    currentFocusNote = urgentNotes[0];
+  } else if (importantNotes.length > 0) {
+    currentFocusNote = importantNotes[0];
+    focusStatus = 'Plus aucune urgence ✓';
+  } else if (normalNotes.length > 0) {
+    currentFocusNote = normalNotes[0];
+    focusStatus = 'Plus aucune tâche importante ✓';
+  }
+
+  // Grille classique
+  const columns = [
     { id: 'rouge', title: '🔴 Priorité Urgente', notes: displayedNotes.filter(n => n.importance === 'rouge') },
     { id: 'orange', title: '🟠 Priorité Importante', notes: displayedNotes.filter(n => n.importance === 'orange') },
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
@@ -755,18 +774,21 @@ export default function Home() {
         ) : (
           <div className="flex flex-col">
             <h1 className="text-xl font-bold text-gray-800">Mode Focus 🎯</h1>
-            <span className="text-xs font-bold text-red-500 mt-1">🔴 Seules les urgentes sont affichées</span>
+            <span className="text-xs font-bold text-gray-500 mt-1">Une seule tâche à la fois. Reste concentré.</span>
           </div>
         )}
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
-            {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
+          <button 
+            onClick={() => { setIsFocusMode(!isFocusMode); setSkippedFocusIds([]); }} 
+            className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap ${isFocusMode ? 'bg-gray-800 text-white hover:bg-gray-700' : 'bg-gray-800 text-white hover:bg-gray-700'}`}
+          >
+            {isFocusMode ? 'Quitter le Mode Focus' : '🎯 Mode Focus'}
           </button>
         </div>
       </div>
 
       {!isFocusMode && (
-        <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-lg mx-auto">
+        <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-md mx-auto">
           <button
             type="button"
             onClick={() => setActiveTab('create')}
@@ -966,105 +988,116 @@ export default function Home() {
       </form>
       )}
 
-      {/* ================= ONGLET HISTORIQUE ================= */}
-      {activeTab === 'history' && !isFocusMode && (
-        <div className="flex flex-col gap-4">
-          <div className="flex justify-between items-center mb-2">
-             <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">
-               ← Retour aux notes
-             </button>
-             {historyNotes.length > 0 && (
-               <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">
-                 🗑️ Tout supprimer
-               </button>
-             )}
-          </div>
-          
-          <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
-            <span className="text-xl">🔍</span>
-            <input 
-              type="text" 
-              placeholder="Rechercher dans l'historique..." 
-              value={historySearch}
-              onChange={(e) => setHistorySearch(e.target.value)}
-              className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent"
-            />
-            {historySearch && (
-              <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {historyNotes.length === 0 && (
-              <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
-                Aucune note dans l'historique.
-              </p>
-            )}
-            {historyNotes.map(note => (
-              <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
-                <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
-                <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
-                
-                <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
-                  <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-                  {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
-                </div>
-                
-                <div className="flex justify-end mt-1">
-                  <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">
-                    🗑️ Supprimer
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ================= ONGLET NOTES ================= */}
-      {(activeTab === 'notes' || isFocusMode) && (
-        <>
-          {!isFocusMode && (
-            <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
-              <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
-              {hasSnoozedNotes && (
-                <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
-              )}
-              <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
-              
-              <div className="flex-1"></div>
-              
-              <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
-                🧹 Nettoyage
-              </button>
+      {/* ================= MODE FOCUS (1 TÂCHE À LA FOIS) ================= */}
+      {isFocusMode ? (
+        <div className="flex flex-col items-center justify-center mt-6 mb-12 w-full">
+          {focusStatus && (
+            <div className="bg-green-100 text-green-800 px-4 py-2 rounded-full font-bold text-xs shadow-sm mb-6 flex items-center gap-1.5">
+              <span>🎯</span> {focusStatus}
             </div>
           )}
 
-          <div className={`grid items-start gap-4 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
+          {currentFocusNote ? (
+            <div key={currentFocusNote.id} className="w-full max-w-md bg-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col items-center text-center gap-6 border border-gray-100">
+              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${
+                currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' :
+                currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' :
+                'bg-green-50 text-green-600 border-green-200'
+              }`}>
+                {currentFocusNote.importance === 'rouge' ? '🔴 Urgent' :
+                 currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
+              </span>
+
+              <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
+                {currentFocusNote.title || '(Sans titre)'}
+              </h2>
+
+              {currentFocusNote.content && (
+                <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">
+                  {currentFocusNote.content}
+                </p>
+              )}
+
+              {currentFocusNote.is_list && currentFocusNote.subtasks?.length > 0 && (
+                <div className="w-full bg-gray-50 p-3 rounded-xl text-left flex flex-col gap-2 mt-2 border border-gray-200">
+                  {currentFocusNote.subtasks.map((st: Subtask) => (
+                     <div key={st.id} className="flex items-center gap-3">
+                       <input 
+                         type="checkbox" 
+                         checked={st.completed} 
+                         onChange={() => toggleSubtask(currentFocusNote!, st.id)}
+                         className="w-5 h-5 cursor-pointer accent-blue-600" 
+                       />
+                       <span className={`text-sm font-bold ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
+                     </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex w-full gap-3 mt-4">
+                <button 
+                  onClick={() => updateNote(currentFocusNote!.id, 'completed', true)}
+                  className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
+                >
+                  <span>✓</span> Terminé
+                </button>
+                <button 
+                  onClick={() => setSkippedFocusIds(prev => [...prev, currentFocusNote!.id])} 
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm transition-transform hover:scale-105 active:scale-95 border border-gray-200"
+                >
+                  Plus tard
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
+              <span className="text-6xl">🎉</span>
+              <h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2>
+              <p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
+              <button 
+                onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }}
+                className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md"
+              >
+                Quitter le Mode Focus
+              </button>
+            </div>
+          )}
+        </div>
+      ) : activeTab === 'notes' && (
+        /* ================= ONGLET NOTES (GRILLE CLASSIQUE) ================= */
+        <>
+          <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
+            <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
+            {hasSnoozedNotes && (
+              <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
+            )}
+            <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
+            
+            <div className="flex-1"></div>
+            
+            <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
+              🧹 Nettoyage
+            </button>
+          </div>
+
+          <div className="grid items-start gap-4 grid-cols-1 lg:grid-cols-3">
             {columns.map((col) => (
-              <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner'}>
-                {!isFocusMode && (() => {
-                  const isCollapsed = collapsedPriorities[col.id] ?? false;
-                  return (
-                    <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!isCollapsed}>
-                      <span className="text-base font-bold">{isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
-                    </button>
-                  );
-                })()}
+              <div key={col.id} className="flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner">
+                <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}>
+                  <span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
+                </button>
                 
-                {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
+                {!(collapsedPriorities[col.id] ?? false) && (
                 <ul className="space-y-3">
-                  
                   {col.notes.length === 0 && (
                     <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
-                      {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
+                      Dossier vide
                     </p>
                   )}
-                  
                   {col.notes.map((note) => (
                     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
                       
-                      {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
+                      {note.popup_active && note.target_date && editingId !== note.id && (
                         <div className="bg-red-100 border-2 border-red-400 p-1.5 rounded flex items-center justify-between shadow-sm">
                           <span className="text-xs font-black text-red-800 flex items-center gap-1">
                             <span className="animate-pulse">🔴</span> DANS :
@@ -1082,7 +1115,6 @@ export default function Home() {
                       )}
 
                       <div className="flex items-start gap-2 flex-1 mt-1">
-                        
                         {editingId === note.id ? (
                           <div className="flex flex-col flex-1 gap-2 w-full">
                             {note.is_list ? (
@@ -1274,17 +1306,70 @@ export default function Home() {
             ))}
           </div>
 
-          {!isFocusMode && (
-             <div className="mt-12 mb-8 text-center">
-               <button 
-                 onClick={() => setActiveTab('history')} 
-                 className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
-               >
-                 🕰️ Consulter l'historique des notes terminées
-               </button>
-             </div>
-          )}
+          <div className="mt-12 mb-8 text-center">
+            <button 
+              onClick={() => setActiveTab('history')} 
+              className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
+            >
+              🕰️ Consulter l'historique des notes terminées
+            </button>
+          </div>
         </>
+      )}
+
+      {/* ================= ONGLET HISTORIQUE ================= */}
+      {activeTab === 'history' && !isFocusMode && (
+        <div className="flex flex-col gap-4">
+          <div className="flex justify-between items-center mb-2">
+             <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">
+               ← Retour aux notes actives
+             </button>
+             {historyNotes.length > 0 && (
+               <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">
+                 🗑️ Tout supprimer
+               </button>
+             )}
+          </div>
+          
+          <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
+            <span className="text-xl">🔍</span>
+            <input 
+              type="text" 
+              placeholder="Rechercher dans l'historique..." 
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent"
+            />
+            {historySearch && (
+              <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {historyNotes.length === 0 && (
+              <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                Aucune note dans l'historique.
+              </p>
+            )}
+            {historyNotes.map(note => (
+              <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
+                <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
+                <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
+                
+                <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
+                  <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                  {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
+                </div>
+                
+                <div className="flex justify-end mt-1">
+                  <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">
+                    🗑️ Supprimer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </main>
   );
