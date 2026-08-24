@@ -234,7 +234,7 @@ export default function Home() {
       if (n.is_archived) return false; 
       if (!n.created_at) return false;
       const age = now - new Date(n.created_at).getTime();
-      return age > thresholdMs;
+      return age >= thresholdMs; // Inclus la durée ou si c'est 0 (tout)
     });
     setCleanupNotes(oldNotes);
     setCurrentCleanupIndex(0);
@@ -632,7 +632,7 @@ export default function Home() {
                 }}
                 className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1"
               >
-                <option value={0}>Tout visualiser </option>
+                <option value={0}>👁️ Tout visualiser</option>
                 <option value={14}>+ de 2 semaines</option>
                 <option value={30}>+ de 1 mois</option>
                 <option value={90}>+ de 3 mois</option>
@@ -748,9 +748,6 @@ export default function Home() {
           </div>
         )}
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <button onClick={openCleanupModal} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap bg-blue-100 text-blue-800 hover:bg-blue-200 border border-blue-200`}>
-            🧹 Nettoyage
-          </button>
           <button onClick={() => setIsFocusMode(!isFocusMode)} className={`px-3 py-1.5 rounded-full text-sm font-bold shadow transition-all whitespace-nowrap ${isFocusMode ? 'bg-red-600 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
             {isFocusMode ? 'Désactiver le FOCUS' : '🎯 Mode Focus'}
           </button>
@@ -939,12 +936,19 @@ export default function Home() {
       )}
 
       {!isFocusMode && (
-        <div className="flex flex-wrap gap-2 mb-6">
+        <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
           <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
           {hasSnoozedNotes && (
             <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
           )}
           <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
+          
+          {/* Espace invisible pour repousser le bouton à droite */}
+          <div className="flex-1"></div>
+          
+          <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
+            🧹 Nettoyage
+          </button>
         </div>
       )}
 
