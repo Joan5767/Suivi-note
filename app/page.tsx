@@ -60,6 +60,9 @@ export default function Home() {
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   
+  // === ÉTAT POUR MASQUER LES PARAMÈTRES AVANCÉS ===
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
   const [popupHours, setPopupHours] = useState('');
@@ -115,7 +118,6 @@ export default function Home() {
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
-  // === NOUVEAUX ÉTATS POUR LE NETTOYAGE ===
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
@@ -320,6 +322,7 @@ export default function Home() {
     setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
     setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
     setShowCalendarConfig(false); setTargetDate('');
+    setShowAdvancedSettings(false);
     setLoading(false);
     
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
@@ -911,83 +914,97 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
-          
-          <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-            <span>📨 E-mail immédiat</span>
-            <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
+        {/* NOUVEAU BLOC : PARAMÉTRAGE CACHÉ */}
+        <div className="flex flex-col mt-2">
+          <button 
+            type="button" 
+            onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} 
+            className="w-full bg-gray-200 text-gray-700 hover:bg-gray-300 font-bold py-2 px-3 rounded-lg text-sm flex justify-between items-center transition-colors"
+          >
+            <span>⚙️ Paramétrage de la note (Alarmes, E-mail, Calendrier...)</span>
+            <span>{showAdvancedSettings ? '▲' : '▼'}</span>
           </button>
 
-          <div className="flex flex-col">
-            <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>⏰ Alarme pop-up (Dans...)</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
-            </button>
-            {showPopupConfig && (
-              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
-                <div className="flex flex-wrap items-center gap-1 justify-center">
-                  <span className="text-xs font-bold text-indigo-900">Dans:</span>
-                  <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
-                  <span className="text-xs font-bold text-indigo-900">h</span>
-                  <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
-                  <span className="text-xs font-bold text-indigo-900">min</span>
-                </div>
-                {(popupHours || popupMinutes) && (
-                  <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
-                    ✖ Annuler
-                  </button>
+          {showAdvancedSettings && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-gray-100 rounded-lg border border-gray-200">
+              
+              <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+                <span>📨 E-mail immédiat</span>
+                <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <div className="flex flex-col">
+                <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+                  <span>⏰ Alarme pop-up (Dans...)</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
+                </button>
+                {showPopupConfig && (
+                  <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1 justify-center">
+                      <span className="text-xs font-bold text-indigo-900">Dans:</span>
+                      <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
+                      <span className="text-xs font-bold text-indigo-900">h</span>
+                      <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
+                      <span className="text-xs font-bold text-indigo-900">min</span>
+                    </div>
+                    {(popupHours || popupMinutes) && (
+                      <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
+                        ✖ Annuler
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
 
-          <div className="flex flex-col">
-            <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>🔄 Relance quotidienne</span> <span>{showDailyConfig ? '▲' : '▼'}</span>
-            </button>
-            {showDailyConfig && (
-              <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
-                <div className="flex flex-wrap gap-4 justify-center">
-                  <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
-                    <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
-                    <input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up
-                  </label>
-                </div>
-                <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200">
-                  <span className="text-xs font-bold text-green-900">À :</span>
-                  <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-col">
-            <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>📅 Agenda / .ics</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
-            </button>
-            {showCalendarConfig && (
-              <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
-                <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
-                
-                <div className="flex flex-wrap gap-2 pt-1 justify-center">
-                  <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
-                    <input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
-                    <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics
-                  </label>
-                </div>
-
-                {targetDate && (
-                  <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
-                    ✖ Annuler date
-                  </button>
+              <div className="flex flex-col">
+                <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+                  <span>🔄 Relance quotidienne</span> <span>{showDailyConfig ? '▲' : '▼'}</span>
+                </button>
+                {showDailyConfig && (
+                  <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
+                    <div className="flex flex-wrap gap-4 justify-center">
+                      <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
+                        <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
+                        <input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up
+                      </label>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200">
+                      <span className="text-xs font-bold text-green-900">À :</span>
+                      <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" />
+                    </div>
+                  </div>
                 )}
               </div>
-            )}
-          </div>
 
+              <div className="flex flex-col">
+                <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+                  <span>📅 Agenda / .ics</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
+                </button>
+                {showCalendarConfig && (
+                  <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
+                    <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
+                    
+                    <div className="flex flex-wrap gap-2 pt-1 justify-center">
+                      <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
+                        <input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
+                        <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics
+                      </label>
+                    </div>
+
+                    {targetDate && (
+                      <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
+                        ✖ Annuler date
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
         </div>
 
         <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
@@ -1016,9 +1033,12 @@ export default function Home() {
                  currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
               </span>
 
-              <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
-                {currentFocusNote.title || '(Sans titre)'}
-              </h2>
+              {/* CORRECTION : N'affiche rien si pas de titre */}
+              {currentFocusNote.title && (
+                <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
+                  {currentFocusNote.title}
+                </h2>
+              )}
 
               {currentFocusNote.content && (
                 <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">
@@ -1179,7 +1199,7 @@ export default function Home() {
                             <div className="flex flex-col gap-1.5">
                               <div className="flex flex-col">
                                 <button type="button" onClick={() => setShowEditingExactDateConfig(!showEditingExactDateConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingExactDateConfig ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'}`}>
-                                  <span>📅 Programmer à une date exacte</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
+                                  <span>📅 Ajouter au calendrier (Agenda / .ics)</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
                                 </button>
                                 {showEditingExactDateConfig && (
                                   <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
