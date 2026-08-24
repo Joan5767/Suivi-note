@@ -55,8 +55,8 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
-  // === NAVIGATION A 3 ONGLETS ===
-  const [activeTab, setActiveTab] = useState<'notes' | 'create' | 'history'>('notes');
+  // === NAVIGATION (Créer par défaut) ===
+  const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
   
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
@@ -115,14 +115,13 @@ export default function Home() {
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
-  // === NOUVEAUX ÉTATS ===
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
   
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null); // Pour le bouton "Options"
-  const [historySearch, setHistorySearch] = useState(''); // Pour la recherche historique
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState('');
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -198,11 +197,8 @@ export default function Home() {
       let needsUpdate = false;
       for (const note of notes) {
         if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
-          
           const targetTime = getSafeTime(note.target_date);
-          
           if (!isNaN(targetTime) && targetTime <= now) {
-            
             try {
               if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
@@ -248,6 +244,19 @@ export default function Home() {
       fetchNotes();
     }
     setCurrentCleanupIndex(prev => prev + 1);
+  };
+
+  const deleteAllHistory = async () => {
+    if (window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ? Cette action est irréversible.')) {
+      setLoading(true);
+      const { error } = await supabase.from('notes').delete().eq('completed', true);
+      if (error) {
+        alert("Erreur lors de la suppression : " + error.message);
+      } else {
+        fetchNotes();
+      }
+      setLoading(false);
+    }
   };
 
   const addNote = async (e?: React.FormEvent) => {
@@ -581,9 +590,9 @@ export default function Home() {
     await supabase.from('notes').update({ subtasks: updated }).eq('id', note.id); fetchNotes();
   };
 
-  // === FILTRES DES NOTES ===
+  // === FILTRES ===
   const displayedNotes = notes.filter(n => {
-    if (n.completed) return false; // Les notes terminées vont dans l'historique
+    if (n.completed) return false; 
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
     if (showArchived === true) return n.is_archived;
     if (showArchived === 'snoozed') return !n.is_archived && isSnoozed;
@@ -760,13 +769,6 @@ export default function Home() {
         <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-lg mx-auto">
           <button
             type="button"
-            onClick={() => setActiveTab('notes')}
-            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            📑 Notes
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('create')}
             className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
           >
@@ -774,10 +776,10 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('history')}
-            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'history' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+            onClick={() => setActiveTab('notes')}
+            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            🕰️ Historique
+            📑 Notes
           </button>
         </div>
       )}
@@ -967,6 +969,17 @@ export default function Home() {
       {/* ================= ONGLET HISTORIQUE ================= */}
       {activeTab === 'history' && !isFocusMode && (
         <div className="flex flex-col gap-4">
+          <div className="flex justify-between items-center mb-2">
+             <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">
+               ← Retour aux notes
+             </button>
+             {historyNotes.length > 0 && (
+               <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">
+                 🗑️ Tout supprimer
+               </button>
+             )}
+          </div>
+          
           <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
             <span className="text-xl">🔍</span>
             <input 
@@ -1019,7 +1032,6 @@ export default function Home() {
               )}
               <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
               
-              {/* Espace invisible pour repousser le bouton à droite */}
               <div className="flex-1"></div>
               
               <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
@@ -1223,7 +1235,6 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* NOUVELLE BARRE D'ACTIONS : 2 BOUTONS SEULEMENT */}
                       {editingId !== note.id && (
                         <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative">
                           <button 
@@ -1262,6 +1273,17 @@ export default function Home() {
               </div>
             ))}
           </div>
+
+          {!isFocusMode && (
+             <div className="mt-12 mb-8 text-center">
+               <button 
+                 onClick={() => setActiveTab('history')} 
+                 className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
+               >
+                 🕰️ Consulter l'historique des notes terminées
+               </button>
+             </div>
+          )}
         </>
       )}
     </main>
