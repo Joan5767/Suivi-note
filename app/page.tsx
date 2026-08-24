@@ -79,7 +79,6 @@ export default function Home() {
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   
-  // === GESTION DU MODE FOCUS ===
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
@@ -116,10 +115,12 @@ export default function Home() {
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
+  // === NOUVEAUX ÉTATS POUR LE NETTOYAGE ===
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
+  const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
   
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [historySearch, setHistorySearch] = useState('');
@@ -218,11 +219,14 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  const loadCleanupNotes = (threshold: number) => {
+  const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const oldNotes = notes.filter(n => {
-      if (n.is_archived || n.completed) return false; 
+      if (n.completed) return false; 
+      if (mode === 'actif' && n.is_archived) return false;
+      if (mode === 'archive' && !n.is_archived) return false;
+      
       if (!n.created_at) return false;
       const age = now - new Date(n.created_at).getTime();
       return age >= thresholdMs;
@@ -231,8 +235,9 @@ export default function Home() {
     setCurrentCleanupIndex(0);
   };
 
-  const openCleanupModal = () => {
-    loadCleanupNotes(cleanupThresholdDays);
+  const openCleanupModal = (mode: 'actif' | 'archive') => {
+    setCleanupMode(mode);
+    loadCleanupNotes(cleanupThresholdDays, mode);
     setShowCleanupModal(true);
   };
 
@@ -641,12 +646,13 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
+      {/* === MODAL DE NETTOYAGE === */}
       {showCleanupModal && (
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
             <div className="flex justify-between items-center border-b pb-2">
               <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                <span>🧹</span> Nettoyage
+                <span>🧹</span> Nettoyage {cleanupMode === 'archive' ? 'des archives' : ''}
               </h2>
               <button onClick={() => setShowCleanupModal(false)} className="text-gray-400 hover:text-black font-bold text-xl transition-colors">✖</button>
             </div>
@@ -658,7 +664,7 @@ export default function Home() {
                 onChange={(e) => {
                   const val = Number(e.target.value);
                   setCleanupThresholdDays(val);
-                  loadCleanupNotes(val);
+                  loadCleanupNotes(val, cleanupMode);
                 }}
                 className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1"
               >
@@ -683,23 +689,25 @@ export default function Home() {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 mt-2">
+                <div className={`grid gap-2 mt-2 ${cleanupMode === 'actif' ? 'grid-cols-3' : 'grid-cols-2'}`}>
                   <button onClick={() => handleCleanupAction('delete', cleanupNotes[currentCleanupIndex])} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
                     <span className="text-xl">🗑️</span> <span className="text-[10px] uppercase">Supprimer</span>
                   </button>
                   <button onClick={() => handleCleanupAction('keep', cleanupNotes[currentCleanupIndex])} className="bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
                     <span className="text-xl">✅</span> <span className="text-[10px] uppercase">Conserver</span>
                   </button>
-                  <button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
-                    <span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span>
-                  </button>
+                  {cleanupMode === 'actif' && (
+                    <button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
+                      <span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
               <div className="text-center py-8 flex flex-col items-center gap-3">
                 <span className="text-5xl">✨</span>
                 <p className="font-bold text-lg text-gray-800">Tout est propre !</p>
-                <p className="text-sm text-gray-500">Il n'y a plus aucune note ancienne à trier pour cette durée.</p>
+                <p className="text-sm text-gray-500">Il n'y a plus aucune note à trier pour cette durée.</p>
                 <button onClick={() => setShowCleanupModal(false)} className="mt-4 bg-gray-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-colors">
                   Fermer
                 </button>
@@ -1075,8 +1083,11 @@ export default function Home() {
             
             <div className="flex-1"></div>
             
-            <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
-              🧹 Nettoyage
+            <button 
+              onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} 
+              className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded"
+            >
+              🧹 Nettoyage {showArchived === true ? 'des archives' : ''}
             </button>
           </div>
 
@@ -1095,14 +1106,22 @@ export default function Home() {
                     </p>
                   )}
                   {col.notes.map((note) => (
-                    <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
+                    <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${
+                      showArchived === true 
+                        ? 'border-gray-300 bg-gray-50' 
+                        : note.importance === 'rouge' 
+                          ? 'border-red-500 bg-red-50' 
+                          : note.importance === 'orange' 
+                            ? 'border-orange-500 bg-orange-50' 
+                            : 'border-green-500 bg-green-50'
+                    }`}>
                       
                       {note.popup_active && note.target_date && editingId !== note.id && (
-                        <div className="bg-red-100 border-2 border-red-400 p-1.5 rounded flex items-center justify-between shadow-sm">
-                          <span className="text-xs font-black text-red-800 flex items-center gap-1">
-                            <span className="animate-pulse">🔴</span> DANS :
+                        <div className={`p-1.5 rounded flex items-center justify-between shadow-sm border-2 ${showArchived === true ? 'bg-gray-100 border-gray-300' : 'bg-red-100 border-red-400'}`}>
+                          <span className={`text-xs font-black flex items-center gap-1 ${showArchived === true ? 'text-gray-500' : 'text-red-800'}`}>
+                            <span className={showArchived === true ? '' : 'animate-pulse'}>{showArchived === true ? '⏱️' : '🔴'}</span> DANS :
                           </span>
-                          <span className="text-sm font-black text-red-600 tracking-wider">
+                          <span className={`text-sm font-black tracking-wider ${showArchived === true ? 'text-gray-500' : 'text-red-600'}`}>
                             {(() => {
                               const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
                               if (diff <= 0) return "En cours...";
@@ -1225,18 +1244,18 @@ export default function Home() {
                           </div>
                         ) : (
                           <div onDoubleClick={() => startEditing(note)} className={`flex-1 w-full overflow-hidden`}>
-                             <div className="font-bold text-gray-900 text-base">{note.title}</div>
-                             <div className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap">{note.content}</div>
+                             <div className={`font-bold text-base ${showArchived === true ? 'text-gray-500' : 'text-gray-900'}`}>{note.title}</div>
+                             <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{note.content}</div>
                           </div>
                         )}
                       </div>
                       
                       {note.is_list && (
-                        <div className="mt-2 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-1.5 rounded">
+                        <div className={`mt-2 pl-2 border-l-2 p-1.5 rounded ${showArchived === true ? 'border-gray-200 bg-gray-100/50' : 'border-gray-300 bg-gray-50/50'}`}>
                           {(note.subtasks || []).map((st) => (
                              <div key={st.id} className="flex items-center gap-2 mb-1 group">
                                <input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(note, st.id)} className="cursor-pointer" />
-                               <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
+                               <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : showArchived === true ? 'text-gray-500' : 'text-gray-800'}`}>{st.text}</span>
                                <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2">✖</button>
                              </div>
                            ))}
@@ -1248,9 +1267,9 @@ export default function Home() {
                       )}
 
                       {note.target_date && editingId !== note.id && (
-                        <div className="flex flex-col gap-1.5 mt-1 mb-1 bg-blue-50/50 p-2 rounded border border-blue-100">
+                        <div className={`flex flex-col gap-1.5 mt-1 mb-1 p-2 rounded border ${showArchived === true ? 'bg-gray-100 border-gray-200' : 'bg-blue-50/50 border-blue-100'}`}>
                           <div className="flex justify-between items-center w-full">
-                            <span className="text-[11px] font-bold text-blue-800">
+                            <span className={`text-[11px] font-bold ${showArchived === true ? 'text-gray-500' : 'text-blue-800'}`}>
                               📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                               {note.popup_active && ' 🔔'}
                             </span>
@@ -1258,10 +1277,10 @@ export default function Home() {
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             {enableGoogleCal && (
-                              <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Google Agenda</a>
+                              <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className={`text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center ${showArchived === true ? 'bg-gray-400 hover:bg-gray-500' : 'bg-blue-600 hover:bg-blue-700'}`}>Google Agenda</a>
                             )}
                             {enableICal && (
-                              <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Fichier (.ics)</button>
+                              <button onClick={() => downloadICS(note)} className={`text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center ${showArchived === true ? 'bg-gray-400 hover:bg-gray-500' : 'bg-purple-600 hover:bg-purple-700'}`}>Fichier (.ics)</button>
                             )}
                           </div>
                         </div>
@@ -1271,7 +1290,7 @@ export default function Home() {
                         <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative">
                           <button 
                             onClick={() => updateNote(note.id, 'completed', true)} 
-                            className="bg-green-100 text-green-700 font-extrabold px-3 py-1.5 rounded-lg text-xs hover:bg-green-200 hover:text-green-800 transition-colors flex items-center gap-1 shadow-sm"
+                            className={`font-extrabold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-sm transition-colors ${showArchived === true ? 'bg-gray-200 text-gray-600 hover:bg-gray-300' : 'bg-green-100 text-green-700 hover:bg-green-200 hover:text-green-800'}`}
                           >
                             <span className="text-sm">✓</span> Terminé
                           </button>
@@ -1284,10 +1303,10 @@ export default function Home() {
 
                           {openMenuId === note.id && (
                             <div className="absolute bottom-full right-0 mb-2 w-36 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
-                              {!isFocusMode && showArchived === 'snoozed' && (
+                              {showArchived === 'snoozed' && (
                                  <button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>
                               )}
-                              {!isFocusMode && showArchived === false && (
+                              {showArchived === false && (
                                 <button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>
                               )}
                               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
