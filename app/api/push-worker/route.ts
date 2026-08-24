@@ -6,14 +6,17 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Renseigne ton email ici
+// Renseigne ton email ici !
 webpush.setVapidDetails(
   'mailto:ton.email@exemple.com',
   process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '',
   process.env.VAPID_PRIVATE_KEY || ''
 );
 
+// BOMBARDEMENT ANTI-CACHE POUR VERCEL
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+export const revalidate = 0;
 
 export async function GET() {
   try {
@@ -27,7 +30,13 @@ export async function GET() {
 
     if (notesError) throw notesError;
     if (!notes || notes.length === 0) {
-      return NextResponse.json({ status: "Aucune alarme en attente" });
+      return NextResponse.json({ status: "Aucune alarme en attente", time: now }, {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        }
+      });
     }
 
     const { data: subs, error: subError } = await supabase.from('subscriptions').select('*');
@@ -56,10 +65,7 @@ export async function GET() {
             await webpush.sendNotification(pushSubscription, payload);
             succesCount++;
           } catch (err: any) {
-            // CETTE FOIS ON AFFICHE LA VRAIE ERREUR
             erreurDetails.push(err.message || 'Erreur Google FCM');
-            
-            // Si le téléphone a désactivé les notifs, on supprime l'ancien abonnement
             if (err.statusCode === 410 || err.statusCode === 404) {
                await supabase.from('subscriptions').delete().eq('id', sub.id);
             }
@@ -74,6 +80,13 @@ export async function GET() {
       success: true, 
       telephones_sonnes: succesCount,
       erreurs_google: erreurDetails 
+    }, {
+      // ON FORCE VERCEL À NE PAS CACHER LE RÉSULTAT
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      }
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
