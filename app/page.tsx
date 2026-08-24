@@ -632,6 +632,7 @@ export default function Home() {
                 }}
                 className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1"
               >
+                <option value={0}>🛠️ Mode Test (Immédiat)</option>
                 <option value={14}>+ de 2 semaines</option>
                 <option value={30}>+ de 1 mois</option>
                 <option value={90}>+ de 3 mois</option>
