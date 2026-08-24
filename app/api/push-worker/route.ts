@@ -8,17 +8,13 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Renseigne ton email ici !
 webpush.setVapidDetails(
-  'mailto:ton.email@exemple.com',
+  'mailto:joan.windstein@gmail.com',
   process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '',
   process.env.VAPID_PRIVATE_KEY || ''
 );
 
-// BOMBARDEMENT ANTI-CACHE POUR VERCEL
-export const dynamic = 'force-dynamic';
-export const fetchCache = 'force-no-store';
-export const revalidate = 0;
-
-export async function GET() {
+// CHANGEMENT ICI : La fonction s'appelle désormais POST
+export async function POST() {
   try {
     const now = new Date().toISOString();
     
@@ -30,13 +26,7 @@ export async function GET() {
 
     if (notesError) throw notesError;
     if (!notes || notes.length === 0) {
-      return NextResponse.json({ status: "Aucune alarme en attente", time: now }, {
-        headers: {
-          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-          'Pragma': 'no-cache',
-          'Expires': '0',
-        }
-      });
+      return NextResponse.json({ status: "Aucune alarme en attente" });
     }
 
     const { data: subs, error: subError } = await supabase.from('subscriptions').select('*');
@@ -80,13 +70,6 @@ export async function GET() {
       success: true, 
       telephones_sonnes: succesCount,
       erreurs_google: erreurDetails 
-    }, {
-      // ON FORCE VERCEL À NE PAS CACHER LE RÉSULTAT
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-      }
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
