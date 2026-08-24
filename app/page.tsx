@@ -55,6 +55,9 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   
+  // === NAVIGATION A 3 ONGLETS ===
+  const [activeTab, setActiveTab] = useState<'notes' | 'create' | 'history'>('notes');
+  
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   
@@ -112,28 +115,20 @@ export default function Home() {
 
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
-  // === NOUVEAUX ÉTATS POUR LE NETTOYAGE ===
+  // === NOUVEAUX ÉTATS ===
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
+  
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null); // Pour le bouton "Options"
+  const [historySearch, setHistorySearch] = useState(''); // Pour la recherche historique
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
     if (error) { console.error("Erreur Fetch:", error); return; }
     if (data) {
-      const now = new Date().getTime();
-      const cleanedData = data.map(note => {
-        if (note.completed && note.completed_at && !note.is_archived) {
-          const completedTime = new Date(note.completed_at).getTime();
-          if (now - completedTime > 24 * 60 * 60 * 1000) {
-            supabase.from('notes').update({ is_archived: true }).eq('id', note.id).then();
-            return { ...note, is_archived: true };
-          }
-        }
-        return note;
-      });
-      setNotes(cleanedData);
+      setNotes(data);
     }
   };
 
@@ -226,15 +221,14 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  // === FONCTIONS DE NETTOYAGE ===
   const loadCleanupNotes = (threshold: number) => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const oldNotes = notes.filter(n => {
-      if (n.is_archived) return false; 
+      if (n.is_archived || n.completed) return false; 
       if (!n.created_at) return false;
       const age = now - new Date(n.created_at).getTime();
-      return age >= thresholdMs; // Inclus la durée ou si c'est 0 (tout)
+      return age >= thresholdMs;
     });
     setCleanupNotes(oldNotes);
     setCurrentCleanupIndex(0);
@@ -255,7 +249,6 @@ export default function Home() {
     }
     setCurrentCleanupIndex(prev => prev + 1);
   };
-  // =============================
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -316,6 +309,7 @@ export default function Home() {
     
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
     fetchNotes();
+    setActiveTab('notes');
   };
 
   const deleteNote = async (id: string) => {
@@ -417,14 +411,12 @@ export default function Home() {
 
   const confirmAiNote = async (data: any) => {
     setLoading(true);
-    
     let targetDateValue = '';
     if (data.popup_time) {
       targetDateValue = new Date(data.popup_time).toISOString();
     } else if (data.calendar_time) {
       targetDateValue = new Date(data.calendar_time).toISOString();
     }
-    
     const isPopupActive = !!data.popup_time; 
 
     const { error } = await supabase.from('notes').insert([{
@@ -451,6 +443,7 @@ export default function Home() {
       setNewListItems([]);
       setCurrentNewListItem('');
       fetchNotes();
+      setActiveTab('notes');
     }
     setLoading(false);
   };
@@ -477,6 +470,7 @@ export default function Home() {
     }
     
     setAiProposal(null);
+    setActiveTab('create');
   };
 
   const formatDatesForCalendar = (dateString: string) => {
@@ -587,15 +581,24 @@ export default function Home() {
     await supabase.from('notes').update({ subtasks: updated }).eq('id', note.id); fetchNotes();
   };
 
-  const snoozedNotes = notes.filter(n => !n.is_archived && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
-  const hasSnoozedNotes = snoozedNotes.length > 0;
-
+  // === FILTRES DES NOTES ===
   const displayedNotes = notes.filter(n => {
+    if (n.completed) return false; // Les notes terminées vont dans l'historique
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
     if (showArchived === true) return n.is_archived;
     if (showArchived === 'snoozed') return !n.is_archived && isSnoozed;
     return !n.is_archived && !isSnoozed;
   });
+
+  const historyNotes = notes.filter(n => {
+    if (!n.completed) return false;
+    if (!historySearch.trim()) return true;
+    const term = historySearch.toLowerCase();
+    return (n.title && n.title.toLowerCase().includes(term)) || (n.content && n.content.toLowerCase().includes(term));
+  });
+
+  const snoozedNotes = notes.filter(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
+  const hasSnoozedNotes = snoozedNotes.length > 0;
 
   const columns = isFocusMode ? [
     { id: 'rouge', title: '🔴 Urgentes', notes: displayedNotes.filter(n => n.importance === 'rouge') },
@@ -610,7 +613,6 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
-      {/* === MODAL DE NETTOYAGE === */}
       {showCleanupModal && (
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
@@ -754,6 +756,32 @@ export default function Home() {
         </div>
       </div>
 
+      {!isFocusMode && (
+        <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-lg mx-auto">
+          <button
+            type="button"
+            onClick={() => setActiveTab('notes')}
+            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            📑 Notes
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('create')}
+            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            ✍️ Créer
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('history')}
+            className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'history' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            🕰️ Historique
+          </button>
+        </div>
+      )}
+
       {!isPushEnabled && (
         <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl mb-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -766,7 +794,8 @@ export default function Home() {
         </div>
       )}
 
-      {!isFocusMode && (
+      {/* ================= ONGLET CREATION ================= */}
+      {activeTab === 'create' && !isFocusMode && (
       <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-3 rounded-lg shadow-md border bg-gray-50 border-gray-200">
         
         <div className="flex gap-2">
@@ -935,240 +964,306 @@ export default function Home() {
       </form>
       )}
 
-      {!isFocusMode && (
-        <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
-          <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
-          {hasSnoozedNotes && (
-            <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
-          )}
-          <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
-          
-          {/* Espace invisible pour repousser le bouton à droite */}
-          <div className="flex-1"></div>
-          
-          <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
-            🧹 Nettoyage
-          </button>
+      {/* ================= ONGLET HISTORIQUE ================= */}
+      {activeTab === 'history' && !isFocusMode && (
+        <div className="flex flex-col gap-4">
+          <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
+            <span className="text-xl">🔍</span>
+            <input 
+              type="text" 
+              placeholder="Rechercher dans l'historique..." 
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent"
+            />
+            {historySearch && (
+              <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {historyNotes.length === 0 && (
+              <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                Aucune note dans l'historique.
+              </p>
+            )}
+            {historyNotes.map(note => (
+              <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
+                <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
+                <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
+                
+                <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
+                  <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                  {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
+                </div>
+                
+                <div className="flex justify-end mt-1">
+                  <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">
+                    🗑️ Supprimer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      <div className={`grid items-start gap-4 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
-        {columns.map((col) => (
-          <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner'}>
-            {!isFocusMode && (() => {
-              const isCollapsed = collapsedPriorities[col.id] ?? false;
-              return (
-                <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!isCollapsed}>
-                  <span className="text-base font-bold">{isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
-                </button>
-              );
-            })()}
-            
-            {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
-            <ul className="space-y-3">
-              
-              {col.notes.length === 0 && (
-                <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
-                  {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
-                </p>
+      {/* ================= ONGLET NOTES ================= */}
+      {(activeTab === 'notes' || isFocusMode) && (
+        <>
+          {!isFocusMode && (
+            <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
+              <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
+              {hasSnoozedNotes && (
+                <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
               )}
+              <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
               
-              {col.notes.map((note) => (
-                <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
+              {/* Espace invisible pour repousser le bouton à droite */}
+              <div className="flex-1"></div>
+              
+              <button onClick={openCleanupModal} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 text-base border-2 border-blue-400">
+                🧹 Nettoyage
+              </button>
+            </div>
+          )}
+
+          <div className={`grid items-start gap-4 ${isFocusMode ? 'grid-cols-1 max-w-3xl mx-auto' : 'grid-cols-1 lg:grid-cols-3'}`}>
+            {columns.map((col) => (
+              <div key={col.id} className={isFocusMode ? 'flex flex-col' : 'flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner'}>
+                {!isFocusMode && (() => {
+                  const isCollapsed = collapsedPriorities[col.id] ?? false;
+                  return (
+                    <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!isCollapsed}>
+                      <span className="text-base font-bold">{isCollapsed ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
+                    </button>
+                  );
+                })()}
+                
+                {(!isFocusMode ? !(collapsedPriorities[col.id] ?? false) : true) && (
+                <ul className="space-y-3">
                   
-                  {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="bg-red-100 border-2 border-red-400 p-1.5 rounded flex items-center justify-between shadow-sm">
-                      <span className="text-xs font-black text-red-800 flex items-center gap-1">
-                        <span className="animate-pulse">🔴</span> DANS :
-                      </span>
-                      <span className="text-sm font-black text-red-600 tracking-wider">
-                        {(() => {
-                          const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
-                          if (diff <= 0) return "En cours...";
-                          const m = Math.floor(diff / 60);
-                          const s = diff % 60;
-                          return `${m}m ${s}s`;
-                        })()}
-                      </span>
-                    </div>
+                  {col.notes.length === 0 && (
+                    <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
+                      {isFocusMode ? "🎉 Super ! Aucune note urgente pour le moment." : "Dossier vide"}
+                    </p>
                   )}
+                  
+                  {col.notes.map((note) => (
+                    <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow bg-white border-l-4 transition-all ${note.importance === 'rouge' ? 'border-red-500 bg-red-50' : note.importance === 'orange' ? 'border-orange-500 bg-orange-50' : 'border-green-500 bg-green-50'}`}>
+                      
+                      {note.popup_active && note.target_date && !note.completed && editingId !== note.id && (
+                        <div className="bg-red-100 border-2 border-red-400 p-1.5 rounded flex items-center justify-between shadow-sm">
+                          <span className="text-xs font-black text-red-800 flex items-center gap-1">
+                            <span className="animate-pulse">🔴</span> DANS :
+                          </span>
+                          <span className="text-sm font-black text-red-600 tracking-wider">
+                            {(() => {
+                              const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
+                              if (diff <= 0) return "En cours...";
+                              const m = Math.floor(diff / 60);
+                              const s = diff % 60;
+                              return `${m}m ${s}s`;
+                            })()}
+                          </span>
+                        </div>
+                      )}
 
-                  <div className="flex items-start gap-2 flex-1 mt-1">
-                    <input type="checkbox" checked={note.completed} onChange={() => updateNote(note.id, 'completed', !note.completed)} className="w-5 h-5 cursor-pointer mt-0.5 flex-shrink-0" />
-                    
-                    {editingId === note.id ? (
-                      <div className="flex flex-col flex-1 gap-2 w-full">
-                        {note.is_list ? (
-                          <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" autoFocus />
-                        ) : (
-                          <>
-                            <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" />
-                            <textarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black resize-y min-h-[60px] text-sm" />
-                          </>
-                        )}
+                      <div className="flex items-start gap-2 flex-1 mt-1">
                         
-                        <select
-                          value={editingImportance}
-                          onChange={(e) => setEditingImportance(e.target.value as any)}
-                          className="border border-gray-400 p-1.5 rounded text-black text-sm w-full font-bold"
-                        >
-                          <option value="vert">🟢 Priorité Normale</option>
-                          <option value="orange">🟠 Priorité Importante</option>
-                          <option value="rouge">🔴 Priorité Urgente</option>
-                        </select>
+                        {editingId === note.id ? (
+                          <div className="flex flex-col flex-1 gap-2 w-full">
+                            {note.is_list ? (
+                              <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" autoFocus />
+                            ) : (
+                              <>
+                                <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" />
+                                <textarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black resize-y min-h-[60px] text-sm" />
+                              </>
+                            )}
+                            
+                            <select
+                              value={editingImportance}
+                              onChange={(e) => setEditingImportance(e.target.value as any)}
+                              className="border border-gray-400 p-1.5 rounded text-black text-sm w-full font-bold"
+                            >
+                              <option value="vert">🟢 Priorité Normale</option>
+                              <option value="orange">🟠 Priorité Importante</option>
+                              <option value="rouge">🔴 Priorité Urgente</option>
+                            </select>
 
-                        <div className="flex flex-col">
-                          <button type="button" onClick={() => setShowEditingDailyConfig(!showEditingDailyConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingDailyConfig ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-green-50 text-green-800 border-green-200 hover:bg-green-100'}`}>
-                            <span>🔄 Configurer les relances</span> <span>{showEditingDailyConfig ? '▲' : '▼'}</span>
-                          </button>
-                          {showEditingDailyConfig && (
-                            <div className="flex flex-col gap-2 bg-green-50 p-2 rounded-b border border-green-200 border-t-0">
-                              <div className="flex flex-wrap items-center gap-3 justify-center">
-                                <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black text-xs bg-white" />
-                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
-                                  <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />
-                                  E-mail
-                                </label>
-                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
-                                  <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />
-                                  Pop-up
-                                </label>
+                            <div className="flex flex-col">
+                              <button type="button" onClick={() => setShowEditingDailyConfig(!showEditingDailyConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingDailyConfig ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-green-50 text-green-800 border-green-200 hover:bg-green-100'}`}>
+                                <span>🔄 Configurer les relances</span> <span>{showEditingDailyConfig ? '▲' : '▼'}</span>
+                              </button>
+                              {showEditingDailyConfig && (
+                                <div className="flex flex-col gap-2 bg-green-50 p-2 rounded-b border border-green-200 border-t-0">
+                                  <div className="flex flex-wrap items-center gap-3 justify-center">
+                                    <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black text-xs bg-white" />
+                                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
+                                      <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />
+                                      E-mail
+                                    </label>
+                                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
+                                      <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />
+                                      Pop-up
+                                    </label>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            
+                            <div className="flex flex-col gap-1.5">
+                              <div className="flex flex-col">
+                                <button type="button" onClick={() => setShowEditingExactDateConfig(!showEditingExactDateConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingExactDateConfig ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'}`}>
+                                  <span>📅 Programmer à une date exacte</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
+                                </button>
+                                {showEditingExactDateConfig && (
+                                  <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
+                                    <input 
+                                      type="datetime-local" 
+                                      value={editingTargetDate ? (() => {
+                                        const ts = getSafeTime(editingTargetDate);
+                                        if (!ts) return '';
+                                        const d = new Date(ts);
+                                        const pad = (n: number) => n.toString().padStart(2, '0');
+                                        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                                      })() : ''} 
+                                      onChange={(e) => {
+                                        if (e.target.value) {
+                                          setEditingTargetDate(new Date(e.target.value).toISOString());
+                                        } else {
+                                          setEditingTargetDate('');
+                                        }
+                                      }} 
+                                      className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" 
+                                    />
+                                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1">
+                                      <input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />
+                                      Activer l'alarme pop-up à cette date
+                                    </label>
+                                  </div>
+                                )}
                               </div>
+
+                              <div className="flex flex-col">
+                                <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
+                                  <span>⏰ Alarme pop-up rapide (Dans...)</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
+                                </button>
+                                {showEditingPopupConfig && (
+                                  <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-1.5 justify-center">
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs font-bold text-indigo-900">Dans:</span>
+                                      <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
+                                      <span className="text-xs font-bold text-indigo-900">h</span>
+                                      <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
+                                      <span className="text-xs font-bold text-indigo-900">min</span>
+                                    </div>
+                                    {(editingPopupHours || editingPopupMinutes) && (
+                                      <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">
+                                        ✖ Annuler
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
+                                <span>📨</span> E-mail immédiat
+                              </button>
+
+                            </div>
+
+                            <div className="flex gap-2 mt-1">
+                              <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
+                              <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div onDoubleClick={() => startEditing(note)} className={`flex-1 w-full overflow-hidden`}>
+                             <div className="font-bold text-gray-900 text-base">{note.title}</div>
+                             <div className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap">{note.content}</div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {note.is_list && (
+                        <div className="mt-2 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-1.5 rounded">
+                          {(note.subtasks || []).map((st) => (
+                             <div key={st.id} className="flex items-center gap-2 mb-1 group">
+                               <input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(note, st.id)} className="cursor-pointer" />
+                               <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
+                               <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2">✖</button>
+                             </div>
+                           ))}
+                           <div className="flex gap-1.5 mt-1.5 items-center">
+                             <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1 rounded flex-1 text-black bg-white" />
+                             <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-1.5 py-0.5 rounded font-bold text-xs">+</button>
+                           </div>
+                        </div>
+                      )}
+
+                      {note.target_date && editingId !== note.id && (
+                        <div className="flex flex-col gap-1.5 mt-1 mb-1 bg-blue-50/50 p-2 rounded border border-blue-100">
+                          <div className="flex justify-between items-center w-full">
+                            <span className="text-[11px] font-bold text-blue-800">
+                              📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                              {note.popup_active && ' 🔔'}
+                            </span>
+                            <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {enableGoogleCal && (
+                              <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Google Agenda</a>
+                            )}
+                            {enableICal && (
+                              <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Fichier (.ics)</button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* NOUVELLE BARRE D'ACTIONS : 2 BOUTONS SEULEMENT */}
+                      {editingId !== note.id && (
+                        <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative">
+                          <button 
+                            onClick={() => updateNote(note.id, 'completed', true)} 
+                            className="bg-green-100 text-green-700 font-extrabold px-3 py-1.5 rounded-lg text-xs hover:bg-green-200 hover:text-green-800 transition-colors flex items-center gap-1 shadow-sm"
+                          >
+                            <span className="text-sm">✓</span> Terminé
+                          </button>
+                          <button 
+                            onClick={() => setOpenMenuId(openMenuId === note.id ? null : note.id)} 
+                            className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm border ${openMenuId === note.id ? 'bg-gray-200 text-gray-800 border-gray-300' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}
+                          >
+                            ⚙️ Options {openMenuId === note.id ? '▲' : '▼'}
+                          </button>
+
+                          {openMenuId === note.id && (
+                            <div className="absolute bottom-full right-0 mb-2 w-36 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
+                              {!isFocusMode && showArchived === 'snoozed' && (
+                                 <button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>
+                              )}
+                              {!isFocusMode && showArchived === false && (
+                                <button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>
+                              )}
+                              <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
+                              <button onClick={() => { updateNote(note.id, 'is_archived', !note.is_archived); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">📦 {note.is_archived ? 'Désarchiver' : 'Archiver'}</button>
+                              <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
                             </div>
                           )}
                         </div>
-                        
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex flex-col">
-                            <button type="button" onClick={() => setShowEditingExactDateConfig(!showEditingExactDateConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingExactDateConfig ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'}`}>
-                              <span>📅 Programmer à une date exacte</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
-                            </button>
-                            {showEditingExactDateConfig && (
-                              <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
-                                <input 
-                                  type="datetime-local" 
-                                  value={editingTargetDate ? (() => {
-                                    const ts = getSafeTime(editingTargetDate);
-                                    if (!ts) return '';
-                                    const d = new Date(ts);
-                                    const pad = (n: number) => n.toString().padStart(2, '0');
-                                    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-                                  })() : ''} 
-                                  onChange={(e) => {
-                                    if (e.target.value) {
-                                      setEditingTargetDate(new Date(e.target.value).toISOString());
-                                    } else {
-                                      setEditingTargetDate('');
-                                    }
-                                  }} 
-                                  className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" 
-                                />
-                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1">
-                                  <input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />
-                                  Activer l'alarme pop-up à cette date
-                                </label>
-                              </div>
-                            )}
-                          </div>
+                      )}
 
-                          <div className="flex flex-col">
-                            <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
-                              <span>⏰ Alarme pop-up rapide (Dans...)</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
-                            </button>
-                            {showEditingPopupConfig && (
-                              <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-1.5 justify-center">
-                                <div className="flex items-center gap-1">
-                                  <span className="text-xs font-bold text-indigo-900">Dans:</span>
-                                  <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
-                                  <span className="text-xs font-bold text-indigo-900">h</span>
-                                  <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
-                                  <span className="text-xs font-bold text-indigo-900">min</span>
-                                </div>
-                                {(editingPopupHours || editingPopupMinutes) && (
-                                  <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">
-                                    ✖ Annuler
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
-                            <span>📨</span> E-mail immédiat
-                          </button>
-
-                        </div>
-
-                        <div className="flex gap-2 mt-1">
-                          <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
-                          <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div onDoubleClick={() => startEditing(note)} className={`flex-1 ${note.completed ? 'opacity-50 line-through' : ''}`}>
-                         <div className="font-bold text-gray-900 text-base">{note.title}</div>
-                         <div className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap">{note.content}</div>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {note.is_list && (
-                    <div className="mt-2 pl-2 border-l-2 border-gray-300 bg-gray-50/50 p-1.5 rounded">
-                      {(note.subtasks || []).map((st) => (
-                         <div key={st.id} className="flex items-center gap-2 mb-1 group">
-                           <input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(note, st.id)} className="cursor-pointer" />
-                           <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
-                           <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2">✖</button>
-                         </div>
-                       ))}
-                       <div className="flex gap-1.5 mt-1.5 items-center">
-                         <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1 rounded flex-1 text-black bg-white" />
-                         <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-1.5 py-0.5 rounded font-bold text-xs">+</button>
-                       </div>
-                    </div>
-                  )}
-
-                  {note.target_date && !note.completed && editingId !== note.id && (
-                    <div className="flex flex-col gap-1.5 mt-1 mb-1 bg-blue-50/50 p-2 rounded border border-blue-100">
-                      <div className="flex justify-between items-center w-full">
-                        <span className="text-[11px] font-bold text-blue-800">
-                          📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                          {note.popup_active && ' 🔔'}
-                        </span>
-                        <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {enableGoogleCal && (
-                          <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Google Agenda</a>
-                        )}
-                        {enableICal && (
-                          <button onClick={() => downloadICS(note)} className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center">Fichier (.ics)</button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] justify-end mt-1 pt-1.5 border-t border-gray-100">
-                    {!isFocusMode && showArchived === 'snoozed' && (
-                       <button onClick={() => updateNote(note.id, 'snooze_until', '')} className="px-2 py-1 bg-green-100 hover:bg-green-200 text-green-800 rounded font-medium transition-colors">↩ Réactiver</button>
-                    )}
-
-                    {!isFocusMode && showArchived === false && !note.completed && (
-                      <button onClick={() => handleSnoozeClick(note.id)} className="px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded font-medium transition-colors">💤 Masquer</button>
-                    )}
-                    
-                    {editingId !== note.id && <button onClick={() => startEditing(note)} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors">Modif</button>}
-                    <button onClick={() => updateNote(note.id, 'is_archived', !note.is_archived)} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition-colors">{note.is_archived ? 'Désarchiver' : 'Archiver'}</button>
-                    <button onClick={() => deleteNote(note.id)} className="px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition-colors">Suppr</button>
-                  </div>
-
-                </li>
-              ))}
-            </ul>
-            )}
+                    </li>
+                  ))}
+                </ul>
+                )}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </main>
   );
 }
