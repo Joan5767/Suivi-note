@@ -90,6 +90,7 @@ export default function Home() {
   const [editingTargetDate, setEditingTargetDate] = useState('');
   const [editingPopupActive, setEditingPopupActive] = useState(false);
   const [showEditingPopupConfig, setShowEditingPopupConfig] = useState(false);
+  const [showEditingExactDateConfig, setShowEditingExactDateConfig] = useState(false);
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
   const [showEditingDailyConfig, setShowEditingDailyConfig] = useState(false);
@@ -504,6 +505,7 @@ export default function Home() {
 
     setShowEditingPopupConfig(false);
     setShowEditingDailyConfig(false);
+    setShowEditingExactDateConfig(false);
     setEditingPopupHours('');
     setEditingPopupMinutes('');
   };
@@ -748,7 +750,7 @@ export default function Home() {
 
           <div className="flex flex-col">
             <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-              <span>⏰ Alarme pop-up</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
+              <span>⏰ Alarme pop-up (Dans...)</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
             </button>
             {showPopupConfig && (
               <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
@@ -922,8 +924,40 @@ export default function Home() {
                         
                         <div className="flex flex-col gap-1.5">
                           <div className="flex flex-col">
+                            <button type="button" onClick={() => setShowEditingExactDateConfig(!showEditingExactDateConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingExactDateConfig ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'}`}>
+                              <span>📅 Programmer à une date exacte</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
+                            </button>
+                            {showEditingExactDateConfig && (
+                              <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
+                                <input 
+                                  type="datetime-local" 
+                                  value={editingTargetDate ? (() => {
+                                    const ts = getSafeTime(editingTargetDate);
+                                    if (!ts) return '';
+                                    const d = new Date(ts);
+                                    const pad = (n: number) => n.toString().padStart(2, '0');
+                                    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                                  })() : ''} 
+                                  onChange={(e) => {
+                                    if (e.target.value) {
+                                      setEditingTargetDate(new Date(e.target.value).toISOString());
+                                    } else {
+                                      setEditingTargetDate('');
+                                    }
+                                  }} 
+                                  className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" 
+                                />
+                                <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1">
+                                  <input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />
+                                  Activer l'alarme pop-up à cette date
+                                </label>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col">
                             <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
-                              <span>⏰ Alarme pop-up</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
+                              <span>⏰ Alarme pop-up rapide (Dans...)</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
                             </button>
                             {showEditingPopupConfig && (
                               <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-1.5 justify-center">
