@@ -13,8 +13,12 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY || ''
 );
 
-// CHANGEMENT ICI : La fonction s'appelle désormais POST
-export async function POST() {
+// Verrous anti-cache
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
+// Le moteur central qui gère les alarmes
+async function triggerAlarms() {
   try {
     const now = new Date().toISOString();
     
@@ -25,8 +29,12 @@ export async function POST() {
       .lte('target_date', now);
 
     if (notesError) throw notesError;
+    
     if (!notes || notes.length === 0) {
-      return NextResponse.json({ status: "Aucune alarme en attente" });
+      // On ajoute un timestamp "time" pour forcer Vercel à comprendre que la réponse change chaque seconde
+      return NextResponse.json({ status: "Aucune alarme en attente", time: now }, {
+        headers: { 'Cache-Control': 'no-store, max-age=0' }
+      });
     }
 
     const { data: subs, error: subError } = await supabase.from('subscriptions').select('*');
@@ -69,9 +77,21 @@ export async function POST() {
     return NextResponse.json({ 
       success: true, 
       telephones_sonnes: succesCount,
-      erreurs_google: erreurDetails 
+      erreurs_google: erreurDetails,
+      time: now
+    }, {
+      headers: { 'Cache-Control': 'no-store, max-age=0' }
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+// 🛡️ LE BOUCLIER : On accepte les requêtes GET ET POST pour éviter tout crash !
+export async function GET() {
+  return triggerAlarms();
+}
+
+export async function POST() {
+  return triggerAlarms();
 }
