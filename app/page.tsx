@@ -109,7 +109,6 @@ export default function Home() {
   
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
   
-  // === LISTES FERMÉES PAR DÉFAUT ===
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
     rouge: true,
     orange: true,
@@ -645,7 +644,7 @@ export default function Home() {
 
   const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
-  // Fonction abstraite pour afficher une note, évitant de dupliquer les 300 lignes
+  // Fonction abstraite pour afficher une note
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
       showArchived === true 
@@ -1263,6 +1262,7 @@ export default function Home() {
                  currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
               </span>
 
+              {/* CORRECTION : N'affiche rien si pas de titre */}
               {currentFocusNote.title && (
                 <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
                   {currentFocusNote.title}
@@ -1321,20 +1321,20 @@ export default function Home() {
           )}
         </div>
       ) : activeTab === 'notes' && (
-        /* ================= ONGLET NOTES ================= */
+        /* ================= ONGLET NOTES (GRILLE CLASSIQUE) ================= */
         <>
-          <div className="flex flex-wrap items-center gap-2 mb-6 w-full">
-            <button onClick={() => setShowArchived(false)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
-            {hasSnoozedNotes && (
-              <button onClick={() => setShowArchived('snoozed')} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
-            )}
-            <button onClick={() => setShowArchived(true)} className={`px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
-            
-            <div className="flex-1"></div>
+          <div className="flex items-center justify-between mb-6 w-full gap-2">
+            <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+              <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
+              {hasSnoozedNotes && (
+                <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
+              )}
+              <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
+            </div>
             
             <button 
               onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} 
-              className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded"
+              className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0"
             >
               🧹 Nettoyage {showArchived === true ? 'archive' : ''}
             </button>
