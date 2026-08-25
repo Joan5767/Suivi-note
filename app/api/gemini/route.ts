@@ -9,21 +9,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "La clé GEMINI_API_KEY est introuvable sur Vercel." }, { status: 500 });
     }
 
-    const prompt = `Tu es l'assistant intelligent d'une application de productivité et de rappels. L'utilisateur a dicté ou écrit ce texte : "${text}".
+    const prompt = `Tu es l'assistant intelligent d'une application de productivité. L'utilisateur a dicté ce texte : "${text}".
     Aujourd'hui nous sommes le : ${currentDate}.
     
-    Analyse finement le texte et renvoie STRICTEMENT ET UNIQUEMENT un objet JSON valide (sans balises markdown ni texte autour).
+    Ton unique rôle est d'analyser la demande et de la convertir STRICTEMENT en un objet JSON valide.
+    RÈGLE ABSOLUE : Extrais les informations de configuration (dates, heures, e-mails, rappels) pour remplir les clés spécifiques, et NE LES RÉPÈTE PAS dans le titre ou le contenu.
     
     Propriétés attendues dans le JSON :
-    - "title": un titre très court et pertinent résumant l'action.
-    - "content": le contenu détaillé, structuré et corrigé.
-    - "priority": obligatoirement "Haute", "Moyenne" ou "Basse" selon l'urgence exprimée.
-    - "target_date": si l'utilisateur demande une alarme, un rappel, ou une échéance à une date/heure précise ou dans X temps, déduis la date et l'heure exacte au format ISO 8601 (YYYY-MM-DDTHH:mm:ss.sssZ). Sinon, mets null.
-    - "popup_active": true si l'utilisateur veut une alerte / notification push (ou s'il y a une target_date définie), sinon false.
-    - "is_recurring": true si l'utilisateur demande un rappel quotidien ou récurrent, sinon false.
-    - "send_email": true si l'utilisateur demande explicitement à recevoir un e-mail, sinon false.`;
+    - "title": Un résumé très court.
+    - "content": Les détails de la note.
+    - "importance": "rouge" (urgent), "orange" (important), ou "vert" (normal).
+    - "is_list": true si l'utilisateur énumère des choses, sinon false.
+    - "calendar_time": SI demande d'ajout calendrier/agenda, date ISO 8601 (ex: 2026-09-15T16:00:00.000Z). Sinon null.
+    - "popup_time": SI demande d'alarme/pop-up ponctuelle (ex: dans 15 min, à 14h), date ISO 8601. Sinon null.
+    - "send_email": true SI l'utilisateur demande d'envoyer un e-mail immédiat maintenant. Sinon false.
+    - "daily_reminder": true SI l'utilisateur veut une relance ou un rappel tous les jours / quotidiennement. Sinon false.
+    - "daily_reminder_time": SI daily_reminder est true, déduis l'heure demandée au format "HH:mm" (ex: "09:00" ou "18:30"). Sinon null.`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',

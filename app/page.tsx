@@ -436,14 +436,18 @@ export default function Home() {
     }
     const isPopupActive = !!data.popup_time; 
 
+    const isDaily = !!data.daily_reminder;
+    const dailyTimeVal = data.daily_reminder_time || '09:00';
+
     const { error } = await supabase.from('notes').insert([{
       title: data.title || '',
       content: data.content || '',
       importance: data.importance || 'vert',
       subtasks: [],
       is_list: data.is_list || false,
-      reminder_active: false,
+      reminder_active: isDaily,
       reminder_popup_active: false,
+      daily_reminder_time: dailyTimeVal,
       target_date: targetDateValue,
       popup_active: isPopupActive
     }]);
@@ -454,6 +458,15 @@ export default function Home() {
       if ('Notification' in window && Notification.permission !== 'granted') {
          Notification.requestPermission();
       }
+      
+      if (data.send_email) {
+        await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: data.title || "Nouvelle note (IA)", importance: data.importance || 'vert' })
+        }).catch(e => console.error(e));
+      }
+
       setAiProposal(null);
       setNewTitle('');
       setNewContent('');
@@ -471,6 +484,8 @@ export default function Home() {
     if (data.importance) setImportance(data.importance);
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
     
+    let needsAdvancedPanel = false;
+
     if (data.popup_time) {
       const diffMs = getSafeTime(data.popup_time) - Date.now();
       if (diffMs > 0) {
@@ -478,12 +493,32 @@ export default function Home() {
         setPopupHours(Math.floor(totalMin / 60).toString());
         setPopupMinutes((totalMin % 60).toString());
         setShowPopupConfig(true);
+        needsAdvancedPanel = true;
       }
     } else if (data.calendar_time) {
       const d = new Date(data.calendar_time);
       const pad = (n: number) => n.toString().padStart(2, '0');
       setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
       setShowCalendarConfig(true);
+      needsAdvancedPanel = true;
+    }
+
+    if (data.send_email) {
+      setSendImmediateEmail(true);
+      needsAdvancedPanel = true;
+    }
+
+    if (data.daily_reminder) {
+      setShowDailyConfig(true);
+      setActivateReminder(true);
+      if (data.daily_reminder_time) {
+        setDailyTime(data.daily_reminder_time);
+      }
+      needsAdvancedPanel = true;
+    }
+
+    if (needsAdvancedPanel) {
+      setShowAdvancedSettings(true);
     }
     
     setAiProposal(null);
@@ -598,7 +633,6 @@ export default function Home() {
     await supabase.from('notes').update({ subtasks: updated }).eq('id', note.id); fetchNotes();
   };
 
-  // === FILTRES ===
   const displayedNotes = notes.filter(n => {
     if (n.completed) return false; 
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
@@ -617,7 +651,6 @@ export default function Home() {
   const snoozedNotes = notes.filter(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
   const hasSnoozedNotes = snoozedNotes.length > 0;
 
-  // === LOGIQUE DE CASCADE DU MODE FOCUS ===
   const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id) && !n.is_archived);
   const urgentNotes = focusableNotes.filter(n => n.importance === 'rouge');
   const importantNotes = focusableNotes.filter(n => n.importance === 'orange');
@@ -644,7 +677,6 @@ export default function Home() {
 
   const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
-  // Fonction abstraite pour afficher une note
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
       showArchived === true 
@@ -976,6 +1008,20 @@ export default function Home() {
                 aiProposal.importance === 'rouge' ? '🔴 Urgente' :
                 aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'
               }</p>
+              
+              {/* --- ADDED CODE START --- */}
+              {aiProposal.send_email && (
+                <p className="bg-blue-100 p-2 rounded text-blue-900 border border-blue-200">
+                  <strong>📨 E-mail :</strong> Envoi immédiat activé
+                </p>
+              )}
+              {aiProposal.daily_reminder && (
+                <p className="bg-green-100 p-2 rounded text-green-900 border border-green-200">
+                  <strong>🔄 Relance quotidienne :</strong> Activée à {aiProposal.daily_reminder_time || '09:00'}
+                </p>
+              )}
+              {/* --- ADDED CODE END --- */}
+
               {aiProposal.popup_time && (
                 <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
                   <strong>⏰ Alarme pop-up :</strong> {new Date(getSafeTime(aiProposal.popup_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
