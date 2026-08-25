@@ -84,7 +84,7 @@ export default function Home() {
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
-  const [listeningMode, setListeningMode] = useState<'none' | 'micro' | 'ai'>('none');
+  const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiProposal, setAiProposal] = useState<any>(null);
   const recognitionRef = useRef<any>(null);
@@ -357,7 +357,7 @@ export default function Home() {
     fetchNotes();
   };
 
-  const toggleDictation = (mode: 'micro' | 'ai') => {
+  const toggleDictation = (mode: 'title' | 'content' | 'list_item' | 'ai') => {
     if (listeningMode !== 'none') {
       if (recognitionRef.current) recognitionRef.current.stop();
       return;
@@ -381,8 +381,9 @@ export default function Home() {
       }
       transcript.text = current;
       
-      if (noteMode === 'list') setNewTitle(current);
-      else setNewContent(current);
+      if (mode === 'title') setNewTitle(current);
+      else if (mode === 'content') setNewContent(current);
+      else if (mode === 'list_item') setCurrentNewListItem(current);
     };
 
     recognition.onend = async () => {
@@ -436,18 +437,14 @@ export default function Home() {
     }
     const isPopupActive = !!data.popup_time; 
 
-    const isDaily = !!data.daily_reminder;
-    const dailyTimeVal = data.daily_reminder_time || '09:00';
-
     const { error } = await supabase.from('notes').insert([{
       title: data.title || '',
       content: data.content || '',
       importance: data.importance || 'vert',
       subtasks: [],
       is_list: data.is_list || false,
-      reminder_active: isDaily,
+      reminder_active: false,
       reminder_popup_active: false,
-      daily_reminder_time: dailyTimeVal,
       target_date: targetDateValue,
       popup_active: isPopupActive
     }]);
@@ -458,15 +455,6 @@ export default function Home() {
       if ('Notification' in window && Notification.permission !== 'granted') {
          Notification.requestPermission();
       }
-      
-      if (data.send_email) {
-        await fetch('/api/notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: data.title || "Nouvelle note (IA)", importance: data.importance || 'vert' })
-        }).catch(e => console.error(e));
-      }
-
       setAiProposal(null);
       setNewTitle('');
       setNewContent('');
@@ -484,8 +472,6 @@ export default function Home() {
     if (data.importance) setImportance(data.importance);
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
     
-    let needsAdvancedPanel = false;
-
     if (data.popup_time) {
       const diffMs = getSafeTime(data.popup_time) - Date.now();
       if (diffMs > 0) {
@@ -493,32 +479,12 @@ export default function Home() {
         setPopupHours(Math.floor(totalMin / 60).toString());
         setPopupMinutes((totalMin % 60).toString());
         setShowPopupConfig(true);
-        needsAdvancedPanel = true;
       }
     } else if (data.calendar_time) {
       const d = new Date(data.calendar_time);
       const pad = (n: number) => n.toString().padStart(2, '0');
       setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
       setShowCalendarConfig(true);
-      needsAdvancedPanel = true;
-    }
-
-    if (data.send_email) {
-      setSendImmediateEmail(true);
-      needsAdvancedPanel = true;
-    }
-
-    if (data.daily_reminder) {
-      setShowDailyConfig(true);
-      setActivateReminder(true);
-      if (data.daily_reminder_time) {
-        setDailyTime(data.daily_reminder_time);
-      }
-      needsAdvancedPanel = true;
-    }
-
-    if (needsAdvancedPanel) {
-      setShowAdvancedSettings(true);
     }
     
     setAiProposal(null);
@@ -1009,7 +975,6 @@ export default function Home() {
                 aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'
               }</p>
               
-              {/* --- ADDED CODE START --- */}
               {aiProposal.send_email && (
                 <p className="bg-blue-100 p-2 rounded text-blue-900 border border-blue-200">
                   <strong>📨 E-mail :</strong> Envoi immédiat activé
@@ -1020,7 +985,6 @@ export default function Home() {
                   <strong>🔄 Relance quotidienne :</strong> Activée à {aiProposal.daily_reminder_time || '09:00'}
                 </p>
               )}
-              {/* --- ADDED CODE END --- */}
 
               {aiProposal.popup_time && (
                 <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
@@ -1115,12 +1079,21 @@ export default function Home() {
 
         {noteMode === 'text' ? (
           <div className="flex flex-col gap-2">
-            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
-            <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-2 rounded text-black resize-y min-h-[80px] text-sm" disabled={loading || isAiProcessing} />
+            <div className="relative flex items-center w-full">
+              <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+              <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+            </div>
+            <div className="relative w-full">
+              <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black resize-y min-h-[80px] text-sm" disabled={loading || isAiProcessing} />
+              <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-1 rounded-full transition-colors ${listeningMode === 'content' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+            </div>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-2 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+            <div className="relative flex items-center w-full">
+              <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+              <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+            </div>
             
             <div className="bg-white border border-gray-300 rounded p-2 flex flex-col gap-2 shadow-sm">
               <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
@@ -1137,23 +1110,26 @@ export default function Home() {
               )}
               
               <div className="flex gap-2">
-                <input 
-                  type="text" 
-                  value={currentNewListItem} 
-                  onChange={(e) => setCurrentNewListItem(e.target.value)} 
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      if (currentNewListItem.trim()) {
-                        setNewListItems(prev => [...prev, currentNewListItem.trim()]);
-                        setCurrentNewListItem('');
+                <div className="relative flex-1 flex items-center">
+                  <input 
+                    type="text" 
+                    value={currentNewListItem} 
+                    onChange={(e) => setCurrentNewListItem(e.target.value)} 
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (currentNewListItem.trim()) {
+                          setNewListItems(prev => [...prev, currentNewListItem.trim()]);
+                          setCurrentNewListItem('');
+                        }
                       }
-                    }
-                  }}
-                  placeholder="Ajouter un élément..." 
-                  className="flex-1 border border-gray-300 p-1.5 rounded text-black text-xs" 
-                  disabled={loading || isAiProcessing} 
-                />
+                    }}
+                    placeholder="Ajouter un élément..." 
+                    className="w-full border border-gray-300 p-1.5 pr-8 rounded text-black text-xs" 
+                    disabled={loading || isAiProcessing} 
+                  />
+                  <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-1 rounded-full transition-colors ${listeningMode === 'list_item' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                </div>
                 <button 
                   type="button" 
                   onClick={() => {
@@ -1180,12 +1156,9 @@ export default function Home() {
           </select>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2 border-b border-gray-200 pb-3">
-          <button type="button" onClick={() => toggleDictation('micro')} disabled={listeningMode === 'ai' || isAiProcessing} className={`flex-1 py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${listeningMode === 'micro' ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}>
-            <span>🎙️</span> {listeningMode === 'micro' ? 'Cliquer pour arrêter' : 'Dictée simple'}
-          </button>
-          <button type="button" onClick={() => toggleDictation('ai')} disabled={listeningMode === 'micro' || isAiProcessing} className={`flex-1 py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
-            <span>🤖</span> {isAiProcessing ? 'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour analyser' : 'Dictée intelligente'}
+        <div className="border-b border-gray-200 pb-3 mt-1">
+          <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+            <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
           </button>
         </div>
 
