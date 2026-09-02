@@ -28,6 +28,16 @@ interface Note {
   created_at?: string; 
 }
 
+// === INTERFACE PLANNING ===
+interface PlanningEvent {
+  id: string;
+  title: string;
+  description?: string;
+  start_time: string;
+  end_time: string;
+  color: string;
+}
+
 const getSafeTime = (dateStr?: string) => {
   if (!dateStr) return 0;
   let s = dateStr.replace(' ', 'T');
@@ -49,7 +59,6 @@ const urlBase64ToUint8Array = (base64String: string) => {
 };
 
 export default function Home() {
-  // === NOUVEAU : LE HUB PRINCIPAL ===
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning'>('hub');
 
   const [notes, setNotes] = useState<Note[]>([]);
@@ -129,6 +138,14 @@ export default function Home() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [historySearch, setHistorySearch] = useState('');
 
+  // === ÉTATS DU PLANNING ===
+  const [planningEvents, setPlanningEvents] = useState<PlanningEvent[]>([]);
+  const [calendarStartDate, setCalendarStartDate] = useState(() => new Date());
+  const [showEventModal, setShowEventModal] = useState(false);
+  const [eventDateSlot, setEventDateSlot] = useState<Date | null>(null);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventColor, setEventColor] = useState('blue');
+
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
     if (error) { console.error("Erreur Fetch:", error); return; }
@@ -137,7 +154,18 @@ export default function Home() {
     }
   };
 
-  useEffect(() => { fetchNotes(); }, []);
+  const fetchPlanningEvents = async () => {
+    const { data, error } = await supabase.from('planning_events').select('*');
+    if (error) { console.error("Erreur Planning:", error); return; }
+    if (data) {
+      setPlanningEvents(data);
+    }
+  };
+
+  useEffect(() => { 
+    fetchNotes(); 
+    fetchPlanningEvents();
+  }, []);
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -155,45 +183,6 @@ export default function Home() {
       }).catch(err => console.error("Service Worker Error", err));
     }
   }, []);
-
-  const subscribeToPush = async () => {
-    try {
-      const registration = await navigator.serviceWorker.ready;
-      const publicVapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      
-      if (!publicVapidKey) {
-        alert("Erreur : La clé VAPID publique manque dans Vercel.");
-        return;
-      }
-
-      const convertedVapidKey = urlBase64ToUint8Array(publicVapidKey);
-      
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: convertedVapidKey
-      });
-
-      const res = await fetch('/api/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(subscription)
-      });
-
-      if (res.ok) {
-        setIsPushEnabled(true);
-        alert("✅ Téléphone connecté avec succès ! Tu recevras les alertes en arrière-plan.");
-      } else {
-        const err = await res.json();
-        alert("Erreur de sauvegarde : " + err.error);
-      }
-    } catch (error: any) {
-      if (Notification.permission === 'denied') {
-        alert("❌ Tu as bloqué les notifications. Tu dois les autoriser manuellement dans les paramètres de ton navigateur.");
-      } else {
-        alert("❌ Erreur d'abonnement : " + error.message);
-      }
-    }
-  };
 
   useEffect(() => {
     const interval = window.setInterval(async () => {
@@ -222,6 +211,68 @@ export default function Home() {
     
     return () => window.clearInterval(interval);
   }, [notes]);
+
+  // === FONCTIONS PLANNING ===
+  const getDaysArray = (start: Date, days: number) => {
+    return Array.from({ length: days }).map((_, i) => {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      return d;
+    });
+  };
+
+  const handleDayChange = (direction: number) => {
+    setCalendarStartDate(prev => {
+      const newDate = new Date(prev);
+      newDate.setDate(newDate.getDate() + (direction * 3));
+      return newDate;
+    });
+  };
+
+  const openAddEventModal = (day: Date, hour: number) => {
+    const slotDate = new Date(day);
+    slotDate.setHours(hour, 0, 0, 0);
+    setEventDateSlot(slotDate);
+    setEventTitle('');
+    setEventColor('blue');
+    setShowEventModal(true);
+  };
+
+  const savePlanningEvent = async () => {
+    if (!eventTitle.trim() || !eventDateSlot) return;
+    setLoading(true);
+
+    const endTime = new Date(eventDateSlot);
+    endTime.setHours(endTime.getHours() + 1); // Bulle de 1h par défaut
+
+    const { error } = await supabase.from('planning_events').insert([{
+      title: eventTitle,
+      start_time: eventDateSlot.toISOString(),
+      end_time: endTime.toISOString(),
+      color: eventColor
+    }]);
+
+    if (error) {
+      alert("Erreur de sauvegarde : " + error.message);
+    } else {
+      setShowEventModal(false);
+      fetchPlanningEvents();
+    }
+    setLoading(false);
+  };
+
+  const deletePlanningEvent = async (id: string) => {
+    if (window.confirm('Supprimer cet événement du planning ?')) {
+      await supabase.from('planning_events').delete().eq('id', id);
+      fetchPlanningEvents();
+    }
+  };
+
+  // Listes temporelles pour la grille
+  const daysToShow = getDaysArray(calendarStartDate, 3);
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7); // 07:00 à 22:00
+
+  // ===================================
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
@@ -892,20 +943,111 @@ export default function Home() {
         </div>
       )}
 
-      {/* ================= VUE : PLANNING (SQUELETTE) ================= */}
+      {/* ================= VUE : PLANNING (GRILLE VISUELLE SEULE) ================= */}
       {mainMode === 'planning' && (
-         <div className="flex flex-col gap-4 animate-fade-in">
-           <button onClick={() => setMainMode('hub')} className="mb-4 text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">
-              ← Menu Principal
-           </button>
-           
-           <h1 className="text-2xl font-bold text-gray-800">Mon Planning</h1>
-           
-           <div className="bg-white p-8 rounded-3xl shadow border border-gray-200 text-center flex flex-col items-center gap-6 mt-10">
-              <span className="text-6xl">🚧</span>
-              <h2 className="text-xl font-black text-gray-800">L'espace planning est en cours de construction.</h2>
-              <p className="text-sm text-gray-500 font-medium">Bientôt, tu pourras y glisser tes bulles d'entraînement de Muay Thai ou de sport pour configurer tes semaines-types.</p>
+         <div className="flex flex-col gap-4 animate-fade-in w-full">
+           <div className="flex items-center justify-between mb-2">
+             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">
+                ← Menu
+             </button>
+             <h1 className="text-xl font-black text-gray-800">Planning</h1>
            </div>
+
+           {/* Navigation des jours */}
+           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200">
+             <button onClick={() => handleDayChange(-1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
+             <div className="flex gap-2 overflow-x-hidden w-full px-2">
+               {daysToShow.map((day, idx) => (
+                 <div key={idx} className="flex-1 text-center font-bold text-sm text-gray-800 flex flex-col">
+                   <span className="text-xs text-gray-500 uppercase">{day.toLocaleDateString('fr-FR', { weekday: 'short' })}</span>
+                   <span>{day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</span>
+                 </div>
+               ))}
+             </div>
+             <button onClick={() => handleDayChange(1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
+           </div>
+
+           {/* Grille des heures */}
+           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
+             {/* Colonne des heures */}
+             <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
+               {hoursOfDay.map(hour => (
+                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
+                   <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
+                 </div>
+               ))}
+             </div>
+
+             {/* Colonnes des jours */}
+             <div className="flex flex-1">
+               {daysToShow.map((day, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative">
+                   {hoursOfDay.map(hour => {
+                     // Filtre des événements pour cette case
+                     const slotEvents = planningEvents.filter(ev => {
+                       const evDate = new Date(ev.start_time);
+                       return evDate.getDate() === day.getDate() && 
+                              evDate.getMonth() === day.getMonth() && 
+                              evDate.getFullYear() === day.getFullYear() &&
+                              evDate.getHours() === hour;
+                     });
+
+                     return (
+                       <div 
+                         key={hour} 
+                         onClick={() => openAddEventModal(day, hour)}
+                         className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative"
+                       >
+                         {slotEvents.map(ev => (
+                           <div 
+                             key={ev.id} 
+                             onClick={(e) => { e.stopPropagation(); deletePlanningEvent(ev.id); }}
+                             className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${
+                               ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' :
+                               ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' :
+                               ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' :
+                               'bg-gray-100 border-gray-300 text-gray-900'
+                             }`}
+                           >
+                             <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
+                           </div>
+                         ))}
+                       </div>
+                     );
+                   })}
+                 </div>
+               ))}
+             </div>
+           </div>
+
+           {/* Modal d'ajout rapide d'événement */}
+           {showEventModal && (
+             <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
+                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">
+                   Planifier à {eventDateSlot?.getHours()}h00
+                 </h3>
+                 <input 
+                   type="text" 
+                   value={eventTitle} 
+                   onChange={(e) => setEventTitle(e.target.value)} 
+                   placeholder="Ex: Entraînement Muay Thai..." 
+                   className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
+                   autoFocus
+                 />
+                 <div className="flex gap-2 w-full justify-between">
+                   <button onClick={() => setEventColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${eventColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setEventColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${eventColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setEventColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${eventColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setEventColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${eventColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                 </div>
+                 <div className="flex gap-2 mt-2">
+                   <button onClick={savePlanningEvent} disabled={loading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">Ajouter</button>
+                   <button onClick={() => setShowEventModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
+                 </div>
+               </div>
+             </div>
+           )}
          </div>
       )}
 
@@ -1325,6 +1467,7 @@ export default function Home() {
                      currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
                   </span>
 
+                  {/* CORRECTION : N'affiche rien si pas de titre */}
                   {currentFocusNote.title && (
                     <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
                       {currentFocusNote.title}
