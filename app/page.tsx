@@ -131,9 +131,9 @@ export default function Home() {
 
   // === ÉTATS DU PLANNING (SEMAINE TYPE) ===
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-  const [visibleDayIndex, setVisibleDayIndex] = useState(0); // Index pour la navigation (0 = Lundi)
+  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
-  const [savedTemplates, setSavedTemplates] = useState<any[]>([]); // Liste des modèles en BDD
+  const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   
   // Modal Planning
   const [showBlockModal, setShowBlockModal] = useState(false);
@@ -149,7 +149,6 @@ export default function Home() {
   };
 
   const fetchTemplates = async () => {
-    // Récupère les semaines-types depuis la BDD (table planning_templates créée via SQL)
     const { data, error } = await supabase.from('planning_templates').select('*').order('created_at', { ascending: false });
     if (!error && data) setSavedTemplates(data);
   };
@@ -229,9 +228,8 @@ export default function Home() {
   
   const handleDayNavigation = (direction: number) => {
     let newIndex = visibleDayIndex + direction;
-    // Bloque le défilement pour ne pas sortir de la semaine (Lundi -> Dimanche)
     if (newIndex < 0) newIndex = 0;
-    if (newIndex > 4) newIndex = 4; // Max index pour afficher les 3 derniers jours (Vendredi, Samedi, Dimanche)
+    if (newIndex > 4) newIndex = 4;
     setVisibleDayIndex(newIndex);
   };
 
@@ -300,15 +298,14 @@ export default function Home() {
     const daysMap: Record<string, number> = { 'Dimanche': 0, 'Lundi': 1, 'Mardi': 2, 'Mercredi': 3, 'Jeudi': 4, 'Vendredi': 5, 'Samedi': 6 };
     
     weeklyBlocks.forEach(block => {
-      // Calcule la date de la *prochaine* occurrence de ce jour de la semaine
       const today = new Date();
       const targetDay = daysMap[block.day];
       const date = new Date(today);
-      date.setDate(date.getDate() + ((targetDay + 7 - date.getDay()) % 7 || 7)); // Donne le jour cible dans les 7 prochains jours
+      date.setDate(date.getDate() + ((targetDay + 7 - date.getDay()) % 7 || 7));
       date.setHours(block.startHour, 0, 0, 0);
       
       const end = new Date(date);
-      end.setHours(date.getHours() + 1); // Bloc d'1 heure
+      end.setHours(date.getHours() + 1);
       
       const pad = (n: number) => (n < 10 ? '0' + n : n);
       const formatICSDate = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
@@ -325,9 +322,8 @@ export default function Home() {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
-  // Tableau des jours affichés à l'écran (3 colonnes)
   const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7); // 07h à 22h
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
 
   // === NOTES LOGIC ===
@@ -496,6 +492,7 @@ export default function Home() {
     if (error) alert("Erreur Supabase : " + error.message);
     else {
       if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
+      
       setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
       fetchNotes(); setActiveTab('notes');
     }
@@ -944,8 +941,6 @@ export default function Home() {
                   <button 
                     onClick={() => {
                       const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
-                      // Dans une vraie app, on mettrait une corbeille à côté de chaque modèle.
-                      // Pour l'instant on fait simple : on charge, et si on veut supprimer on le gère.
                     }} 
                     className="text-xs text-red-500 font-bold hidden"
                   >Supprimer</button>
@@ -1003,7 +998,7 @@ export default function Home() {
                  <div className="flex gap-2 w-full justify-between">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${blockColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
-                   <button onClick={() => setEventColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${blockColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setBlockColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${blockColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${blockColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                  </div>
                  <div className="flex gap-2 mt-2">
