@@ -439,7 +439,9 @@ export default function Home() {
     if (error) alert("Erreur Supabase : " + error.message);
     else {
       if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
-      setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems(''); setCurrentNewListItem('');
+      
+      // === CORRECTION ICI : passage d'un tableau vide [] au lieu de '' ===
+      setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
       fetchNotes(); setActiveTab('notes');
     }
     setLoading(false);
