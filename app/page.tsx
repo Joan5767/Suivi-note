@@ -59,49 +59,46 @@ const urlBase64ToUint8Array = (base64String: string) => {
 };
 
 export default function Home() {
+  // === ÉTATS GLOBAUX & HUB ===
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning'>('hub');
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [loading, setLoading] = useState(false);
+  const [isPushEnabled, setIsPushEnabled] = useState(false);
 
+  // === ÉTATS DES NOTES ===
   const [notes, setNotes] = useState<Note[]>([]);
+  const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
+  const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
-  const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
-  
-  const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
-  
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   
+  // Paramétrages avancés de notes
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
-  
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
   const [popupHours, setPopupHours] = useState('');
   const [popupMinutes, setPopupMinutes] = useState('');
-  
   const [showDailyConfig, setShowDailyConfig] = useState(false);
   const [activateReminder, setActivateReminder] = useState(false); 
   const [reminderPopupActive, setReminderPopupActive] = useState(false); 
   const [dailyTime, setDailyTime] = useState('09:00');
-  
   const [showCalendarConfig, setShowCalendarConfig] = useState(false);
   const [targetDate, setTargetDate] = useState('');
   const [enableGoogleCal, setEnableGoogleCal] = useState(true);
   const [enableICal, setEnableICal] = useState(false);
   
-  const [loading, setLoading] = useState(false);
+  // Affichage, édition et filtres notes
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
-  const [currentTime, setCurrentTime] = useState(() => Date.now());
-  
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
-  
-  const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
-  const [isAiProcessing, setIsAiProcessing] = useState(false);
-  const [aiProposal, setAiProposal] = useState<any>(null);
-  const recognitionRef = useRef<any>(null);
-
-  const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState('');
+  const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
+    rouge: true, orange: true, vert: true,
+  });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -113,30 +110,25 @@ export default function Home() {
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
   const [showEditingDailyConfig, setShowEditingDailyConfig] = useState(false);
-  
   const [editingImportance, setEditingImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [editingReminderActive, setEditingReminderActive] = useState(false);
   const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
-  
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
-  
-  const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
-    rouge: true,
-    orange: true,
-    vert: true,
-  });
 
-  const [isPushEnabled, setIsPushEnabled] = useState(false);
+  // IA et Dictée
+  const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [aiProposal, setAiProposal] = useState<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
 
+  // Nettoyage notes
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
-  
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [historySearch, setHistorySearch] = useState('');
 
   // === ÉTATS DU PLANNING ===
   const [planningEvents, setPlanningEvents] = useState<PlanningEvent[]>([]);
@@ -146,20 +138,15 @@ export default function Home() {
   const [eventTitle, setEventTitle] = useState('');
   const [eventColor, setEventColor] = useState('blue');
 
+  // === DATA FETCHING ===
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
-    if (error) { console.error("Erreur Fetch:", error); return; }
-    if (data) {
-      setNotes(data);
-    }
+    if (!error && data) setNotes(data);
   };
 
   const fetchPlanningEvents = async () => {
     const { data, error } = await supabase.from('planning_events').select('*');
-    if (error) { console.error("Erreur Planning:", error); return; }
-    if (data) {
-      setPlanningEvents(data);
-    }
+    if (!error && data) setPlanningEvents(data);
   };
 
   useEffect(() => { 
@@ -167,23 +154,43 @@ export default function Home() {
     fetchPlanningEvents();
   }, []);
 
+  // === PUSH NOTIFICATIONS ===
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
         reg.pushManager.getSubscription().then((sub) => {
           if (sub) {
             setIsPushEnabled(true);
-            fetch('/api/subscribe', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(sub)
-            }).catch(e => console.error("Erreur de synchronisation Push:", e));
+            fetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub) }).catch(console.error);
           }
         });
-      }).catch(err => console.error("Service Worker Error", err));
+      }).catch(console.error);
     }
   }, []);
 
+  const subscribeToPush = async () => {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const publicVapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!publicVapidKey) return alert("Erreur : La clé VAPID publique manque dans Vercel.");
+
+      const convertedVapidKey = urlBase64ToUint8Array(publicVapidKey);
+      const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: convertedVapidKey });
+      const res = await fetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subscription) });
+
+      if (res.ok) {
+        setIsPushEnabled(true);
+        alert("✅ Téléphone connecté avec succès ! Tu recevras les alertes en arrière-plan.");
+      } else {
+        const err = await res.json();
+        alert("Erreur de sauvegarde : " + err.error);
+      }
+    } catch (error: any) {
+      alert(Notification.permission === 'denied' ? "❌ Tu as bloqué les notifications." : "❌ Erreur d'abonnement : " + error.message);
+    }
+  };
+
+  // === HORLOGE ET ALARMES ===
   useEffect(() => {
     const interval = window.setInterval(async () => {
       const now = Date.now();
@@ -208,11 +215,10 @@ export default function Home() {
       }
       if (needsUpdate) fetchNotes();
     }, 1000); 
-    
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  // === FONCTIONS PLANNING ===
+  // === PLANNING LOGIC ===
   const getDaysArray = (start: Date, days: number) => {
     return Array.from({ length: days }).map((_, i) => {
       const d = new Date(start);
@@ -243,7 +249,7 @@ export default function Home() {
     setLoading(true);
 
     const endTime = new Date(eventDateSlot);
-    endTime.setHours(endTime.getHours() + 1); // Bulle de 1h par défaut
+    endTime.setHours(endTime.getHours() + 1);
 
     const { error } = await supabase.from('planning_events').insert([{
       title: eventTitle,
@@ -252,12 +258,8 @@ export default function Home() {
       color: eventColor
     }]);
 
-    if (error) {
-      alert("Erreur de sauvegarde : " + error.message);
-    } else {
-      setShowEventModal(false);
-      fetchPlanningEvents();
-    }
+    if (error) alert("Erreur de sauvegarde : " + error.message);
+    else { setShowEventModal(false); fetchPlanningEvents(); }
     setLoading(false);
   };
 
@@ -268,12 +270,10 @@ export default function Home() {
     }
   };
 
-  // Listes temporelles pour la grille
   const daysToShow = getDaysArray(calendarStartDate, 3);
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7); // 07:00 à 22:00
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
-  // ===================================
-
+  // === NOTES LOGIC ===
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
     const now = Date.now();
@@ -281,10 +281,8 @@ export default function Home() {
       if (n.completed) return false; 
       if (mode === 'actif' && n.is_archived) return false;
       if (mode === 'archive' && !n.is_archived) return false;
-      
       if (!n.created_at) return false;
-      const age = now - new Date(n.created_at).getTime();
-      return age >= thresholdMs;
+      return now - new Date(n.created_at).getTime() >= thresholdMs;
     });
     setCleanupNotes(oldNotes);
     setCurrentCleanupIndex(0);
@@ -297,25 +295,18 @@ export default function Home() {
   };
 
   const handleCleanupAction = async (action: 'delete' | 'archive' | 'keep', note: Note) => {
-    if (action === 'delete') {
-      await supabase.from('notes').delete().eq('id', note.id);
-      fetchNotes();
-    } else if (action === 'archive') {
-      await supabase.from('notes').update({ is_archived: true }).eq('id', note.id);
-      fetchNotes();
-    }
+    if (action === 'delete') await supabase.from('notes').delete().eq('id', note.id);
+    else if (action === 'archive') await supabase.from('notes').update({ is_archived: true }).eq('id', note.id);
+    fetchNotes();
     setCurrentCleanupIndex(prev => prev + 1);
   };
 
   const deleteAllHistory = async () => {
-    if (window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ? Cette action est irréversible.')) {
+    if (window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ?')) {
       setLoading(true);
       const { error } = await supabase.from('notes').delete().eq('completed', true);
-      if (error) {
-        alert("Erreur lors de la suppression : " + error.message);
-      } else {
-        fetchNotes();
-      }
+      if (error) alert("Erreur lors de la suppression : " + error.message);
+      else fetchNotes();
       setLoading(false);
     }
   };
@@ -338,49 +329,27 @@ export default function Home() {
       finalTargetDate = new Date(targetDate).toISOString();
     }
 
-    const finalSubtasks = noteMode === 'list' 
-      ? newListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })) 
-      : [];
+    const finalSubtasks = noteMode === 'list' ? newListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })) : [];
 
     const { error } = await supabase.from('notes').insert([{ 
-        title: newTitle, 
-        content: newContent,
-        importance: importance,
-        subtasks: finalSubtasks,
-        is_list: noteMode === 'list',
-        reminder_active: activateReminder,
-        reminder_popup_active: reminderPopupActive,
-        daily_reminder_time: dailyTime,
-        target_date: finalTargetDate,
-        popup_active: finalPopupActive
+        title: newTitle, content: newContent, importance, subtasks: finalSubtasks, is_list: noteMode === 'list',
+        reminder_active: activateReminder, reminder_popup_active: reminderPopupActive, daily_reminder_time: dailyTime,
+        target_date: finalTargetDate, popup_active: finalPopupActive
     }]);
 
-    if (error) {
-      alert("Erreur de sauvegarde Supabase : " + error.message);
-      setLoading(false);
-      return;
-    }
+    if (error) { alert("Erreur Supabase : " + error.message); setLoading(false); return; }
 
     if (sendImmediateEmail) {
-      await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle.trim() ? newTitle : "Nouvelle note", importance })
-      });
+      await fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle.trim() ? newTitle : "Nouvelle note", importance }) });
     }
 
-    setNewTitle(''); setNewContent(''); setImportance('vert');
-    setNewListItems([]); setCurrentNewListItem('');
-    setSendImmediateEmail(false); 
-    setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
+    setNewTitle(''); setNewContent(''); setImportance('vert'); setNewListItems([]); setCurrentNewListItem('');
+    setSendImmediateEmail(false); setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
     setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
-    setShowCalendarConfig(false); setTargetDate('');
-    setShowAdvancedSettings(false);
+    setShowCalendarConfig(false); setTargetDate(''); setShowAdvancedSettings(false);
     setLoading(false);
-    
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
-    fetchNotes();
-    setActiveTab('notes');
+    fetchNotes(); setActiveTab('notes');
   };
 
   const deleteNote = async (id: string) => {
@@ -392,11 +361,7 @@ export default function Home() {
 
   const triggerImmediateEmail = async (note: Note) => {
     if (window.confirm('Es-tu sûr de vouloir envoyer un e-mail immédiat pour cette note ?')) {
-      await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance })
-      });
+      await fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance }) });
       alert('E-mail envoyé avec succès !');
     }
   };
@@ -417,24 +382,17 @@ export default function Home() {
       return;
     }
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) { alert("Ton navigateur ne supporte pas la dictée vocale."); return; }
+    if (!SpeechRecognition) return alert("Ton navigateur ne supporte pas la dictée vocale.");
     
     const recognition = new SpeechRecognition();
-    recognition.lang = 'fr-FR';
-    recognition.continuous = true; 
-    recognitionRef.current = recognition;
-    
+    recognition.lang = 'fr-FR'; recognition.continuous = true; recognitionRef.current = recognition;
     const transcript = { text: '' };
     
     recognition.onstart = () => setListeningMode(mode);
-    
     recognition.onresult = (event: any) => {
       let current = '';
-      for (let i = 0; i < event.results.length; i++) {
-        current += event.results[i][0].transcript + ' ';
-      }
+      for (let i = 0; i < event.results.length; i++) current += event.results[i][0].transcript + ' ';
       transcript.text = current;
-      
       if (mode === 'title') setNewTitle(current);
       else if (mode === 'content') setNewContent(current);
       else if (mode === 'list_item') setCurrentNewListItem(current);
@@ -443,38 +401,21 @@ export default function Home() {
     recognition.onend = async () => {
       setListeningMode('none');
       const finalTranscript = transcript.text;
-
       if (mode === 'ai') {
-        if (!finalTranscript.trim()) {
-          alert("❌ Le micro n'a rien enregistré. Vérifie tes permissions.");
-          return;
-        }
-
+        if (!finalTranscript.trim()) return alert("❌ Le micro n'a rien enregistré.");
         setIsAiProcessing(true);
-
         try {
           const res = await fetch('/api/gemini', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text: finalTranscript,
-              currentDate: new Date().toLocaleString('fr-FR')
-            })
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: finalTranscript, currentDate: new Date().toLocaleString('fr-FR') })
           });
-          
           if (!res.ok) {
             const errData = await res.json();
-            alert("❌ Erreur Vercel/Google : " + (errData.error || "Erreur inconnue"));
-            setIsAiProcessing(false);
-            return;
+            alert("❌ Erreur Google : " + (errData.error || "Erreur inconnue"));
+          } else {
+            setAiProposal(await res.json());
           }
-
-          const data = await res.json();
-          setAiProposal(data);
-          
-        } catch (e: any) {
-          alert("❌ Erreur réseau lors de la connexion à l'IA : " + e.message);
-        }
+        } catch (e: any) { alert("❌ Erreur réseau : " + e.message); }
         setIsAiProcessing(false);
       }
     };
@@ -484,38 +425,22 @@ export default function Home() {
   const confirmAiNote = async (data: any) => {
     setLoading(true);
     let targetDateValue = '';
-    if (data.popup_time) {
-      targetDateValue = new Date(data.popup_time).toISOString();
-    } else if (data.calendar_time) {
-      targetDateValue = new Date(data.calendar_time).toISOString();
-    }
+    if (data.popup_time) targetDateValue = new Date(data.popup_time).toISOString();
+    else if (data.calendar_time) targetDateValue = new Date(data.calendar_time).toISOString();
+    
     const isPopupActive = !!data.popup_time; 
 
     const { error } = await supabase.from('notes').insert([{
-      title: data.title || '',
-      content: data.content || '',
-      importance: data.importance || 'vert',
-      subtasks: [],
-      is_list: data.is_list || false,
-      reminder_active: false,
-      reminder_popup_active: false,
-      target_date: targetDateValue,
-      popup_active: isPopupActive
+      title: data.title || '', content: data.content || '', importance: data.importance || 'vert', subtasks: [],
+      is_list: data.is_list || false, reminder_active: false, reminder_popup_active: false,
+      target_date: targetDateValue, popup_active: isPopupActive
     }]);
 
-    if (error) {
-      alert("Erreur Supabase : " + error.message);
-    } else {
-      if ('Notification' in window && Notification.permission !== 'granted') {
-         Notification.requestPermission();
-      }
-      setAiProposal(null);
-      setNewTitle('');
-      setNewContent('');
-      setNewListItems([]);
-      setCurrentNewListItem('');
-      fetchNotes();
-      setActiveTab('notes');
+    if (error) alert("Erreur Supabase : " + error.message);
+    else {
+      if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
+      setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems(''); setCurrentNewListItem('');
+      fetchNotes(); setActiveTab('notes');
     }
     setLoading(false);
   };
@@ -530,8 +455,7 @@ export default function Home() {
       const diffMs = getSafeTime(data.popup_time) - Date.now();
       if (diffMs > 0) {
         const totalMin = Math.floor(diffMs / (1000 * 60));
-        setPopupHours(Math.floor(totalMin / 60).toString());
-        setPopupMinutes((totalMin % 60).toString());
+        setPopupHours(Math.floor(totalMin / 60).toString()); setPopupMinutes((totalMin % 60).toString());
         setShowPopupConfig(true);
       }
     } else if (data.calendar_time) {
@@ -540,9 +464,7 @@ export default function Home() {
       setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
       setShowCalendarConfig(true);
     }
-    
-    setAiProposal(null);
-    setActiveTab('create');
+    setAiProposal(null); setActiveTab('create');
   };
 
   const formatDatesForCalendar = (dateString: string) => {
@@ -567,7 +489,7 @@ export default function Home() {
     const blob = new Blob([icsContent], { type: 'text/calendar' });
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
-  
+
   const saveEdit = async (id: string) => {
     let finalTargetDate = editingTargetDate; 
     let finalPopupActive = editingPopupActive;
@@ -576,44 +498,26 @@ export default function Home() {
       const d = new Date();
       d.setHours(d.getHours() + (parseInt(editingPopupHours) || 0));
       d.setMinutes(d.getMinutes() + (parseInt(editingPopupMinutes) || 0));
-      finalTargetDate = d.toISOString();
-      finalPopupActive = true;
+      finalTargetDate = d.toISOString(); finalPopupActive = true;
     }
 
     await supabase.from('notes').update({ 
-      title: editingTitle, 
-      content: editingContent, 
-      target_date: finalTargetDate, 
-      popup_active: finalPopupActive,
-      importance: editingImportance,
-      reminder_active: editingReminderActive,
-      reminder_popup_active: editingReminderPopupActive,
+      title: editingTitle, content: editingContent, target_date: finalTargetDate, popup_active: finalPopupActive,
+      importance: editingImportance, reminder_active: editingReminderActive, reminder_popup_active: editingReminderPopupActive,
       daily_reminder_time: editingDailyTime
     }).eq('id', id);
-    
-    setEditingId(null); 
-    fetchNotes();
+    setEditingId(null); fetchNotes();
   };
 
   const startEditing = (note: Note) => {
-    setEditingId(note.id); 
-    setEditingTitle(note.title || ''); 
-    setEditingContent(note.content || '');
-    setEditingTargetDate(note.target_date || ''); 
-    setEditingPopupActive(note.popup_active || false);
-    
-    setEditingImportance(note.importance || 'vert');
-    setEditingReminderActive(note.reminder_active || false);
-    setEditingReminderPopupActive(note.reminder_popup_active || false);
-    setEditingDailyTime(note.daily_reminder_time || '09:00');
-
-    setShowEditingPopupConfig(false);
-    setShowEditingDailyConfig(false);
-    setShowEditingExactDateConfig(false);
-    setEditingPopupHours('');
-    setEditingPopupMinutes('');
+    setEditingId(note.id); setEditingTitle(note.title || ''); setEditingContent(note.content || '');
+    setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
+    setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
+    setEditingReminderPopupActive(note.reminder_popup_active || false); setEditingDailyTime(note.daily_reminder_time || '09:00');
+    setShowEditingPopupConfig(false); setShowEditingDailyConfig(false); setShowEditingExactDateConfig(false);
+    setEditingPopupHours(''); setEditingPopupMinutes('');
   };
-  
+
   const snoozeNote = async (id: string, days: number) => {
     const snoozeDate = new Date(); snoozeDate.setDate(snoozeDate.getDate() + days);
     await supabase.from('notes').update({ snooze_until: snoozeDate.toISOString() }).eq('id', id);
@@ -624,11 +528,8 @@ export default function Home() {
     const result = window.prompt("Pendant combien de jours veux-tu masquer cette note ?", "3");
     if (result !== null) {
       const days = parseInt(result, 10);
-      if (!isNaN(days) && days > 0) {
-        snoozeNote(id, days);
-      } else {
-        alert("Veuillez entrer un nombre de jours valide.");
-      }
+      if (!isNaN(days) && days > 0) snoozeNote(id, days);
+      else alert("Veuillez entrer un nombre de jours valide.");
     }
   };
 
@@ -642,8 +543,7 @@ export default function Home() {
 
   const addSubtask = async (note: Note) => {
     const text = newSubtaskTexts[note.id]; if (!text || !text.trim()) return;
-    const newSubtask = { id: crypto.randomUUID(), text, completed: false };
-    const updatedSubtasks = [...(note.subtasks || []), newSubtask];
+    const updatedSubtasks = [...(note.subtasks || []), { id: crypto.randomUUID(), text, completed: false }];
     await supabase.from('notes').update({ subtasks: updatedSubtasks }).eq('id', note.id);
     setNewSubtaskTexts(prev => ({ ...prev, [note.id]: '' })); fetchNotes();
   };
@@ -668,8 +568,7 @@ export default function Home() {
     return (n.title && n.title.toLowerCase().includes(term)) || (n.content && n.content.toLowerCase().includes(term));
   });
 
-  const snoozedNotes = notes.filter(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
-  const hasSnoozedNotes = snoozedNotes.length > 0;
+  const hasSnoozedNotes = notes.some(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
 
   const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id) && !n.is_archived);
   const urgentNotes = focusableNotes.filter(n => n.importance === 'rouge');
@@ -679,15 +578,9 @@ export default function Home() {
   let currentFocusNote: Note | null = null;
   let focusStatus = '';
 
-  if (urgentNotes.length > 0) {
-    currentFocusNote = urgentNotes[0];
-  } else if (importantNotes.length > 0) {
-    currentFocusNote = importantNotes[0];
-    focusStatus = 'Plus aucune urgence ✓';
-  } else if (normalNotes.length > 0) {
-    currentFocusNote = normalNotes[0];
-    focusStatus = 'Plus aucune tâche importante ✓';
-  }
+  if (urgentNotes.length > 0) { currentFocusNote = urgentNotes[0]; } 
+  else if (importantNotes.length > 0) { currentFocusNote = importantNotes[0]; focusStatus = 'Plus aucune urgence ✓'; } 
+  else if (normalNotes.length > 0) { currentFocusNote = normalNotes[0]; focusStatus = 'Plus aucune tâche importante ✓'; }
 
   const columns = [
     { id: 'rouge', title: '🔴 Priorité Urgente', notes: displayedNotes.filter(n => n.importance === 'rouge') },
@@ -697,17 +590,13 @@ export default function Home() {
 
   const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
 
+  // ================= RENDER NOTE ITEM =================
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
-      showArchived === true 
-        ? 'border-gray-300 bg-gray-50' 
-        : note.importance === 'rouge' 
-          ? 'border-red-500 bg-white' 
-          : note.importance === 'orange' 
-            ? 'border-orange-500 bg-white' 
-            : 'border-green-500 bg-white'
+      showArchived === true ? 'border-gray-300 bg-gray-50' : 
+      note.importance === 'rouge' ? 'border-red-500 bg-white' : 
+      note.importance === 'orange' ? 'border-orange-500 bg-white' : 'border-green-500 bg-white'
     }`}>
-      
       {note.popup_active && note.target_date && editingId !== note.id && (
         <div className={`p-1.5 rounded flex items-center justify-between shadow-sm border-2 ${showArchived === true ? 'bg-gray-100 border-gray-300' : 'bg-red-50 border-red-400'}`}>
           <span className={`text-xs font-black flex items-center gap-1 ${showArchived === true ? 'text-gray-500' : 'text-red-800'}`}>
@@ -717,8 +606,7 @@ export default function Home() {
             {(() => {
               const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
               if (diff <= 0) return "En cours...";
-              const m = Math.floor(diff / 60);
-              const s = diff % 60;
+              const m = Math.floor(diff / 60); const s = diff % 60;
               return `${m}m ${s}s`;
             })()}
           </span>
@@ -737,11 +625,7 @@ export default function Home() {
               </>
             )}
             
-            <select
-              value={editingImportance}
-              onChange={(e) => setEditingImportance(e.target.value as any)}
-              className="border border-gray-400 p-1.5 rounded text-black text-sm w-full font-bold"
-            >
+            <select value={editingImportance} onChange={(e) => setEditingImportance(e.target.value as any)} className="border border-gray-400 p-1.5 rounded text-black text-sm w-full font-bold">
               <option value="vert">🟢 Priorité Normale</option>
               <option value="orange">🟠 Priorité Importante</option>
               <option value="rouge">🔴 Priorité Urgente</option>
@@ -755,14 +639,8 @@ export default function Home() {
                 <div className="flex flex-col gap-2 bg-green-50 p-2 rounded-b border border-green-200 border-t-0">
                   <div className="flex flex-wrap items-center gap-3 justify-center">
                     <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black text-xs bg-white" />
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
-                      <input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />
-                      E-mail
-                    </label>
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900">
-                      <input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />
-                      Pop-up
-                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900"><input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />E-mail</label>
+                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900"><input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />Pop-up</label>
                   </div>
                 </div>
               )}
@@ -775,32 +653,15 @@ export default function Home() {
                 </button>
                 {showEditingExactDateConfig && (
                   <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
-                    <input 
-                      type="datetime-local" 
-                      value={editingTargetDate ? (() => {
-                        const ts = getSafeTime(editingTargetDate);
-                        if (!ts) return '';
-                        const d = new Date(ts);
-                        const pad = (n: number) => n.toString().padStart(2, '0');
-                        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-                      })() : ''} 
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          setEditingTargetDate(new Date(e.target.value).toISOString());
-                        } else {
-                          setEditingTargetDate('');
-                        }
-                      }} 
-                      className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" 
-                    />
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1">
-                      <input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />
-                      Activer l'alarme pop-up à cette date
-                    </label>
+                    <input type="datetime-local" value={editingTargetDate ? (() => {
+                      const ts = getSafeTime(editingTargetDate); if (!ts) return '';
+                      const d = new Date(ts); const pad = (n: number) => n.toString().padStart(2, '0');
+                      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    })() : ''} onChange={(e) => { setEditingTargetDate(e.target.value ? new Date(e.target.value).toISOString() : ''); }} className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" />
+                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1"><input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />Activer l'alarme pop-up à cette date</label>
                   </div>
                 )}
               </div>
-
               <div className="flex flex-col">
                 <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
                   <span>⏰ Alarme pop-up rapide (Dans...)</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
@@ -815,20 +676,13 @@ export default function Home() {
                       <span className="text-xs font-bold text-indigo-900">min</span>
                     </div>
                     {(editingPopupHours || editingPopupMinutes) && (
-                      <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">
-                        ✖ Annuler
-                      </button>
+                      <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">✖ Annuler</button>
                     )}
                   </div>
                 )}
               </div>
-
-              <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2">
-                <span>📨</span> E-mail immédiat
-              </button>
-
+              <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2"><span>📨</span> E-mail immédiat</button>
             </div>
-
             <div className="flex gap-2 mt-1">
               <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
               <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
@@ -838,11 +692,7 @@ export default function Home() {
           <div onDoubleClick={() => startEditing(note)} className={`flex-1 w-full overflow-hidden`}>
              {showArchived === true && (
                <div className="mb-1">
-                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                    note.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' :
-                    note.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                    'bg-green-50 text-green-600 border-green-200'
-                  }`}>
+                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${note.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' : note.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-green-50 text-green-600 border-green-200'}`}>
                     {note.importance === 'rouge' ? '🔴 Urgent' : note.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
                  </span>
                </div>
@@ -891,27 +741,12 @@ export default function Home() {
 
       {editingId !== note.id && (
         <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative">
-          <button 
-            onClick={() => updateNote(note.id, 'completed', true)} 
-            className={`font-extrabold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-sm transition-colors ${showArchived === true ? 'bg-gray-200 text-gray-600 hover:bg-gray-300' : 'bg-green-100 text-green-700 hover:bg-green-200 hover:text-green-800'}`}
-          >
-            <span className="text-sm">✓</span> Terminé
-          </button>
-          <button 
-            onClick={() => setOpenMenuId(openMenuId === note.id ? null : note.id)} 
-            className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm border ${openMenuId === note.id ? 'bg-gray-200 text-gray-800 border-gray-300' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}
-          >
-            ⚙️ Options {openMenuId === note.id ? '▲' : '▼'}
-          </button>
-
+          <button onClick={() => updateNote(note.id, 'completed', true)} className={`font-extrabold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-sm transition-colors ${showArchived === true ? 'bg-gray-200 text-gray-600 hover:bg-gray-300' : 'bg-green-100 text-green-700 hover:bg-green-200 hover:text-green-800'}`}><span className="text-sm">✓</span> Terminé</button>
+          <button onClick={() => setOpenMenuId(openMenuId === note.id ? null : note.id)} className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm border ${openMenuId === note.id ? 'bg-gray-200 text-gray-800 border-gray-300' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}>⚙️ Options {openMenuId === note.id ? '▲' : '▼'}</button>
           {openMenuId === note.id && (
             <div className="absolute bottom-full right-0 mb-2 w-36 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
-              {showArchived === 'snoozed' && (
-                 <button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>
-              )}
-              {showArchived === false && (
-                <button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>
-              )}
+              {showArchived === 'snoozed' && (<button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>)}
+              {showArchived === false && (<button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>)}
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
               <button onClick={() => { updateNote(note.id, 'is_archived', !note.is_archived); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">📦 {note.is_archived ? 'Désarchiver' : 'Archiver'}</button>
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
@@ -919,41 +754,108 @@ export default function Home() {
           )}
         </div>
       )}
-
     </li>
   );
 
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
+      {/* ================= MODALS GLOBALES ================= */}
+      {showCleanupModal && (
+        <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><span>🧹</span> Nettoyage {cleanupMode === 'archive' ? 'archive' : ''}</h2>
+              <button onClick={() => setShowCleanupModal(false)} className="text-gray-400 hover:text-black font-bold text-xl transition-colors">✖</button>
+            </div>
+            <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
+              <span className="text-sm font-semibold text-gray-700">Ancienneté requise :</span>
+              <select value={cleanupThresholdDays} onChange={(e) => { const val = Number(e.target.value); setCleanupThresholdDays(val); loadCleanupNotes(val, cleanupMode); }} className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1">
+                <option value={0}>👁️ Tout visualiser</option>
+                <option value={14}>+ de 2 semaines</option>
+                <option value={30}>+ de 1 mois</option>
+                <option value={90}>+ de 3 mois</option>
+              </select>
+            </div>
+            {currentCleanupIndex < cleanupNotes.length ? (
+              <div className="flex flex-col gap-4 mt-2">
+                <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">Note {currentCleanupIndex + 1} sur {cleanupNotes.length}</div>
+                <div className="bg-white border border-gray-300 p-4 rounded-xl shadow-sm min-h-[150px] max-h-[300px] overflow-y-auto flex flex-col">
+                  <h3 className="font-bold text-lg text-black">{cleanupNotes[currentCleanupIndex].title || '(Sans titre)'}</h3>
+                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
+                  <span className="text-[10px] text-gray-400 mt-4 text-right font-semibold">Créée le {new Date(cleanupNotes[currentCleanupIndex].created_at || '').toLocaleDateString('fr-FR')}</span>
+                </div>
+                <div className={`grid gap-2 mt-2 ${cleanupMode === 'actif' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                  <button onClick={() => handleCleanupAction('delete', cleanupNotes[currentCleanupIndex])} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">🗑️</span> <span className="text-[10px] uppercase">Supprimer</span></button>
+                  <button onClick={() => handleCleanupAction('keep', cleanupNotes[currentCleanupIndex])} className="bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">✅</span> <span className="text-[10px] uppercase">Conserver</span></button>
+                  {cleanupMode === 'actif' && (<button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span></button>)}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 flex flex-col items-center gap-3">
+                <span className="text-5xl">✨</span><p className="font-bold text-lg text-gray-800">Tout est propre !</p>
+                <p className="text-sm text-gray-500">Il n'y a plus aucune note à trier pour cette durée.</p>
+                <button onClick={() => setShowCleanupModal(false)} className="mt-4 bg-gray-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-colors">Fermer</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {triggeredAlarm && (
+        <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
+          <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
+            <span className="text-6xl">⏰</span><h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
+            {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
+            <button onClick={() => setTriggeredAlarm(null)} className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full">J'AI COMPRIS (STOP)</button>
+          </div>
+        </div>
+      )}
+
+      {aiProposal && (
+        <div className="fixed inset-0 bg-black/80 z-[9998] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
+            <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2"><span>🤖</span> Proposition de l&apos;IA</h2>
+            <div className="flex flex-col gap-3 text-base text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-200">
+              <p><strong className="text-purple-700">Titre :</strong> {aiProposal.title || '(Vide)'}</p>
+              {aiProposal.content && <p><strong className="text-purple-700">Contenu :</strong> {aiProposal.content}</p>}
+              <p><strong className="text-purple-700">Format :</strong> {aiProposal.is_list ? 'Liste de tâches ✅' : 'Note texte 📝'}</p>
+              <p><strong className="text-purple-700">Priorité :</strong> {aiProposal.importance === 'rouge' ? '🔴 Urgente' : aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'}</p>
+              {aiProposal.send_email && <p className="bg-blue-100 p-2 rounded text-blue-900 border border-blue-200"><strong>📨 E-mail :</strong> Envoi immédiat activé</p>}
+              {aiProposal.daily_reminder && <p className="bg-green-100 p-2 rounded text-green-900 border border-green-200"><strong>🔄 Relance quotidienne :</strong> Activée à {aiProposal.daily_reminder_time || '09:00'}</p>}
+              {aiProposal.popup_time && <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200"><strong>⏰ Alarme pop-up :</strong> {new Date(getSafeTime(aiProposal.popup_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}</p>}
+              {aiProposal.calendar_time && <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200"><strong>📅 Ajout Agenda :</strong> {new Date(getSafeTime(aiProposal.calendar_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}</p>}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3 mt-2">
+              <button onClick={() => confirmAiNote(aiProposal)} disabled={loading} className="flex-1 bg-green-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-green-700 transition-colors shadow-md disabled:opacity-50">{loading ? 'Création...' : '✅ Valider et Créer'}</button>
+              <button onClick={() => loadProposalIntoForm(aiProposal)} disabled={loading} className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-xl hover:bg-gray-300 transition-colors">✏️ Modifier manuellement</button>
+            </div>
+            <button onClick={() => setAiProposal(null)} className="text-gray-400 hover:text-gray-600 text-sm mt-1 underline">Annuler et fermer</button>
+          </div>
+        </div>
+      )}
+
       {/* ================= VUE : HUB PRINCIPAL ================= */}
       {mainMode === 'hub' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
            <h1 className="text-3xl font-black text-gray-800 mb-8 text-center">Que veux-tu faire ?</h1>
-           
            <button onClick={() => setMainMode('notes')} className="w-full max-w-sm bg-gray-900 text-white p-8 rounded-3xl shadow-xl hover:bg-black transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4">
-              <span className="text-5xl">📝</span>
-              <span className="text-xl font-bold">Notes & Rappels</span>
+              <span className="text-5xl">📝</span><span className="text-xl font-bold">Notes & Rappels</span>
            </button>
-           
            <button onClick={() => setMainMode('planning')} className="w-full max-w-sm bg-blue-600 text-white p-8 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4 border-4 border-blue-500">
-              <span className="text-5xl">📅</span>
-              <span className="text-xl font-bold text-center">Planning &<br/>Organisation</span>
+              <span className="text-5xl">📅</span><span className="text-xl font-bold text-center">Planning &<br/>Organisation</span>
            </button>
         </div>
       )}
 
-      {/* ================= VUE : PLANNING (GRILLE VISUELLE SEULE) ================= */}
+      {/* ================= VUE : PLANNING ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
-             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">
-                ← Menu
-             </button>
+             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
              <h1 className="text-xl font-black text-gray-800">Planning</h1>
            </div>
 
-           {/* Navigation des jours */}
            <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200">
              <button onClick={() => handleDayChange(-1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
              <div className="flex gap-2 overflow-x-hidden w-full px-2">
@@ -967,48 +869,24 @@ export default function Home() {
              <button onClick={() => handleDayChange(1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
            </div>
 
-           {/* Grille des heures */}
            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
-             {/* Colonne des heures */}
              <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
                {hoursOfDay.map(hour => (
-                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
-                   <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
-                 </div>
+                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200"><span className="text-[10px] font-bold text-gray-400">{hour}h</span></div>
                ))}
              </div>
-
-             {/* Colonnes des jours */}
              <div className="flex flex-1">
                {daysToShow.map((day, dIdx) => (
                  <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative">
                    {hoursOfDay.map(hour => {
-                     // Filtre des événements pour cette case
                      const slotEvents = planningEvents.filter(ev => {
                        const evDate = new Date(ev.start_time);
-                       return evDate.getDate() === day.getDate() && 
-                              evDate.getMonth() === day.getMonth() && 
-                              evDate.getFullYear() === day.getFullYear() &&
-                              evDate.getHours() === hour;
+                       return evDate.getDate() === day.getDate() && evDate.getMonth() === day.getMonth() && evDate.getFullYear() === day.getFullYear() && evDate.getHours() === hour;
                      });
-
                      return (
-                       <div 
-                         key={hour} 
-                         onClick={() => openAddEventModal(day, hour)}
-                         className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative"
-                       >
+                       <div key={hour} onClick={() => openAddEventModal(day, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
                          {slotEvents.map(ev => (
-                           <div 
-                             key={ev.id} 
-                             onClick={(e) => { e.stopPropagation(); deletePlanningEvent(ev.id); }}
-                             className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${
-                               ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' :
-                               ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' :
-                               ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' :
-                               'bg-gray-100 border-gray-300 text-gray-900'
-                             }`}
-                           >
+                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deletePlanningEvent(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
                              <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
                            </div>
                          ))}
@@ -1020,21 +898,11 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide d'événement */}
            {showEventModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
-                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">
-                   Planifier à {eventDateSlot?.getHours()}h00
-                 </h3>
-                 <input 
-                   type="text" 
-                   value={eventTitle} 
-                   onChange={(e) => setEventTitle(e.target.value)} 
-                   placeholder="Ex: Entraînement Muay Thai..." 
-                   className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
-                   autoFocus
-                 />
+                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier à {eventDateSlot?.getHours()}h00</h3>
+                 <input type="text" value={eventTitle} onChange={(e) => setEventTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" autoFocus />
                  <div className="flex gap-2 w-full justify-between">
                    <button onClick={() => setEventColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${eventColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setEventColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${eventColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
@@ -1054,155 +922,12 @@ export default function Home() {
       {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
         <div className="animate-fade-in">
-          <button onClick={() => setMainMode('hub')} className="mb-6 text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">
-              ← Menu Principal
-          </button>
-
-          {/* === MODAL DE NETTOYAGE === */}
-          {showCleanupModal && (
-            <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
-                <div className="flex justify-between items-center border-b pb-2">
-                  <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                    <span>🧹</span> Nettoyage {cleanupMode === 'archive' ? 'archive' : ''}
-                  </h2>
-                  <button onClick={() => setShowCleanupModal(false)} className="text-gray-400 hover:text-black font-bold text-xl transition-colors">✖</button>
-                </div>
-                
-                <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
-                  <span className="text-sm font-semibold text-gray-700">Ancienneté requise :</span>
-                  <select 
-                    value={cleanupThresholdDays} 
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setCleanupThresholdDays(val);
-                      loadCleanupNotes(val, cleanupMode);
-                    }}
-                    className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1"
-                  >
-                    <option value={0}>👁️ Tout visualiser</option>
-                    <option value={14}>+ de 2 semaines</option>
-                    <option value={30}>+ de 1 mois</option>
-                    <option value={90}>+ de 3 mois</option>
-                  </select>
-                </div>
-
-                {currentCleanupIndex < cleanupNotes.length ? (
-                  <div className="flex flex-col gap-4 mt-2">
-                    <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">
-                      Note {currentCleanupIndex + 1} sur {cleanupNotes.length}
-                    </div>
-                    
-                    <div className="bg-white border border-gray-300 p-4 rounded-xl shadow-sm min-h-[150px] max-h-[300px] overflow-y-auto flex flex-col">
-                      <h3 className="font-bold text-lg text-black">{cleanupNotes[currentCleanupIndex].title || '(Sans titre)'}</h3>
-                      <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
-                      <span className="text-[10px] text-gray-400 mt-4 text-right font-semibold">
-                        Créée le {new Date(cleanupNotes[currentCleanupIndex].created_at || '').toLocaleDateString('fr-FR')}
-                      </span>
-                    </div>
-
-                    <div className={`grid gap-2 mt-2 ${cleanupMode === 'actif' ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                      <button onClick={() => handleCleanupAction('delete', cleanupNotes[currentCleanupIndex])} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
-                        <span className="text-xl">🗑️</span> <span className="text-[10px] uppercase">Supprimer</span>
-                      </button>
-                      <button onClick={() => handleCleanupAction('keep', cleanupNotes[currentCleanupIndex])} className="bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
-                        <span className="text-xl">✅</span> <span className="text-[10px] uppercase">Conserver</span>
-                      </button>
-                      {cleanupMode === 'actif' && (
-                        <button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm">
-                          <span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-8 flex flex-col items-center gap-3">
-                    <span className="text-5xl">✨</span>
-                    <p className="font-bold text-lg text-gray-800">Tout est propre !</p>
-                    <p className="text-sm text-gray-500">Il n'y a plus aucune note à trier pour cette durée.</p>
-                    <button onClick={() => setShowCleanupModal(false)} className="mt-4 bg-gray-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-colors">
-                      Fermer
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {triggeredAlarm && (
-            <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
-              <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
-                <span className="text-6xl">⏰</span>
-                <h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
-                {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
-                <button 
-                  onClick={() => setTriggeredAlarm(null)} 
-                  className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full"
-                >
-                  J'AI COMPRIS (STOP)
-                </button>
-              </div>
-            </div>
-          )}
-
-          {aiProposal && (
-            <div className="fixed inset-0 bg-black/80 z-[9998] flex items-center justify-center p-4">
-              <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
-                <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
-                  <span>🤖</span> Proposition de l&apos;IA
-                </h2>
-
-                <div className="flex flex-col gap-3 text-base text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-200">
-                  <p><strong className="text-purple-700">Titre :</strong> {aiProposal.title || '(Vide)'}</p>
-                  {aiProposal.content && <p><strong className="text-purple-700">Contenu :</strong> {aiProposal.content}</p>}
-                  <p><strong className="text-purple-700">Format :</strong> {aiProposal.is_list ? 'Liste de tâches ✅' : 'Note texte 📝'}</p>
-                  <p><strong className="text-purple-700">Priorité :</strong> {
-                    aiProposal.importance === 'rouge' ? '🔴 Urgente' :
-                    aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'
-                  }</p>
-                  
-                  {aiProposal.send_email && (
-                    <p className="bg-blue-100 p-2 rounded text-blue-900 border border-blue-200">
-                      <strong>📨 E-mail :</strong> Envoi immédiat activé
-                    </p>
-                  )}
-                  {aiProposal.daily_reminder && (
-                    <p className="bg-green-100 p-2 rounded text-green-900 border border-green-200">
-                      <strong>🔄 Relance quotidienne :</strong> Activée à {aiProposal.daily_reminder_time || '09:00'}
-                    </p>
-                  )}
-
-                  {aiProposal.popup_time && (
-                    <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200">
-                      <strong>⏰ Alarme pop-up :</strong> {new Date(getSafeTime(aiProposal.popup_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
-                    </p>
-                  )}
-                  {aiProposal.calendar_time && (
-                    <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200">
-                      <strong>📅 Ajout Agenda :</strong> {new Date(getSafeTime(aiProposal.calendar_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}
-                    </p>
-                  )}
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-3 mt-2">
-                  <button onClick={() => confirmAiNote(aiProposal)} disabled={loading} className="flex-1 bg-green-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-green-700 transition-colors shadow-md disabled:opacity-50">
-                    {loading ? 'Création...' : '✅ Valider et Créer'}
-                  </button>
-                  <button onClick={() => loadProposalIntoForm(aiProposal)} disabled={loading} className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-xl hover:bg-gray-300 transition-colors">
-                    ✏️ Modifier manuellement
-                  </button>
-                </div>
-                
-                <button onClick={() => setAiProposal(null)} className="text-gray-400 hover:text-gray-600 text-sm mt-1 underline">
-                  Annuler et fermer
-                </button>
-              </div>
-            </div>
-          )}
-          
           <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
             {!isFocusMode ? (
-              <h1 className="text-xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
+              <div className="flex flex-col gap-1">
+                <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">← Menu Principal</button>
+                <h1 className="text-xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
+              </div>
             ) : (
               <div className="flex flex-col">
                 <h1 className="text-xl font-bold text-gray-800">Mode Focus 🎯</h1>
@@ -1210,14 +935,7 @@ export default function Home() {
               </div>
             )}
             <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-              <button 
-                onClick={() => { 
-                  setIsFocusMode(!isFocusMode); 
-                  setSkippedFocusIds([]); 
-                  setShowArchived(false); 
-                }} 
-                className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}
-              >
+              <button onClick={() => { setIsFocusMode(!isFocusMode); setSkippedFocusIds([]); setShowArchived(false); }} className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}>
                 {isFocusMode ? 'Quitter le Mode Focus' : '🎯 Mode Focus'}
               </button>
             </div>
@@ -1225,357 +943,178 @@ export default function Home() {
 
           {!isFocusMode && (
             <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-md mx-auto">
-              <button
-                type="button"
-                onClick={() => setActiveTab('create')}
-                className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
-              >
-                ✍️ Créer
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('notes')}
-                className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
-              >
-                📑 Notes
-              </button>
+              <button type="button" onClick={() => setActiveTab('create')} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>✍️ Créer</button>
+              <button type="button" onClick={() => setActiveTab('notes')} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>📑 Notes</button>
             </div>
           )}
 
           {!isPushEnabled && (
             <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl mb-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">🔔</span>
-                <p className="text-blue-900 text-xs font-semibold">Active les alertes en arrière-plan.</p>
-              </div>
-              <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm whitespace-nowrap shadow-md transition-colors">
-                Activer
-              </button>
+              <div className="flex items-center gap-2"><span className="text-xl">🔔</span><p className="text-blue-900 text-xs font-semibold">Active les alertes en arrière-plan.</p></div>
+              <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm whitespace-nowrap shadow-md transition-colors">Activer</button>
             </div>
           )}
 
-          {/* ================= ONGLET CREATION ================= */}
           {activeTab === 'create' && !isFocusMode && (
-          <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-3 rounded-lg shadow-md border bg-gray-50 border-gray-200">
-            
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
-              <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
-            </div>
-
-            {noteMode === 'text' ? (
-              <div className="flex flex-col gap-2">
-                <div className="relative flex items-center w-full">
-                  <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
-                  <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
-                </div>
-                <div className="relative w-full">
-                  <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black resize-y min-h-[80px] text-sm" disabled={loading || isAiProcessing} />
-                  <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-1 rounded-full transition-colors ${listeningMode === 'content' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
-                </div>
+            <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-3 rounded-lg shadow-md border bg-gray-50 border-gray-200">
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
+                <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
               </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                <div className="relative flex items-center w-full">
-                  <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
-                  <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+
+              {noteMode === 'text' ? (
+                <div className="flex flex-col gap-2">
+                  <div className="relative flex items-center w-full">
+                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+                    <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                  </div>
+                  <div className="relative w-full">
+                    <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black resize-y min-h-[80px] text-sm" disabled={loading || isAiProcessing} />
+                    <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-1 rounded-full transition-colors ${listeningMode === 'content' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                  </div>
                 </div>
-                
-                <div className="bg-white border border-gray-300 rounded p-2 flex flex-col gap-2 shadow-sm">
-                  <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <div className="relative flex items-center w-full">
+                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-2 pr-10 rounded text-black font-semibold text-base" disabled={loading || isAiProcessing} />
+                    <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-1 rounded-full transition-colors ${listeningMode === 'title' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                  </div>
                   
-                  {newListItems.length > 0 && (
-                    <ul className="flex flex-col gap-1 mb-1">
-                      {newListItems.map((item, idx) => (
-                        <li key={idx} className="flex justify-between items-center bg-gray-50 p-1.5 rounded border border-gray-200 text-xs text-black">
-                          <span className="flex-1 mr-2">• {item}</span>
-                          <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-base font-bold leading-none px-2">×</button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  
-                  <div className="flex gap-2">
-                    <div className="relative flex-1 flex items-center">
-                      <input 
-                        type="text" 
-                        value={currentNewListItem} 
-                        onChange={(e) => setCurrentNewListItem(e.target.value)} 
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            if (currentNewListItem.trim()) {
-                              setNewListItems(prev => [...prev, currentNewListItem.trim()]);
-                              setCurrentNewListItem('');
-                            }
-                          }
-                        }}
-                        placeholder="Ajouter un élément..." 
-                        className="w-full border border-gray-300 p-1.5 pr-8 rounded text-black text-xs" 
-                        disabled={loading || isAiProcessing} 
-                      />
-                      <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-1 rounded-full transition-colors ${listeningMode === 'list_item' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                  <div className="bg-white border border-gray-300 rounded p-2 flex flex-col gap-2 shadow-sm">
+                    <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
+                    {newListItems.length > 0 && (
+                      <ul className="flex flex-col gap-1 mb-1">
+                        {newListItems.map((item, idx) => (
+                          <li key={idx} className="flex justify-between items-center bg-gray-50 p-1.5 rounded border border-gray-200 text-xs text-black">
+                            <span className="flex-1 mr-2">• {item}</span>
+                            <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-base font-bold leading-none px-2">×</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="flex gap-2">
+                      <div className="relative flex-1 flex items-center">
+                        <input type="text" value={currentNewListItem} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-gray-300 p-1.5 pr-8 rounded text-black text-xs" disabled={loading || isAiProcessing} />
+                        <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-1 rounded-full transition-colors ${listeningMode === 'list_item' ? 'bg-red-100 text-red-600 animate-pulse' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}>🎙️</button>
+                      </div>
+                      <button type="button" onClick={() => { if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } }} className="bg-blue-100 text-blue-700 border border-blue-300 px-2 py-1.5 rounded text-xs font-bold hover:bg-blue-200 transition-colors" disabled={loading || isAiProcessing || !currentNewListItem.trim()}>+ Ajouter</button>
                     </div>
-                    <button 
-                      type="button" 
-                      onClick={() => {
-                        if (currentNewListItem.trim()) {
-                          setNewListItems(prev => [...prev, currentNewListItem.trim()]);
-                          setCurrentNewListItem('');
-                        }
-                      }}
-                      className="bg-blue-100 text-blue-700 border border-blue-300 px-2 py-1.5 rounded text-xs font-bold hover:bg-blue-200 transition-colors"
-                      disabled={loading || isAiProcessing || !currentNewListItem.trim()}
-                    >
-                      + Ajouter
-                    </button>
                   </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center w-full mt-1">
-              <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-2 rounded text-black bg-white cursor-pointer text-sm font-bold">
-                <option value="vert">🟢 Priorité Normale</option>
-                <option value="orange">🟠 Priorité Importante</option>
-                <option value="rouge">🔴 Priorité Urgente</option>
-              </select>
-            </div>
-
-            <div className="border-b border-gray-200 pb-3 mt-1">
-              <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
-                <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
-              </button>
-            </div>
-
-            {/* NOUVEAU BLOC : PARAMÉTRAGE CACHÉ */}
-            <div className="flex flex-col mt-2">
-              <button 
-                type="button" 
-                onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} 
-                className="w-full bg-gray-200 text-gray-700 hover:bg-gray-300 font-bold py-2 px-3 rounded-lg text-sm flex justify-between items-center transition-colors"
-              >
-                <span>⚙️ Paramétrage de la note</span>
-                <span>{showAdvancedSettings ? '▲' : '▼'}</span>
-              </button>
-
-              {showAdvancedSettings && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-gray-100 rounded-lg border border-gray-200">
-                  
-                  <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-                    <span>📨 E-mail immédiat</span>
-                    <span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
-                  </button>
-
-                  <div className="flex flex-col">
-                    <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-                      <span>⏰ Alarme pop-up (Dans...)</span> <span>{showPopupConfig ? '▲' : '▼'}</span>
-                    </button>
-                    {showPopupConfig && (
-                      <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
-                        <div className="flex flex-wrap items-center gap-1 justify-center">
-                          <span className="text-xs font-bold text-indigo-900">Dans:</span>
-                          <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
-                          <span className="text-xs font-bold text-indigo-900">h</span>
-                          <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" />
-                          <span className="text-xs font-bold text-indigo-900">min</span>
-                        </div>
-                        {(popupHours || popupMinutes) && (
-                          <button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
-                            ✖ Annuler
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col">
-                    <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-                      <span>🔄 Relance quotidienne</span> <span>{showDailyConfig ? '▲' : '▼'}</span>
-                    </button>
-                    {showDailyConfig && (
-                      <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
-                        <div className="flex flex-wrap gap-4 justify-center">
-                          <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
-                            <input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail
-                          </label>
-                          <label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs">
-                            <input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up
-                          </label>
-                        </div>
-                        <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200">
-                          <span className="text-xs font-bold text-green-900">À :</span>
-                          <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col">
-                    <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-                      <span>📅 Agenda / .ics</span> <span>{showCalendarConfig ? '▲' : '▼'}</span>
-                    </button>
-                    {showCalendarConfig && (
-                      <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
-                        <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
-                        
-                        <div className="flex flex-wrap gap-2 pt-1 justify-center">
-                          <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
-                            <input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda
-                          </label>
-                          <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900">
-                            <input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics
-                          </label>
-                        </div>
-
-                        {targetDate && (
-                          <button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">
-                            ✖ Annuler date
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
                 </div>
               )}
-            </div>
 
-            <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">
-              {loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}
-            </button>
-          </form>
+              <div className="flex items-center w-full mt-1">
+                <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-2 rounded text-black bg-white cursor-pointer text-sm font-bold">
+                  <option value="vert">🟢 Priorité Normale</option>
+                  <option value="orange">🟠 Priorité Importante</option>
+                  <option value="rouge">🔴 Priorité Urgente</option>
+                </select>
+              </div>
+
+              <div className="border-b border-gray-200 pb-3 mt-1">
+                <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-2 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+                  <span>🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
+                </button>
+              </div>
+
+              <div className="flex flex-col mt-2">
+                <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-gray-200 text-gray-700 hover:bg-gray-300 font-bold py-2 px-3 rounded-lg text-sm flex justify-between items-center transition-colors">
+                  <span>⚙️ Paramétrage de la note</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
+                </button>
+                {showAdvancedSettings && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-gray-100 rounded-lg border border-gray-200">
+                    <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>📨 E-mail immédiat</span><span>{sendImmediateEmail ? 'ON' : 'OFF'}</span></button>
+                    <div className="flex flex-col">
+                      <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>⏰ Alarme pop-up (Dans...)</span><span>{showPopupConfig ? '▲' : '▼'}</span></button>
+                      {showPopupConfig && (
+                        <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1 justify-center">
+                            <span className="text-xs font-bold text-indigo-900">Dans:</span><input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" /><span className="text-xs font-bold text-indigo-900">h</span><input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" /><span className="text-xs font-bold text-indigo-900">min</span>
+                          </div>
+                          {(popupHours || popupMinutes) && (<button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">✖ Annuler</button>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col">
+                      <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>🔄 Relance quotidienne</span><span>{showDailyConfig ? '▲' : '▼'}</span></button>
+                      {showDailyConfig && (
+                        <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
+                          <div className="flex flex-wrap gap-4 justify-center"><label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs"><input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail</label><label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs"><input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up</label></div>
+                          <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200"><span className="text-xs font-bold text-green-900">À :</span><input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" /></div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col">
+                      <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>📅 Agenda / .ics</span><span>{showCalendarConfig ? '▲' : '▼'}</span></button>
+                      {showCalendarConfig && (
+                        <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
+                          <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
+                          <div className="flex flex-wrap gap-2 pt-1 justify-center"><label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900"><input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda</label><label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900"><input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics</label></div>
+                          {targetDate && (<button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">✖ Annuler date</button>)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}</button>
+            </form>
           )}
 
-          {/* ================= MODE FOCUS (1 TÂCHE À LA FOIS) ================= */}
           {isFocusMode ? (
             <div className="flex flex-col items-center justify-center mt-6 mb-12 w-full">
-              {focusStatus && (
-                <div className="bg-green-100 text-green-800 px-4 py-2 rounded-full font-bold text-xs shadow-sm mb-6 flex items-center gap-1.5">
-                  <span>🎯</span> {focusStatus}
-                </div>
-              )}
-
+              {focusStatus && <div className="bg-green-100 text-green-800 px-4 py-2 rounded-full font-bold text-xs shadow-sm mb-6 flex items-center gap-1.5"><span>🎯</span> {focusStatus}</div>}
               {currentFocusNote ? (
                 <div key={currentFocusNote.id} className="w-full max-w-md bg-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col items-center text-center gap-6 border border-gray-100">
-                  <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${
-                    currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' :
-                    currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                    'bg-green-50 text-green-600 border-green-200'
-                  }`}>
-                    {currentFocusNote.importance === 'rouge' ? '🔴 Urgent' :
-                     currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}
-                  </span>
-
-                  {/* CORRECTION : N'affiche rien si pas de titre */}
-                  {currentFocusNote.title && (
-                    <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">
-                      {currentFocusNote.title}
-                    </h2>
-                  )}
-
-                  {currentFocusNote.content && (
-                    <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">
-                      {currentFocusNote.content}
-                    </p>
-                  )}
-
+                  <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' : currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-green-50 text-green-600 border-green-200'}`}>{currentFocusNote.importance === 'rouge' ? '🔴 Urgent' : currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}</span>
+                  {currentFocusNote.title && <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">{currentFocusNote.title}</h2>}
+                  {currentFocusNote.content && <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">{currentFocusNote.content}</p>}
                   {currentFocusNote.is_list && currentFocusNote.subtasks?.length > 0 && (
                     <div className="w-full bg-gray-50 p-3 rounded-xl text-left flex flex-col gap-2 mt-2 border border-gray-200">
                       {currentFocusNote.subtasks.map((st: Subtask) => (
-                         <div key={st.id} className="flex items-center gap-3">
-                           <input 
-                             type="checkbox" 
-                             checked={st.completed} 
-                             onChange={() => toggleSubtask(currentFocusNote!, st.id)}
-                             className="w-5 h-5 cursor-pointer accent-blue-600" 
-                           />
-                           <span className={`text-sm font-bold ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span>
-                         </div>
+                         <div key={st.id} className="flex items-center gap-3"><input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(currentFocusNote!, st.id)} className="w-5 h-5 cursor-pointer accent-blue-600" /><span className={`text-sm font-bold ${st.completed ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.text}</span></div>
                       ))}
                     </div>
                   )}
-
                   <div className="flex w-full gap-3 mt-4">
-                    <button 
-                      onClick={() => updateNote(currentFocusNote!.id, 'completed', true)}
-                      className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
-                    >
-                      <span>✓</span> Terminé
-                    </button>
-                    <button 
-                      onClick={() => setSkippedFocusIds(prev => [...prev, currentFocusNote!.id])} 
-                      className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm transition-transform hover:scale-105 active:scale-95 border border-gray-200"
-                    >
-                      Plus tard
-                    </button>
+                    <button onClick={() => updateNote(currentFocusNote!.id, 'completed', true)} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"><span>✓</span> Terminé</button>
+                    <button onClick={() => setSkippedFocusIds(prev => [...prev, currentFocusNote!.id])} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm transition-transform hover:scale-105 active:scale-95 border border-gray-200">Plus tard</button>
                   </div>
                 </div>
               ) : (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
-                  <span className="text-6xl">🎉</span>
-                  <h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2>
-                  <p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
-                  <button 
-                    onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }}
-                    className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md"
-                  >
-                    Quitter le Mode Focus
-                  </button>
+                  <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
+                  <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
                 </div>
               )}
             </div>
           ) : activeTab === 'notes' && (
-            /* ================= ONGLET NOTES (GRILLE CLASSIQUE) ================= */
             <>
               <div className="flex items-center justify-between mb-6 w-full gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
                   <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
-                  {hasSnoozedNotes && (
-                    <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>
-                  )}
+                  {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>}
                   <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
                 </div>
-                
-                <button 
-                  onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} 
-                  className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0"
-                >
-                  🧹 Nettoyage {showArchived === true ? 'archive' : ''}
-                </button>
+                <button onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage {showArchived === true ? 'archive' : ''}</button>
               </div>
 
               {showArchived === true ? (
-                /* VUE ARCHIVES : LISTE SIMPLE TRIÉE PAR DATE */
                 <div className="flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner">
-                  <div className="w-full flex items-center justify-between mb-2 border-b border-gray-200 pb-1 text-gray-800">
-                    <span className="text-base font-bold">📦 Toutes les archives ({displayedNotes.length})</span>
-                  </div>
+                  <div className="w-full flex items-center justify-between mb-2 border-b border-gray-200 pb-1 text-gray-800"><span className="text-base font-bold">📦 Toutes les archives ({displayedNotes.length})</span></div>
                   <ul className="space-y-3">
-                    {displayedNotes.length === 0 && (
-                      <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
-                        Dossier vide
-                      </p>
-                    )}
+                    {displayedNotes.length === 0 && <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">Dossier vide</p>}
                     {displayedNotes.map(renderNoteItem)}
                   </ul>
                 </div>
               ) : (
-                /* VUE ACTIF/MASQUÉ : GRILLE PAR PRIORITÉ */
                 <div className={`grid items-start gap-4 grid-cols-1 lg:grid-cols-3`}>
                   {columns.map((col) => (
                     <div key={col.id} className="flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner">
-                      <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}>
-                        <span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span>
-                      </button>
-                      
+                      <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}><span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span></button>
                       {!(collapsedPriorities[col.id] ?? false) && (
                       <ul className="space-y-3">
-                        {col.notes.length === 0 && (
-                          <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">
-                            Dossier vide
-                          </p>
-                        )}
+                        {col.notes.length === 0 && <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">Dossier vide</p>}
                         {col.notes.map(renderNoteItem)}
                       </ul>
                       )}
@@ -1585,64 +1124,34 @@ export default function Home() {
               )}
 
               <div className="mt-12 mb-8 text-center">
-                <button 
-                  onClick={() => setActiveTab('history')} 
-                  className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
-                >
-                  🕰️ Consulter l'historique des notes terminées
-                </button>
+                <button onClick={() => setActiveTab('history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
               </div>
             </>
           )}
 
-          {/* ================= ONGLET HISTORIQUE ================= */}
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">
-                   ← Retour aux notes actives
-                 </button>
-                 {historyNotes.length > 0 && (
-                   <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">
-                     🗑️ Tout supprimer
-                   </button>
-                 )}
+                 <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
+                 {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
-              
               <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
                 <span className="text-xl">🔍</span>
-                <input 
-                  type="text" 
-                  placeholder="Rechercher dans l'historique..." 
-                  value={historySearch}
-                  onChange={(e) => setHistorySearch(e.target.value)}
-                  className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent"
-                />
-                {historySearch && (
-                  <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>
-                )}
+                <input type="text" placeholder="Rechercher dans l'historique..." value={historySearch} onChange={(e) => setHistorySearch(e.target.value)} className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent" />
+                {historySearch && <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>}
               </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {historyNotes.length === 0 && (
-                  <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
-                    Aucune note dans l'historique.
-                  </p>
-                )}
+                {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune note dans l'historique.</p>}
                 {historyNotes.map(note => (
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
                     <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
-                    
                     <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                       {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
                     </div>
-                    
                     <div className="flex justify-end mt-1">
-                      <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">
-                        🗑️ Supprimer
-                      </button>
+                      <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">🗑️ Supprimer</button>
                     </div>
                   </div>
                 ))}
