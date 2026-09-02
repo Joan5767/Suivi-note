@@ -28,13 +28,12 @@ interface Note {
   created_at?: string; 
 }
 
-// === INTERFACE PLANNING ===
-interface PlanningEvent {
+// === INTERFACE ROUTINE / SEMAINE TYPE ===
+interface WeeklyBlock {
   id: string;
   title: string;
-  description?: string;
-  start_time: string;
-  end_time: string;
+  day: string; // 'Lundi', 'Mardi', etc.
+  startHour: number; // 7, 8, 9...
   color: string;
 }
 
@@ -130,13 +129,18 @@ export default function Home() {
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
-  // === ÉTATS DU PLANNING ===
-  const [planningEvents, setPlanningEvents] = useState<PlanningEvent[]>([]);
-  const [calendarStartDate, setCalendarStartDate] = useState(() => new Date());
-  const [showEventModal, setShowEventModal] = useState(false);
-  const [eventDateSlot, setEventDateSlot] = useState<Date | null>(null);
-  const [eventTitle, setEventTitle] = useState('');
-  const [eventColor, setEventColor] = useState('blue');
+  // === ÉTATS DU PLANNING (SEMAINE TYPE) ===
+  const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+  const [visibleDayIndex, setVisibleDayIndex] = useState(0); // Index pour la navigation (0 = Lundi)
+  const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
+  const [savedTemplates, setSavedTemplates] = useState<any[]>([]); // Liste des modèles en BDD
+  
+  // Modal Planning
+  const [showBlockModal, setShowBlockModal] = useState(false);
+  const [blockDay, setBlockDay] = useState('');
+  const [blockHour, setBlockHour] = useState(0);
+  const [blockTitle, setBlockTitle] = useState('');
+  const [blockColor, setBlockColor] = useState('blue');
 
   // === DATA FETCHING ===
   const fetchNotes = async () => {
@@ -144,14 +148,15 @@ export default function Home() {
     if (!error && data) setNotes(data);
   };
 
-  const fetchPlanningEvents = async () => {
-    const { data, error } = await supabase.from('planning_events').select('*');
-    if (!error && data) setPlanningEvents(data);
+  const fetchTemplates = async () => {
+    // Récupère les semaines-types depuis la BDD (table planning_templates créée via SQL)
+    const { data, error } = await supabase.from('planning_templates').select('*').order('created_at', { ascending: false });
+    if (!error && data) setSavedTemplates(data);
   };
 
   useEffect(() => { 
     fetchNotes(); 
-    fetchPlanningEvents();
+    fetchTemplates();
   }, []);
 
   // === PUSH NOTIFICATIONS ===
@@ -218,60 +223,112 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  // === PLANNING LOGIC ===
-  const getDaysArray = (start: Date, days: number) => {
-    return Array.from({ length: days }).map((_, i) => {
-      const d = new Date(start);
-      d.setDate(d.getDate() + i);
-      return d;
-    });
+  // ==========================================
+  // === LOGIQUE DU PLANNING (SEMAINE TYPE) ===
+  // ==========================================
+  
+  const handleDayNavigation = (direction: number) => {
+    let newIndex = visibleDayIndex + direction;
+    // Bloque le défilement pour ne pas sortir de la semaine (Lundi -> Dimanche)
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex > 4) newIndex = 4; // Max index pour afficher les 3 derniers jours (Vendredi, Samedi, Dimanche)
+    setVisibleDayIndex(newIndex);
   };
 
-  const handleDayChange = (direction: number) => {
-    setCalendarStartDate(prev => {
-      const newDate = new Date(prev);
-      newDate.setDate(newDate.getDate() + (direction * 3));
-      return newDate;
-    });
+  const openAddBlockModal = (day: string, hour: number) => {
+    setBlockDay(day);
+    setBlockHour(hour);
+    setBlockTitle('');
+    setBlockColor('blue');
+    setShowBlockModal(true);
   };
 
-  const openAddEventModal = (day: Date, hour: number) => {
-    const slotDate = new Date(day);
-    slotDate.setHours(hour, 0, 0, 0);
-    setEventDateSlot(slotDate);
-    setEventTitle('');
-    setEventColor('blue');
-    setShowEventModal(true);
+  const addBlockToWeek = () => {
+    if (!blockTitle.trim()) return;
+    const newBlock: WeeklyBlock = {
+      id: crypto.randomUUID(),
+      title: blockTitle,
+      day: blockDay,
+      startHour: blockHour,
+      color: blockColor
+    };
+    setWeeklyBlocks(prev => [...prev, newBlock]);
+    setShowBlockModal(false);
   };
 
-  const savePlanningEvent = async () => {
-    if (!eventTitle.trim() || !eventDateSlot) return;
+  const deleteBlock = (id: string) => {
+    setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
+  };
+
+  const saveTemplateToDB = async () => {
+    if (weeklyBlocks.length === 0) return alert("Ton planning est vide ! Ajoute des tâches avant de sauvegarder.");
+    const name = window.prompt("Donne un nom à ce modèle de semaine (ex: 'Semaine d'école' ou 'Vacances') :");
+    if (!name) return;
+
     setLoading(true);
-
-    const endTime = new Date(eventDateSlot);
-    endTime.setHours(endTime.getHours() + 1);
-
-    const { error } = await supabase.from('planning_events').insert([{
-      title: eventTitle,
-      start_time: eventDateSlot.toISOString(),
-      end_time: endTime.toISOString(),
-      color: eventColor
+    const { error } = await supabase.from('planning_templates').insert([{
+      name: name,
+      blocks: weeklyBlocks
     }]);
 
-    if (error) alert("Erreur de sauvegarde : " + error.message);
-    else { setShowEventModal(false); fetchPlanningEvents(); }
+    if (error) {
+      alert("Erreur de sauvegarde : " + error.message);
+    } else {
+      alert("✅ Modèle sauvegardé avec succès !");
+      fetchTemplates();
+    }
     setLoading(false);
   };
 
-  const deletePlanningEvent = async (id: string) => {
-    if (window.confirm('Supprimer cet événement du planning ?')) {
-      await supabase.from('planning_events').delete().eq('id', id);
-      fetchPlanningEvents();
+  const loadTemplate = (template: any) => {
+    if (window.confirm(`Remplacer ton brouillon actuel par le modèle "${template.name}" ?`)) {
+      setWeeklyBlocks(template.blocks || []);
     }
   };
 
-  const daysToShow = getDaysArray(calendarStartDate, 3);
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
+  const deleteTemplate = async (id: string) => {
+    if (window.confirm("Supprimer ce modèle de ta base de données ?")) {
+      await supabase.from('planning_templates').delete().eq('id', id);
+      fetchTemplates();
+    }
+  };
+
+  const exportWeeklyICS = () => {
+    if (weeklyBlocks.length === 0) return alert("Le planning est vide !");
+    
+    let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\n";
+    const daysMap: Record<string, number> = { 'Dimanche': 0, 'Lundi': 1, 'Mardi': 2, 'Mercredi': 3, 'Jeudi': 4, 'Vendredi': 5, 'Samedi': 6 };
+    
+    weeklyBlocks.forEach(block => {
+      // Calcule la date de la *prochaine* occurrence de ce jour de la semaine
+      const today = new Date();
+      const targetDay = daysMap[block.day];
+      const date = new Date(today);
+      date.setDate(date.getDate() + ((targetDay + 7 - date.getDay()) % 7 || 7)); // Donne le jour cible dans les 7 prochains jours
+      date.setHours(block.startHour, 0, 0, 0);
+      
+      const end = new Date(date);
+      end.setHours(date.getHours() + 1); // Bloc d'1 heure
+      
+      const pad = (n: number) => (n < 10 ? '0' + n : n);
+      const formatICSDate = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+      
+      icsContent += `BEGIN:VEVENT\nSUMMARY:${block.title}\nDTSTART:${formatICSDate(date)}\nDTEND:${formatICSDate(end)}\nEND:VEVENT\n`;
+    });
+    
+    icsContent += "END:VCALENDAR";
+    
+    const blob = new Blob([icsContent.replace(/\n/g, '\r\n')], { type: 'text/calendar' });
+    const url = URL.createObjectURL(blob); 
+    const link = document.createElement('a'); 
+    link.href = url; link.download = 'ma_semaine_type.ics'; 
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+
+  // Tableau des jours affichés à l'écran (3 colonnes)
+  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7); // 07h à 22h
+
 
   // === NOTES LOGIC ===
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
@@ -439,8 +496,6 @@ export default function Home() {
     if (error) alert("Erreur Supabase : " + error.message);
     else {
       if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
-      
-      // === CORRECTION ICI : passage d'un tableau vide [] au lieu de '' ===
       setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
       fetchNotes(); setActiveTab('notes');
     }
@@ -491,7 +546,7 @@ export default function Home() {
     const blob = new Blob([icsContent], { type: 'text/calendar' });
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
-
+  
   const saveEdit = async (id: string) => {
     let finalTargetDate = editingTargetDate; 
     let finalPopupActive = editingPopupActive;
@@ -845,32 +900,73 @@ export default function Home() {
               <span className="text-5xl">📝</span><span className="text-xl font-bold">Notes & Rappels</span>
            </button>
            <button onClick={() => setMainMode('planning')} className="w-full max-w-sm bg-blue-600 text-white p-8 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4 border-4 border-blue-500">
-              <span className="text-5xl">📅</span><span className="text-xl font-bold text-center">Planning &<br/>Organisation</span>
+              <span className="text-5xl">📅</span><span className="text-xl font-bold text-center">Planning &<br/>Semaines types</span>
            </button>
         </div>
       )}
 
-      {/* ================= VUE : PLANNING ================= */}
+      {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
-             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
-             <h1 className="text-xl font-black text-gray-800">Planning</h1>
+             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
+             <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
            </div>
 
-           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200">
-             <button onClick={() => handleDayChange(-1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
+           {/* Contrôles du modèle */}
+           <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
+              <div className="flex gap-2">
+                <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-black transition-colors">
+                  💾 Sauvegarder
+                </button>
+                <button onClick={exportWeeklyICS} className="flex-1 bg-purple-600 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-purple-700 transition-colors">
+                  📅 Exporter (Agenda)
+                </button>
+              </div>
+
+              {savedTemplates.length > 0 && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs font-bold text-gray-500">Charger :</span>
+                  <select 
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const tmpl = savedTemplates.find(t => t.id === e.target.value);
+                      if (tmpl) loadTemplate(tmpl);
+                      e.target.value = ''; // Reset select
+                    }}
+                    className="flex-1 border border-gray-300 p-1.5 rounded-lg text-sm font-bold text-black bg-white"
+                  >
+                    <option value="">-- Choisir un modèle --</option>
+                    {savedTemplates.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  <button 
+                    onClick={() => {
+                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
+                      // Dans une vraie app, on mettrait une corbeille à côté de chaque modèle.
+                      // Pour l'instant on fait simple : on charge, et si on veut supprimer on le gère.
+                    }} 
+                    className="text-xs text-red-500 font-bold hidden"
+                  >Supprimer</button>
+                </div>
+              )}
+           </div>
+
+           {/* Navigation des jours (Générique) */}
+           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2">
+             <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
              <div className="flex gap-2 overflow-x-hidden w-full px-2">
-               {daysToShow.map((day, idx) => (
-                 <div key={idx} className="flex-1 text-center font-bold text-sm text-gray-800 flex flex-col">
-                   <span className="text-xs text-gray-500 uppercase">{day.toLocaleDateString('fr-FR', { weekday: 'short' })}</span>
-                   <span>{day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</span>
+               {visibleDays.map((dayName, idx) => (
+                 <div key={idx} className="flex-1 text-center font-black text-sm text-gray-800 flex flex-col py-1">
+                   {dayName}
                  </div>
                ))}
              </div>
-             <button onClick={() => handleDayChange(1)} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
+             <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
            </div>
 
+           {/* Grille des heures */}
            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
              <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
                {hoursOfDay.map(hour => (
@@ -878,17 +974,15 @@ export default function Home() {
                ))}
              </div>
              <div className="flex flex-1">
-               {daysToShow.map((day, dIdx) => (
+               {visibleDays.map((dayName, dIdx) => (
                  <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative">
                    {hoursOfDay.map(hour => {
-                     const slotEvents = planningEvents.filter(ev => {
-                       const evDate = new Date(ev.start_time);
-                       return evDate.getDate() === day.getDate() && evDate.getMonth() === day.getMonth() && evDate.getFullYear() === day.getFullYear() && evDate.getHours() === hour;
-                     });
+                     const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
+                     
                      return (
-                       <div key={hour} onClick={() => openAddEventModal(day, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
+                       <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
                          {slotEvents.map(ev => (
-                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deletePlanningEvent(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
+                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
                              <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
                            </div>
                          ))}
@@ -900,20 +994,21 @@ export default function Home() {
              </div>
            </div>
 
-           {showEventModal && (
+           {/* Modal d'ajout rapide d'événement générique */}
+           {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
-                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier à {eventDateSlot?.getHours()}h00</h3>
-                 <input type="text" value={eventTitle} onChange={(e) => setEventTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" autoFocus />
+                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier : {blockDay} à {blockHour}h00</h3>
+                 <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" autoFocus />
                  <div className="flex gap-2 w-full justify-between">
-                   <button onClick={() => setEventColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${eventColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
-                   <button onClick={() => setEventColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${eventColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
-                   <button onClick={() => setEventColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${eventColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
-                   <button onClick={() => setEventColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${eventColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setBlockColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${blockColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setEventColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${blockColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <button onClick={() => setBlockColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${blockColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                  </div>
                  <div className="flex gap-2 mt-2">
-                   <button onClick={savePlanningEvent} disabled={loading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">Ajouter</button>
-                   <button onClick={() => setShowEventModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
+                   <button onClick={addBlockToWeek} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">Ajouter</button>
+                   <button onClick={() => setShowBlockModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
                  </div>
                </div>
              </div>
