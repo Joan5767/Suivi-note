@@ -167,55 +167,164 @@ export default function Home() {
   }, []);
 
   // ==========================================
-  // === 2. CAPTEUR CENTRAL (ZOOM + BALAYAGE) =
+  // === 2. CAPTEUR CENTRAL (ZOOM 2 AXES + PAN)
   // ==========================================
   const gridRef = useRef<HTMLDivElement>(null);
-  const [hourHeight, setHourHeight] = useState(64); 
+  const daysScrollRef = useRef<HTMLDivElement>(null);
+  const daysHeaderScrollRef = useRef<HTMLDivElement>(null);
+
+  // Zoom vertical : hauteur d'une heure en pixels
+  const [hourHeight, setHourHeight] = useState(64);
   const currentHourHeight = useRef(64);
+
+  // Zoom horizontal : nombre de jours visibles simultanément.
+  // 3 = environ 3 jours visibles ; plus petit = colonnes plus larges.
+  const [daysPerView, setDaysPerView] = useState(3);
+  const currentDaysPerView = useRef(3);
 
   useEffect(() => {
     currentHourHeight.current = hourHeight;
   }, [hourHeight]);
 
   useEffect(() => {
+    currentDaysPerView.current = daysPerView;
+  }, [daysPerView]);
+
+  // Synchronise la ligne des jours figée avec le corps du planning.
+  // On peut aussi glisser directement sur l'en-tête : le corps suit le même déplacement.
+  useEffect(() => {
+    if (mainMode !== 'planning') return;
+
+    const bodyScroller = daysScrollRef.current;
+    const headerScroller = daysHeaderScrollRef.current;
+    if (!bodyScroller || !headerScroller) return;
+
+    let syncing = false;
+    let rafId: number | undefined;
+
+    const releaseSync = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        syncing = false;
+      });
+    };
+
+    const syncHeaderFromBody = () => {
+      if (syncing) return;
+      syncing = true;
+      headerScroller.scrollLeft = bodyScroller.scrollLeft;
+      releaseSync();
+    };
+
+    const syncBodyFromHeader = () => {
+      if (syncing) return;
+      syncing = true;
+      bodyScroller.scrollLeft = headerScroller.scrollLeft;
+      releaseSync();
+    };
+
+    // Aligne immédiatement les deux zones au montage.
+    headerScroller.scrollLeft = bodyScroller.scrollLeft;
+
+    bodyScroller.addEventListener('scroll', syncHeaderFromBody, { passive: true });
+    headerScroller.addEventListener('scroll', syncBodyFromHeader, { passive: true });
+
+    return () => {
+      bodyScroller.removeEventListener('scroll', syncHeaderFromBody);
+      headerScroller.removeEventListener('scroll', syncBodyFromHeader);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [mainMode]);
+
+  useEffect(() => {
     if (mainMode !== 'planning') return;
 
     const grid = gridRef.current;
-    if (!grid) return;
+    const scroller = daysScrollRef.current;
+    if (!grid || !scroller) return;
 
-    let startDist = 0;
+    let startSpanX = 0;
+    let startSpanY = 0;
     let startHeight = 64;
-    let rafId: number;
+    let startDaysPerView = 3;
+    let startScrollLeft = 0;
+    let startCenterX = 0;
+    let gestureAxis: 'horizontal' | 'vertical' | null = null;
+    let rafId: number | undefined;
 
-    const getDist = (touches: TouchList) => {
-      return Math.hypot(
-        touches[0].clientX - touches[1].clientX,
-        touches[0].clientY - touches[1].clientY
-      );
+    const getTouchGeometry = (touches: TouchList) => {
+      const t1 = touches[0];
+      const t2 = touches[1];
+      return {
+        spanX: Math.abs(t1.clientX - t2.clientX),
+        spanY: Math.abs(t1.clientY - t2.clientY),
+        centerX: (t1.clientX + t2.clientX) / 2,
+      };
     };
 
     const handleTouchStart = (e: TouchEvent) => {
-      // À deux doigts : zoom personnalisé.
-      // À un doigt : on laisse le navigateur gérer le défilement horizontal natif.
-      if (e.touches.length === 2) {
-        if (e.cancelable) e.preventDefault();
-        startDist = getDist(e.touches);
-        startHeight = currentHourHeight.current;
-      }
+      // À un doigt, aucun JS : le navigateur garde le pan horizontal natif.
+      if (e.touches.length !== 2) return;
+
+      if (e.cancelable) e.preventDefault();
+
+      const geo = getTouchGeometry(e.touches);
+      startSpanX = Math.max(geo.spanX, 20);
+      startSpanY = Math.max(geo.spanY, 20);
+      startHeight = currentHourHeight.current;
+      startDaysPerView = currentDaysPerView.current;
+      startScrollLeft = scroller.scrollLeft;
+
+      const rect = scroller.getBoundingClientRect();
+      startCenterX = geo.centerX - rect.left;
+      gestureAxis = null;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && startDist > 0) {
-        if (e.cancelable) e.preventDefault();
+      if (e.touches.length !== 2 || startSpanX <= 0 || startSpanY <= 0) return;
+      if (e.cancelable) e.preventDefault();
 
-        const currentDist = getDist(e.touches);
-        const scale = currentDist / startDist;
-        let newHeight = startHeight * scale;
+      const geo = getTouchGeometry(e.touches);
+      const deltaX = Math.abs(geo.spanX - startSpanX);
+      const deltaY = Math.abs(geo.spanY - startSpanY);
 
-        if (newHeight < 40) newHeight = 40;
-        if (newHeight > 200) newHeight = 200;
+      // On attend un petit mouvement avant de choisir l'axe, puis on le verrouille
+      // jusqu'à la fin du geste pour éviter les sauts entre X et Y.
+      if (!gestureAxis) {
+        if (Math.max(deltaX, deltaY) < 6) return;
+        gestureAxis = deltaX >= deltaY ? 'horizontal' : 'vertical';
+      }
 
-        if (rafId) cancelAnimationFrame(rafId);
+      if (rafId) cancelAnimationFrame(rafId);
+
+      if (gestureAxis === 'horizontal') {
+        const horizontalScale = Math.max(0.35, geo.spanX / startSpanX);
+
+        // Écarter les doigts => moins de jours visibles => colonnes plus larges.
+        // Pincer => davantage de jours visibles => colonnes plus étroites.
+        let newDaysPerView = startDaysPerView / horizontalScale;
+        newDaysPerView = Math.min(7, Math.max(1.15, newDaysPerView));
+
+        // Ratio réel de largeur du contenu avant/après le zoom.
+        const contentScale = startDaysPerView / newDaysPerView;
+
+        rafId = window.requestAnimationFrame(() => {
+          setDaysPerView(newDaysPerView);
+
+          // Maintient autant que possible le point situé sous le centre du pincement.
+          requestAnimationFrame(() => {
+            const targetScrollLeft =
+              (startScrollLeft + startCenterX) * contentScale - startCenterX;
+            const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+            scroller.scrollLeft = Math.min(maxScroll, Math.max(0, targetScrollLeft));
+          });
+        });
+      } else {
+        const verticalScale = Math.max(0.35, geo.spanY / startSpanY);
+        let newHeight = startHeight * verticalScale;
+
+        newHeight = Math.min(200, Math.max(40, newHeight));
+
         rafId = window.requestAnimationFrame(() => {
           setHourHeight(newHeight);
         });
@@ -224,7 +333,9 @@ export default function Home() {
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2) {
-        startDist = 0;
+        startSpanX = 0;
+        startSpanY = 0;
+        gestureAxis = null;
       }
     };
 
@@ -1326,9 +1437,35 @@ export default function Home() {
            </div>
 
            <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Glisse pour voir les jours | 🔍 Pince pour zoomer</span>
+             <span className="text-xs font-bold text-gray-400">↔️ 1 doigt : déplacer | ↔️ 2 doigts : zoom jours | ↕️ 2 doigts : zoom heures | 📌 Jours figés en haut</span>
            </div>
 
+           {/* LIGNE DES JOURS FIGÉE : reste visible pendant le scroll vertical, façon Excel */}
+           <div className="sticky top-0 z-[200] h-10 flex w-full bg-white rounded-t-2xl border border-gray-200 shadow-md overflow-hidden">
+             {/* Coin au-dessus de la colonne des heures */}
+             <div className="flex-shrink-0 w-12 h-10 bg-gray-50 border-r border-gray-200"></div>
+
+             {/* En-têtes des jours : scroll horizontal synchronisé avec le planning */}
+             <div
+               ref={daysHeaderScrollRef}
+               className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain [&::-webkit-scrollbar]:hidden"
+               style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x', scrollbarWidth: 'none' }}
+             >
+               <div className="flex h-10" style={{ minWidth: `${(7 / daysPerView) * 100}%` }}>
+                 {WEEK_DAYS.map((dayName) => (
+                   <div
+                     key={`sticky-${dayName}`}
+                     className="flex-1 min-w-0 h-10 flex items-center justify-center border-r border-gray-200 last:border-r-0 bg-white"
+                   >
+                     <span className="font-black text-sm text-gray-800 whitespace-nowrap px-1">{dayName}</span>
+                   </div>
+                 ))}
+               </div>
+             </div>
+           </div>
+
+           {/* La grille remonte sous la ligne figée : aucun espace supplémentaire n'est ajouté. */}
+           <div className="-mt-10">
            {/* Grille du planning avec DÉFILEMENT HORIZONTAL NATIF + ZOOM PERSONNALISÉ */}
            <div 
              ref={gridRef}
@@ -1348,11 +1485,13 @@ export default function Home() {
 
              {/* Colonnes des jours : vraie zone défilable horizontalement au doigt */}
              <div
+               ref={daysScrollRef}
                className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain"
                style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y' }}
              >
-               {/* 7 jours sur une largeur équivalente à 7/3 de la zone : environ 3 jours visibles à la fois */}
-               <div className="flex h-full" style={{ minWidth: `${(7 / 3) * 100}%` }}>
+               {/* La largeur varie avec le zoom horizontal.
+                   daysPerView = 3 => environ 3 jours visibles ; 1.15 => gros zoom ; 7 => semaine entière. */}
+               <div className="flex h-full" style={{ minWidth: `${(7 / daysPerView) * 100}%` }}>
                  {WEEK_DAYS.map((dayName) => (
                    <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
                    
@@ -1454,6 +1593,7 @@ export default function Home() {
                  ))}
                </div>
              </div>
+           </div>
            </div>
 
            {/* Modal d'ajout / modification rapide */}
