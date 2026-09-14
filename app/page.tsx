@@ -144,42 +144,50 @@ export default function Home() {
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === INTERCEPTION DU BOUTON RETOUR ========
+  // === INTERCEPTION BLINDÉE DU RETOUR =======
   // ==========================================
   
-  // 1. On crée un "faux" historique au lancement de l'application
-  useEffect(() => {
-    window.history.pushState(null, '', window.location.href);
-  }, []);
+  // Ce "tunnel mémoire" permet de lire l'état instantané de l'app 
+  // sans souffrir du léger retard d'affichage de React.
+  const appStateRef = useRef({
+    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+    openMenuId, editingId, isFocusMode, activeTab, mainMode
+  });
 
-  // 2. On écoute quand l'utilisateur appuie sur "Retour"
   useEffect(() => {
+    appStateRef.current = {
+      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+      openMenuId, editingId, isFocusMode, activeTab, mainMode
+    };
+  });
+
+  useEffect(() => {
+    // Injecte une fausse page au démarrage pour piéger le bouton retour
+    window.history.pushState(null, '', window.location.href);
+
     const handlePopState = (e: PopStateEvent) => {
+      const s = appStateRef.current;
       let handled = false;
 
-      // On vérifie ce qui est ouvert et on le ferme en priorité (du plus haut au plus bas)
-      if (showBlockModal) { setShowBlockModal(false); handled = true; }
-      else if (showCleanupModal) { setShowCleanupModal(false); handled = true; }
-      else if (aiProposal) { setAiProposal(null); handled = true; }
-      else if (triggeredAlarm) { setTriggeredAlarm(null); handled = true; }
-      else if (openMenuId) { setOpenMenuId(null); handled = true; }
-      else if (editingId) { setEditingId(null); handled = true; }
-      else if (isFocusMode) { setIsFocusMode(false); handled = true; }
-      else if (mainMode === 'notes' && activeTab !== 'create') { setActiveTab('create'); handled = true; }
-      else if (mainMode !== 'hub') { setMainMode('hub'); handled = true; }
+      if (s.showBlockModal) { setShowBlockModal(false); handled = true; }
+      else if (s.showCleanupModal) { setShowCleanupModal(false); handled = true; }
+      else if (s.aiProposal) { setAiProposal(null); handled = true; }
+      else if (s.triggeredAlarm) { setTriggeredAlarm(null); handled = true; }
+      else if (s.openMenuId) { setOpenMenuId(null); handled = true; }
+      else if (s.editingId) { setEditingId(null); handled = true; }
+      else if (s.isFocusMode) { setIsFocusMode(false); handled = true; }
+      else if (s.mainMode === 'notes' && s.activeTab !== 'create') { setActiveTab('create'); handled = true; }
+      else if (s.mainMode !== 'hub') { setMainMode('hub'); handled = true; }
 
       if (handled) {
-        // Si on a intercepté l'action pour fermer un élément, on remet l'historique en place pour le prochain appui
+        // Bloque la sortie et remet un faux historique immédiatement
         window.history.pushState(null, '', window.location.href);
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [
-    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-    openMenuId, editingId, isFocusMode, activeTab, mainMode
-  ]);
+  }, []);
 
   // ==========================================
 
@@ -1094,6 +1102,12 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
+                  <button 
+                    onClick={() => {
+                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
+                    }} 
+                    className="text-xs text-red-500 font-bold hidden"
+                  >Supprimer</button>
                 </div>
               )}
            </div>
