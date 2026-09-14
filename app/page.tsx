@@ -136,7 +136,6 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   const [previewTemplate, setPreviewTemplate] = useState<any | null>(null);
@@ -150,15 +149,6 @@ export default function Home() {
   const [blockColor, setBlockColor] = useState('blue');
 
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
-
-  const handleDayNavigation = (direction: number) => {
-    setVisibleDayIndex(prev => {
-      let newIndex = prev + direction;
-      if (newIndex < 0) return 0;
-      if (newIndex > 4) return 4;
-      return newIndex;
-    });
-  };
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -196,9 +186,6 @@ export default function Home() {
     let startDist = 0;
     let startHeight = 64;
     let rafId: number;
-    
-    let startX = 0;
-    let isSwiping = false;
 
     const getDist = (touches: TouchList) => {
       return Math.hypot(
@@ -208,21 +195,19 @@ export default function Home() {
     };
 
     const handleTouchStart = (e: TouchEvent) => {
+      // À deux doigts : zoom personnalisé.
+      // À un doigt : on laisse le navigateur gérer le défilement horizontal natif.
       if (e.touches.length === 2) {
-        if (e.cancelable) e.preventDefault(); 
+        if (e.cancelable) e.preventDefault();
         startDist = getDist(e.touches);
         startHeight = currentHourHeight.current;
-        isSwiping = false; // On annule le balayage car on pince
-      } else if (e.touches.length === 1) {
-        startX = e.touches[0].clientX;
-        isSwiping = true;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
       if (e.touches.length === 2 && startDist > 0) {
         if (e.cancelable) e.preventDefault();
-        
+
         const currentDist = getDist(e.touches);
         const scale = currentDist / startDist;
         let newHeight = startHeight * scale;
@@ -234,27 +219,13 @@ export default function Home() {
         rafId = window.requestAnimationFrame(() => {
           setHourHeight(newHeight);
         });
-        isSwiping = false;
       }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
-      // DÉTECTION DU BALAYAGE LORSQUE LE DOIGT SE LÈVE
-      if (isSwiping && e.changedTouches.length === 1) {
-        const endX = e.changedTouches[0].clientX;
-        const distance = startX - endX;
-        
-        if (distance > 50) {
-          handleDayNavigation(1); // Swipe vers la gauche (jour suivant)
-        } else if (distance < -50) {
-          handleDayNavigation(-1); // Swipe vers la droite (jour précédent)
-        }
-      }
-
       if (e.touches.length < 2) {
         startDist = 0;
       }
-      isSwiping = false;
     };
 
     grid.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -269,7 +240,7 @@ export default function Home() {
       grid.removeEventListener('touchcancel', handleTouchEnd);
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [mainMode]); 
+  }, [mainMode]);
 
   // ==========================================
   // === SYSTÈME DE ROUTAGE NATIF (RETOUR) ====
@@ -600,7 +571,6 @@ export default function Home() {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
-  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
   const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
@@ -1359,15 +1329,15 @@ export default function Home() {
              <span className="text-xs font-bold text-gray-400">↔️ Glisse pour voir les jours | 🔍 Pince pour zoomer</span>
            </div>
 
-           {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
+           {/* Grille du planning avec DÉFILEMENT HORIZONTAL NATIF + ZOOM PERSONNALISÉ */}
            <div 
              ref={gridRef}
              className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
+             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-x pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
-             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
+             <div className="flex-shrink-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
                <div className="h-10 border-b border-gray-200 bg-gray-50 sticky top-0 z-30"></div> {/* Coin vide */}
                {hoursOfDay.map(hour => (
                  <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px` }}>
@@ -1376,10 +1346,15 @@ export default function Home() {
                ))}
              </div>
 
-             {/* Colonnes des jours (Glissantes et parfaitement calibrées) */}
-             <div className="flex flex-1">
-               {visibleDays.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+             {/* Colonnes des jours : vraie zone défilable horizontalement au doigt */}
+             <div
+               className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+               style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y' }}
+             >
+               {/* 7 jours sur une largeur équivalente à 7/3 de la zone : environ 3 jours visibles à la fois */}
+               <div className="flex h-full" style={{ minWidth: `${(7 / 3) * 100}%` }}>
+                 {WEEK_DAYS.map((dayName) => (
+                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
                    
                    <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
                        <span className="font-black text-sm text-gray-800">{dayName}</span>
@@ -1476,7 +1451,8 @@ export default function Home() {
                      );
                    })}
                  </div>
-               ))}
+                 ))}
+               </div>
              </div>
            </div>
 
