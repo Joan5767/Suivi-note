@@ -58,7 +58,6 @@ const urlBase64ToUint8Array = (base64String: string) => {
   return outputArray;
 };
 
-// === NOUVELLE FONCTION DE FORMATAGE ===
 const formatDuration = (totalMinutes: number) => {
   const h = Math.floor(totalMinutes / 60);
   const m = Math.round(totalMinutes % 60);
@@ -376,7 +375,6 @@ export default function Home() {
     setSelectedBlockId(null);
   };
 
-  // NOUVEAU : Message de confirmation avant suppression
   const deleteBlock = (id: string) => {
     if (window.confirm("Es-tu sûr de vouloir supprimer cette tâche de ton planning ?")) {
       setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
@@ -401,7 +399,8 @@ export default function Home() {
     const diffY = clientY - resizingBlock.startY;
     
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / 64);
-    const snappedDuration = Math.max(15, Math.round(rawDuration / 15) * 15);
+    // Arrondi par crans de 15 minutes, et BLOCAGE à 30 minutes minimum
+    const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
     setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
   };
@@ -1172,7 +1171,7 @@ export default function Home() {
                        <div 
                          key={hour} 
                          onClick={(e) => {
-                           setSelectedBlockId(null); // Désélectionne les blocs si on clique dans le vide
+                           setSelectedBlockId(null); 
                            const rect = e.currentTarget.getBoundingClientRect();
                            const offsetY = e.clientY - rect.top;
                            const minute = Math.floor(offsetY / 16) * 15;
@@ -1189,57 +1188,65 @@ export default function Home() {
                      const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
                      const heightPx = ((ev.duration || 60) / 60) * 64;
                      const isSelected = selectedBlockId === ev.id;
+                     
+                     // Positionnement intelligent de la miniature (pour ne pas sortir de l'écran par le haut)
+                     const popoverPosition = ev.startHour < 10 
+                       ? { top: 'calc(100% + 5px)' } 
+                       : { bottom: 'calc(100% + 5px)' };
 
                      return (
                        <div 
                          key={ev.id} 
                          className="absolute left-1 right-1 z-10 p-0.5"
-                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} // +40px pour l'en-tête du jour
+                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
                              e.stopPropagation(); 
                              setSelectedBlockId(isSelected ? null : ev.id); 
                            }}
-                           className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : ''}`}
+                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black z-20' : 'overflow-hidden'}`}
                          >
                            
-                           {/* Boutons d'édition et suppression (visibles uniquement si le bloc est sélectionné) */}
-                           {isSelected && (
-                             <div className="absolute top-1 right-1 flex gap-1 z-20">
-                               <button 
-                                 onClick={(e) => { e.stopPropagation(); openEditBlockModal(ev); }}
-                                 className="text-black/50 hover:text-blue-600 font-bold text-[11px] bg-white/70 backdrop-blur rounded px-1.5 py-0.5 shadow-sm"
-                               >
-                                 ✏️
-                               </button>
-                               <button 
-                                 onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
-                                 className="text-black/50 hover:text-red-600 font-bold text-[11px] bg-white/70 backdrop-blur rounded px-1.5 py-0.5 shadow-sm"
-                               >
-                                 ✖
-                               </button>
-                             </div>
-                           )}
-
-                           {/* Contenu */}
-                           <div className="p-1.5 pt-2 overflow-hidden pointer-events-none flex-1">
-                             <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
-                             <span className="text-[9px] opacity-70 block">
-                               {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
-                               ({formatDuration(ev.duration || 60)})
-                             </span>
+                           {/* Contenu standard */}
+                           <div className="p-1.5 pt-1 flex-1 overflow-hidden pointer-events-none">
+                             <span className="text-[10px] font-bold leading-tight line-clamp-1">{ev.title}</span>
+                             {/* NOUVEAU : Masquer le texte si le bloc est trop petit (< 45 min) */}
+                             {(ev.duration || 60) >= 45 && (
+                               <span className="text-[9px] opacity-70 block mt-0.5">
+                                 {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
+                               </span>
+                             )}
                            </div>
 
-                           {/* Poignée de redimensionnement (visible uniquement si sélectionné) */}
+                           {/* Poignée de redimensionnement (visible quand sélectionné, reste collée en bas) */}
                            {isSelected && (
                              <div 
-                               className="absolute bottom-0 left-0 right-0 h-6 bg-black/10 hover:bg-black/20 cursor-ns-resize flex justify-center items-end pb-1.5"
+                               className="absolute bottom-0 left-0 right-0 h-6 bg-black/20 hover:bg-black/30 cursor-ns-resize flex justify-center items-end pb-1.5 z-30"
                                style={{ touchAction: 'none' }}
                                onMouseDown={(e) => handleResizeStart(e, ev)}
                                onTouchStart={(e) => handleResizeStart(e, ev)}
                              >
-                               <div className="w-8 h-1.5 bg-black/40 rounded-full" />
+                               <div className="w-8 h-1.5 bg-white rounded-full shadow-sm" />
+                             </div>
+                           )}
+
+                           {/* NOUVEAU : MINIATURE RÉCAPITULATIVE (POP-UP EXTÉRIEUR AU BLOC) */}
+                           {isSelected && (
+                             <div 
+                               className="absolute left-1/2 -translate-x-1/2 w-[160px] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[100] cursor-default"
+                               style={popoverPosition}
+                               onClick={(e) => e.stopPropagation()} 
+                             >
+                                <h4 className="font-black text-sm text-gray-900 leading-tight">{ev.title}</h4>
+                                <p className="text-xs text-gray-600 font-bold">
+                                   {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} <br/>
+                                   Durée : {formatDuration(ev.duration || 60)}
+                                </p>
+                                <div className="flex gap-2 mt-1">
+                                  <button onClick={(e) => { e.stopPropagation(); openEditBlockModal(ev); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2 rounded-lg text-lg shadow-sm border border-gray-200">✏️</button>
+                                  <button onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className="flex-1 bg-red-100 hover:bg-red-200 text-red-600 font-bold py-2 rounded-lg text-lg shadow-sm border border-red-200">🗑️</button>
+                                </div>
                              </div>
                            )}
 
