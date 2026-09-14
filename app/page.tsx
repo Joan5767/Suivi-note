@@ -33,6 +33,8 @@ interface WeeklyBlock {
   title: string;
   day: string;
   startHour: number;
+  startMinute: number; // NOUVEAU : Précision des minutes
+  duration: number;    // NOUVEAU : Durée en minutes (défaut 60)
   color: string;
 }
 
@@ -126,14 +128,21 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   
   const [showBlockModal, setShowBlockModal] = useState(false);
-  const [blockDay, setBlockDay] = useState('');
-  const [blockHour, setBlockHour] = useState(0);
+  const [blockDay, setBlockDay] = useState('Lundi');
+  const [blockTime, setBlockTime] = useState('09:00'); // Gère heure + minute
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
+
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
+  const [touchEndX, setTouchEndX] = useState<number | null>(null);
+
+  // État de redimensionnement des blocs
+  const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -238,9 +247,39 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
+  // ==========================================
+  // === LOGIQUE DU PLANNING ===
+  // ==========================================
+  
+  const handleDayNavigation = (direction: number) => {
+    let newIndex = visibleDayIndex + direction;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex > 4) newIndex = 4;
+    setVisibleDayIndex(newIndex);
+  };
+
+  const onTouchStartSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock) return; // Désactive le swipe si on est en train de redimensionner
+    setTouchEndX(null);
+    setTouchStartX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMoveSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock) return;
+    setTouchEndX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEndSwipe = () => {
+    if (resizingBlock || !touchStartX || !touchEndX) return;
+    const distance = touchStartX - touchEndX;
+    if (distance > 50 && visibleDayIndex < 4) handleDayNavigation(1);
+    if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
+  };
+
   const openAddBlockModal = (day: string, hour: number) => {
     setBlockDay(day);
-    setBlockHour(hour);
+    const h = hour.toString().padStart(2, '0');
+    setBlockTime(`${h}:00`);
     setBlockTitle('');
     setBlockColor('blue');
     setShowBlockModal(true);
@@ -248,11 +287,17 @@ export default function Home() {
 
   const addBlockToWeek = () => {
     if (!blockTitle.trim()) return;
+    const [hStr, mStr] = blockTime.split(':');
+    const startHour = parseInt(hStr, 10);
+    const startMinute = parseInt(mStr, 10) || 0;
+
     const newBlock: WeeklyBlock = {
       id: crypto.randomUUID(),
       title: blockTitle,
       day: blockDay,
-      startHour: blockHour,
+      startHour: startHour,
+      startMinute: startMinute,
+      duration: 60, // 1 heure par défaut
       color: blockColor
     };
     setWeeklyBlocks(prev => [...prev, newBlock]);
@@ -261,6 +306,37 @@ export default function Home() {
 
   const deleteBlock = (id: string) => {
     setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
+  };
+
+  // --- REDIMENSIONNEMENT TACTILE DES TÂCHES ---
+  const handleResizeStart = (e: React.TouchEvent | React.MouseEvent, block: WeeklyBlock) => {
+    e.stopPropagation();
+    const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
+    setResizingBlock({
+      id: block.id,
+      startY: clientY,
+      initialDuration: block.duration || 60
+    });
+  };
+
+  const handleResizeMove = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!resizingBlock) return;
+    e.stopPropagation();
+    const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
+    const diffY = clientY - resizingBlock.startY;
+    
+    // 1 heure = 64 pixels, donc 1 minute = 64/60 = 1.066 pixels
+    let newDuration = resizingBlock.initialDuration + Math.round((diffY * 60) / 64);
+    if (newDuration < 15) newDuration = 15; // Durée minimale de 15 minutes
+    
+    setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: newDuration } : b));
+  };
+
+  const handleResizeEnd = (e: React.TouchEvent | React.MouseEvent) => {
+    if (resizingBlock) {
+      e.stopPropagation();
+      setResizingBlock(null);
+    }
   };
 
   const saveTemplateToDB = async () => {
@@ -300,10 +376,10 @@ export default function Home() {
       const targetDay = daysMap[block.day];
       const date = new Date(today);
       date.setDate(date.getDate() + ((targetDay + 7 - date.getDay()) % 7 || 7));
-      date.setHours(block.startHour, 0, 0, 0);
+      date.setHours(block.startHour, block.startMinute || 0, 0, 0);
       
       const end = new Date(date);
-      end.setHours(date.getHours() + 1);
+      end.setMinutes(date.getMinutes() + (block.duration || 60));
       
       const pad = (n: number) => (n < 10 ? '0' + n : n);
       const formatICSDate = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
@@ -320,6 +396,7 @@ export default function Home() {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
+  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
   const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
@@ -849,7 +926,11 @@ export default function Home() {
   );
 
   return (
-    <main className="max-w-7xl mx-auto p-4 pb-20 relative">
+    <main className="max-w-7xl mx-auto p-4 pb-20 relative" 
+          onTouchMove={handleResizeMove} 
+          onTouchEnd={handleResizeEnd} 
+          onMouseMove={handleResizeMove} 
+          onMouseUp={handleResizeEnd}>
 
       {/* ================= MODALS GLOBALES ================= */}
       {showCleanupModal && (
@@ -941,7 +1022,12 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
-         <div className="flex flex-col gap-4 animate-fade-in w-full">
+         <div 
+           className="flex flex-col gap-4 animate-fade-in w-full"
+           onTouchStart={onTouchStartSwipe}
+           onTouchMove={onTouchMoveSwipe}
+           onTouchEnd={onTouchEndSwipe}
+         >
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
@@ -979,16 +1065,23 @@ export default function Home() {
               )}
            </div>
 
-           <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Fais glisser pour voir les autres jours</span>
+           {/* Navigation des jours (Générique) */}
+           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2 select-none">
+             <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
+             <div className="flex gap-2 overflow-x-hidden w-full px-2">
+               {visibleDays.map((dayName, idx) => (
+                 <div key={idx} className="flex-1 text-center font-black text-sm text-gray-800 flex flex-col py-1">
+                   {dayName}
+                 </div>
+               ))}
+             </div>
+             <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
            </div>
 
-           {/* Grille du planning avec défilement natif fluide */}
-           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-             
+           {/* Grille des heures en position absolue */}
+           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex select-none relative h-[960px]"> {/* 15 heures * 64px = 960px */}
              {/* Colonne des heures (Fixée à gauche) */}
-             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
-               <div className="h-10 border-b border-gray-200 bg-gray-50"></div> {/* Coin vide */}
+             <div className="absolute left-0 top-0 bottom-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
                {hoursOfDay.map(hour => (
                  <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
@@ -996,22 +1089,58 @@ export default function Home() {
                ))}
              </div>
 
-             {/* Colonnes des jours (Glissantes) */}
-             <div className="flex flex-nowrap">
-               {WEEK_DAYS.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative">
-                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
-                       <span className="font-black text-sm text-gray-800">{dayName}</span>
-                   </div>
-                   {hoursOfDay.map(hour => {
-                     const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
+             {/* Colonnes des jours (Position Absolue) */}
+             <div className="flex flex-1 ml-12">
+               {visibleDays.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+                   {/* Lignes de fond (cliquables pour ajouter à une heure pile) */}
+                   {hoursOfDay.map(hour => (
+                     <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"></div>
+                   ))}
+
+                   {/* Blocs d'événements positionnés au pixel près */}
+                   {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
+                     // 1 heure = 64 pixels de haut
+                     // Décalage depuis 7h00 (première heure affichée)
+                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
+                     const heightPx = ((ev.duration || 60) / 60) * 64;
+
                      return (
-                       <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
-                         {slotEvents.map(ev => (
-                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
-                             <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
+                       <div 
+                         key={ev.id} 
+                         className="absolute left-1 right-1 z-10 p-0.5"
+                         style={{ top: `${topPx}px`, height: `${heightPx}px` }}
+                       >
+                         <div className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
+                           
+                           {/* Bouton supprimer */}
+                           <button 
+                             onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
+                             className="absolute top-1 right-1 text-black/50 hover:text-red-600 font-bold z-20 text-[10px]"
+                           >
+                             ✖
+                           </button>
+
+                           {/* Contenu */}
+                           <div className="p-1.5 pt-3 overflow-hidden pointer-events-none">
+                             <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
+                             <span className="text-[9px] opacity-70 block">
+                               {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
+                               ({ev.duration || 60} min)
+                             </span>
                            </div>
-                         ))}
+
+                           {/* Poignée de redimensionnement tactile en bas */}
+                           <div 
+                             className="absolute bottom-0 left-0 right-0 h-4 bg-black/10 cursor-ns-resize flex justify-center items-end pb-1"
+                             style={{ touchAction: 'none' }}
+                             onMouseDown={(e) => handleResizeStart(e, ev)}
+                             onTouchStart={(e) => handleResizeStart(e, ev)}
+                           >
+                             <div className="w-6 h-1 bg-black/30 rounded-full" />
+                           </div>
+
+                         </div>
                        </div>
                      );
                    })}
@@ -1020,18 +1149,38 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide d'événement générique */}
+           {/* Modal d'ajout rapide (avec jour et heure modifiables) */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
-                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier : {blockDay} à {blockHour}h00</h3>
+                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier un bloc</h3>
+                 
+                 <div className="flex gap-2">
+                   <select 
+                     value={blockDay} 
+                     onChange={(e) => setBlockDay(e.target.value)} 
+                     className="flex-1 border border-gray-300 p-2 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
+                   >
+                     {WEEK_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+                   </select>
+                   
+                   <input 
+                     type="time" 
+                     value={blockTime} 
+                     onChange={(e) => setBlockTime(e.target.value)} 
+                     className="flex-1 border border-gray-300 p-2 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
+                   />
+                 </div>
+
                  <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" autoFocus />
-                 <div className="flex gap-2 w-full justify-between">
+                 
+                 <div className="flex gap-2 w-full justify-between mt-1">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${blockColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${blockColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${blockColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                  </div>
+                 
                  <div className="flex gap-2 mt-2">
                    <button onClick={addBlockToWeek} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">Ajouter</button>
                    <button onClick={() => setShowBlockModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
