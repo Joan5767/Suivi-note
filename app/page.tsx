@@ -149,11 +149,52 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
-  // État de balayage gauche/droite
-  const [touchStartX, setTouchStartX] = useState<number | null>(null);
-  const [touchEndX, setTouchEndX] = useState<number | null>(null);
+  // ==========================================
+  // === OPTIMISATION DU BALAYAGE TACTILE =====
+  // ==========================================
+  const swipeStartX = useRef<number | null>(null);
+  const swipeEndX = useRef<number | null>(null);
 
-  // État de redimensionnement de bloc
+  const onTouchStartSwipe = (e: React.TouchEvent) => {
+    // Si on pince (2 doigts) ou si on redimensionne, on ignore le swipe
+    if (resizingBlock || e.touches.length > 1) return; 
+    swipeStartX.current = e.touches[0].clientX;
+    swipeEndX.current = null;
+  };
+
+  const onTouchMoveSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock || e.touches.length > 1) {
+      swipeStartX.current = null; // On annule le swipe si on passe à 2 doigts (zoom)
+      return;
+    }
+    swipeEndX.current = e.touches[0].clientX;
+  };
+
+  const onTouchEndSwipe = () => {
+    if (resizingBlock || swipeStartX.current === null || swipeEndX.current === null) return;
+    
+    const distance = swipeStartX.current - swipeEndX.current;
+    
+    if (distance > 50) {
+      handleDayNavigation(1);
+    } else if (distance < -50) {
+      handleDayNavigation(-1);
+    }
+    
+    // Réinitialisation pour le prochain swipe
+    swipeStartX.current = null;
+    swipeEndX.current = null;
+  };
+
+  const handleDayNavigation = (direction: number) => {
+    setVisibleDayIndex(prev => {
+      let newIndex = prev + direction;
+      if (newIndex < 0) return 0;
+      if (newIndex > 4) return 4;
+      return newIndex;
+    });
+  };
+
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
@@ -410,43 +451,6 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
-  const handleDayNavigation = (direction: number) => {
-    let newIndex = visibleDayIndex + direction;
-    if (newIndex < 0) newIndex = 0;
-    if (newIndex > 4) newIndex = 4;
-    setVisibleDayIndex(newIndex);
-  };
-
-  // --- CORRECTION DU SWIPE ---
-  const onTouchStartSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || e.touches.length > 1) return; 
-    setTouchStartX(e.touches[0].clientX);
-    setTouchEndX(null);
-  };
-
-  const onTouchMoveSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || e.touches.length > 1) {
-      setTouchStartX(null); // On annule le swipe si on passe à 2 doigts (zoom)
-      return;
-    }
-    setTouchEndX(e.touches[0].clientX);
-  };
-
-  const onTouchEndSwipe = () => {
-    if (!touchStartX || !touchEndX) return;
-    const distance = touchStartX - touchEndX;
-    
-    if (distance > 50 && visibleDayIndex < 4) {
-      handleDayNavigation(1);
-    } else if (distance < -50 && visibleDayIndex > 0) {
-      handleDayNavigation(-1);
-    }
-    
-    // Réinitialisation pour le prochain swipe
-    setTouchStartX(null);
-    setTouchEndX(null);
-  };
-
   const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
     setEditingBlockId(null);
     setBlockDay(day);
@@ -519,6 +523,7 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
+    // Le calcul utilise toujours la hauteur exacte du zoom actuel !
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
@@ -1381,8 +1386,8 @@ export default function Home() {
            {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
            <div 
              ref={gridRef}
-             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px` }}
+             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
+             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
