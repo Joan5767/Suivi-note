@@ -149,15 +149,17 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
+  // État de balayage gauche/droite
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchEndX, setTouchEndX] = useState<number | null>(null);
+
+  // État de redimensionnement de bloc
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
   // ==========================================
   useEffect(() => {
-    // Interdit formellement au navigateur de faire "loupe" quand on pose 2 doigts sur l'écran
     const preventNativeZoom = (e: TouchEvent) => {
       if (e.touches.length > 1) {
         e.preventDefault();
@@ -183,7 +185,6 @@ export default function Home() {
   }, [hourHeight]);
 
   useEffect(() => {
-    // Ce hook ne s'active QUE quand on est sur la page planning
     if (mainMode !== 'planning') return;
 
     const grid = gridRef.current;
@@ -210,17 +211,15 @@ export default function Home() {
 
     const handleTouchMove = (e: TouchEvent) => {
       if (e.touches.length === 2 && startDist > 0) {
-        if (e.cancelable) e.preventDefault(); // Annule toute action native
+        if (e.cancelable) e.preventDefault();
         
         const currentDist = getDist(e.touches);
         const scale = currentDist / startDist;
         let newHeight = startHeight * scale;
 
-        // Limites du zoom (40px min = dézoomé / 200px max = super zoomé)
         if (newHeight < 40) newHeight = 40;
         if (newHeight > 200) newHeight = 200;
 
-        // Mise à jour ultra fluide sans faire lagger React
         if (rafId) cancelAnimationFrame(rafId);
         rafId = window.requestAnimationFrame(() => {
           setHourHeight(newHeight);
@@ -418,22 +417,34 @@ export default function Home() {
     setVisibleDayIndex(newIndex);
   };
 
+  // --- CORRECTION DU SWIPE ---
   const onTouchStartSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || e.touches.length > 1) return; // Ignore le swipe si 2 doigts (c'est un zoom)
+    if (resizingBlock || e.touches.length > 1) return; 
+    setTouchStartX(e.touches[0].clientX);
     setTouchEndX(null);
-    setTouchStartX(e.targetTouches[0].clientX);
   };
 
   const onTouchMoveSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || e.touches.length > 1) return;
-    setTouchEndX(e.targetTouches[0].clientX);
+    if (resizingBlock || e.touches.length > 1) {
+      setTouchStartX(null); // On annule le swipe si on passe à 2 doigts (zoom)
+      return;
+    }
+    setTouchEndX(e.touches[0].clientX);
   };
 
-  const onTouchEndSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || !touchStartX || !touchEndX || e.touches.length > 0) return;
+  const onTouchEndSwipe = () => {
+    if (!touchStartX || !touchEndX) return;
     const distance = touchStartX - touchEndX;
-    if (distance > 50 && visibleDayIndex < 4) handleDayNavigation(1);
-    if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
+    
+    if (distance > 50 && visibleDayIndex < 4) {
+      handleDayNavigation(1);
+    } else if (distance < -50 && visibleDayIndex > 0) {
+      handleDayNavigation(-1);
+    }
+    
+    // Réinitialisation pour le prochain swipe
+    setTouchStartX(null);
+    setTouchEndX(null);
   };
 
   const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
@@ -508,7 +519,6 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    // Le calcul utilise toujours la hauteur exacte du zoom actuel !
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
@@ -1137,11 +1147,7 @@ export default function Home() {
   );
 
   return (
-    <main className="max-w-7xl mx-auto p-4 pb-20 relative" 
-          onTouchMove={handleResizeMove} 
-          onTouchEnd={handleResizeEnd} 
-          onMouseMove={handleResizeMove} 
-          onMouseUp={handleResizeEnd}>
+    <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
       {/* ================= MODALS GLOBALES ================= */}
       {showCleanupModal && (
@@ -1375,8 +1381,8 @@ export default function Home() {
            {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
            <div 
              ref={gridRef}
-             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
+             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" 
+             style={{ height: `${15 * hourHeight + 40}px` }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
@@ -1389,10 +1395,10 @@ export default function Home() {
                ))}
              </div>
 
-             {/* Colonnes des jours (Glissantes) */}
+             {/* Colonnes des jours (Glissantes et parfaitement calibrées) */}
              <div className="flex flex-1">
                {visibleDays.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+                 <div key={dIdx} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
                    
                    <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
                        <span className="font-black text-sm text-gray-800">{dayName}</span>
