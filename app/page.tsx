@@ -151,7 +151,6 @@ export default function Home() {
     const handleHashChange = () => {
       const hash = window.location.hash;
       
-      // Sécurité : Fermeture de toutes les modales si on appuie sur retour
       setShowBlockModal(false);
       setShowCleanupModal(false);
       setAiProposal(null);
@@ -159,7 +158,6 @@ export default function Home() {
       setOpenMenuId(null);
       setEditingId(null);
 
-      // Attribution des écrans en fonction du hashtag URL
       switch(hash) {
         case '#notes-create':
           setMainMode('notes'); setActiveTab('create'); setIsFocusMode(false); break;
@@ -177,15 +175,11 @@ export default function Home() {
       }
     };
 
-    // Initialisation silencieuse du Hash au chargement de l'application
     if (!window.location.hash) {
       window.history.replaceState(null, '', window.location.pathname + '#hub');
     }
     
-    // On force la synchronisation de l'état au démarrage
     handleHashChange();
-
-    // Écoute automatique des changements d'URL (Bouton retour ou clic sur un lien)
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
@@ -320,10 +314,12 @@ export default function Home() {
     if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
   };
 
-  const openAddBlockModal = (day: string, hour: number) => {
+  // NOUVEAU : La fonction accepte désormais un calcul précis des minutes
+  const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
     setBlockDay(day);
     const h = hour.toString().padStart(2, '0');
-    setBlockTime(`${h}:00`);
+    const m = minute.toString().padStart(2, '0');
+    setBlockTime(`${h}:${m}`);
     setBlockTitle('');
     setBlockColor('blue');
     setShowBlockModal(true);
@@ -518,7 +514,7 @@ export default function Home() {
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
     fetchNotes();
 
-    window.location.hash = 'notes-list'; // Redirection propre vers la liste via l'URL
+    window.location.hash = 'notes-list';
     setSuccessMessage('✅ Note créée avec succès !');
     setTimeout(() => setSuccessMessage(null), 3000);
   };
@@ -646,7 +642,7 @@ export default function Home() {
       
       setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
       fetchNotes();
-      window.location.hash = 'notes-list'; // Redirection via URL
+      window.location.hash = 'notes-list';
       setSuccessMessage('✅ Note créée avec succès par IA !');
       setTimeout(() => setSuccessMessage(null), 3000);
     }
@@ -673,7 +669,7 @@ export default function Home() {
       setShowCalendarConfig(true);
     }
     setAiProposal(null);
-    window.location.hash = 'notes-create'; // Redirection via URL
+    window.location.hash = 'notes-create';
   };
 
   const formatDatesForCalendar = (dateString: string) => {
@@ -1137,12 +1133,66 @@ export default function Home() {
                    {hoursOfDay.map(hour => {
                      const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
                      return (
-                       <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
-                         {slotEvents.map(ev => (
-                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
-                             <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
+                       <div 
+                         key={hour} 
+                         onClick={(e) => {
+                           // Calculer précisément à quel niveau de la case on a cliqué
+                           const rect = e.currentTarget.getBoundingClientRect();
+                           const offsetY = e.clientY - rect.top;
+                           // 64px par heure. Tranches de 16px pour 15 min.
+                           const minute = Math.floor(offsetY / 16) * 15;
+                           openAddBlockModal(dayName, hour, minute);
+                         }} 
+                         className="h-16 border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"
+                       >
+                         {/* Ce conteneur n'est plus qu'un fond cliquable, les blocs sont en absolute au-dessus */}
+                       </div>
+                     );
+                   })}
+
+                   {/* Blocs d'événements positionnés au pixel près (en superposition des cases) */}
+                   {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
+                     // 1 heure = 64 pixels de haut
+                     // Décalage depuis 7h00 (première heure affichée) -> On décale le bloc plus bas si les minutes > 0
+                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
+                     const heightPx = ((ev.duration || 60) / 60) * 64;
+
+                     return (
+                       <div 
+                         key={ev.id} 
+                         className="absolute left-1 right-1 z-10 p-0.5"
+                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} // +40px pour l'en-tête du jour
+                       >
+                         <div className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
+                           
+                           {/* Bouton supprimer */}
+                           <button 
+                             onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
+                             className="absolute top-1 right-1 text-black/50 hover:text-red-600 font-bold z-20 text-[10px]"
+                           >
+                             ✖
+                           </button>
+
+                           {/* Contenu */}
+                           <div className="p-1.5 pt-3 overflow-hidden pointer-events-none">
+                             <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
+                             <span className="text-[9px] opacity-70 block">
+                               {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
+                               ({ev.duration || 60} min)
+                             </span>
                            </div>
-                         ))}
+
+                           {/* Poignée de redimensionnement tactile en bas */}
+                           <div 
+                             className="absolute bottom-0 left-0 right-0 h-4 bg-black/10 cursor-ns-resize flex justify-center items-end pb-1"
+                             style={{ touchAction: 'none' }}
+                             onMouseDown={(e) => handleResizeStart(e, ev)}
+                             onTouchStart={(e) => handleResizeStart(e, ev)}
+                           >
+                             <div className="w-6 h-1 bg-black/30 rounded-full" />
+                           </div>
+
+                         </div>
                        </div>
                      );
                    })}
@@ -1151,7 +1201,7 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide d'événement générique */}
+           {/* Modal d'ajout rapide (avec jour et heure modifiables) */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
