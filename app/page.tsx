@@ -182,6 +182,14 @@ export default function Home() {
   const [daysPerView, setDaysPerView] = useState(3);
   const currentDaysPerView = useRef(3);
 
+  // Taille des noms de jours liée au dézoom horizontal.
+  // Jusqu'à 3 jours visibles : 14 px. Puis la police diminue progressivement
+  // pour atteindre 8 px lorsque les 7 jours sont visibles.
+  const dayHeaderFontSize = Math.max(
+    8,
+    Math.min(14, 14 - Math.max(0, daysPerView - 3) * 1.5)
+  );
+
   useEffect(() => {
     currentHourHeight.current = hourHeight;
   }, [hourHeight]);
@@ -1455,9 +1463,9 @@ export default function Home() {
                  {WEEK_DAYS.map((dayName) => (
                    <div
                      key={`sticky-${dayName}`}
-                     className="flex-1 min-w-0 h-10 flex items-center justify-center border-r border-gray-200 last:border-r-0 bg-white"
+                     className="flex-1 min-w-0 h-10 flex items-center justify-center border-r border-gray-200 last:border-r-0 bg-white overflow-hidden"
                    >
-                     <span className="font-black text-sm text-gray-800 whitespace-nowrap px-1">{dayName}</span>
+                     <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
                    </div>
                  ))}
                </div>
@@ -1493,10 +1501,10 @@ export default function Home() {
                    daysPerView = 3 => environ 3 jours visibles ; 1.15 => gros zoom ; 7 => semaine entière. */}
                <div className="flex h-full" style={{ minWidth: `${(7 / daysPerView) * 100}%` }}>
                  {WEEK_DAYS.map((dayName) => (
-                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-hidden">
                    
                    <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
-                       <span className="font-black text-sm text-gray-800">{dayName}</span>
+                       <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
                    </div>
 
                    {/* Lignes de fond (cliquables pour ajouter) */}
