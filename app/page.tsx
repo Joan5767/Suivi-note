@@ -133,6 +133,8 @@ export default function Home() {
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   
   const [showBlockModal, setShowBlockModal] = useState(false);
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [blockDay, setBlockDay] = useState('Lundi');
   const [blockTime, setBlockTime] = useState('09:00'); 
   const [blockTitle, setBlockTitle] = useState('');
@@ -144,7 +146,7 @@ export default function Home() {
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === NOUVEAU SYSTÈME DE ROUTAGE NATIF =====
+  // === SYSTÈME DE ROUTAGE NATIF =====
   // ==========================================
   
   useEffect(() => {
@@ -157,6 +159,8 @@ export default function Home() {
       setTriggeredAlarm(null);
       setOpenMenuId(null);
       setEditingId(null);
+      setEditingBlockId(null);
+      setSelectedBlockId(null);
 
       switch(hash) {
         case '#notes-create':
@@ -314,8 +318,8 @@ export default function Home() {
     if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
   };
 
-  // NOUVEAU : La fonction accepte désormais un calcul précis des minutes
   const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
+    setEditingBlockId(null);
     setBlockDay(day);
     const h = hour.toString().padStart(2, '0');
     const m = minute.toString().padStart(2, '0');
@@ -325,23 +329,42 @@ export default function Home() {
     setShowBlockModal(true);
   };
 
-  const addBlockToWeek = () => {
+  const openEditBlockModal = (block: WeeklyBlock) => {
+    setEditingBlockId(block.id);
+    setBlockDay(block.day);
+    const h = block.startHour.toString().padStart(2, '0');
+    const m = (block.startMinute || 0).toString().padStart(2, '0');
+    setBlockTime(`${h}:${m}`);
+    setBlockTitle(block.title);
+    setBlockColor(block.color);
+    setShowBlockModal(true);
+  };
+
+  const saveBlock = () => {
     if (!blockTitle.trim()) return;
     const [hStr, mStr] = blockTime.split(':');
     const startHour = parseInt(hStr, 10);
     const startMinute = parseInt(mStr, 10) || 0;
 
-    const newBlock: WeeklyBlock = {
-      id: crypto.randomUUID(),
-      title: blockTitle,
-      day: blockDay,
-      startHour: startHour,
-      startMinute: startMinute,
-      duration: 60,
-      color: blockColor
-    };
-    setWeeklyBlocks(prev => [...prev, newBlock]);
+    if (editingBlockId) {
+      setWeeklyBlocks(prev => prev.map(b => b.id === editingBlockId ? {
+        ...b, title: blockTitle, day: blockDay, startHour, startMinute, color: blockColor
+      } : b));
+    } else {
+      const newBlock: WeeklyBlock = {
+        id: crypto.randomUUID(),
+        title: blockTitle,
+        day: blockDay,
+        startHour: startHour,
+        startMinute: startMinute,
+        duration: 60,
+        color: blockColor
+      };
+      setWeeklyBlocks(prev => [...prev, newBlock]);
+    }
     setShowBlockModal(false);
+    setEditingBlockId(null);
+    setSelectedBlockId(null);
   };
 
   const deleteBlock = (id: string) => {
@@ -364,10 +387,12 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    let newDuration = resizingBlock.initialDuration + Math.round((diffY * 60) / 64);
-    if (newDuration < 15) newDuration = 15;
+    // Calcul brut
+    const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / 64);
+    // Arrondi au cran de 15 minutes le plus proche
+    const snappedDuration = Math.max(15, Math.round(rawDuration / 15) * 15);
     
-    setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: newDuration } : b));
+    setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
   };
 
   const handleResizeEnd = (e: React.TouchEvent | React.MouseEvent) => {
@@ -1136,26 +1161,23 @@ export default function Home() {
                        <div 
                          key={hour} 
                          onClick={(e) => {
-                           // Calculer précisément à quel niveau de la case on a cliqué
+                           setSelectedBlockId(null); // Désélectionne les blocs si on clique dans le vide
                            const rect = e.currentTarget.getBoundingClientRect();
                            const offsetY = e.clientY - rect.top;
-                           // 64px par heure. Tranches de 16px pour 15 min.
                            const minute = Math.floor(offsetY / 16) * 15;
                            openAddBlockModal(dayName, hour, minute);
                          }} 
                          className="h-16 border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"
                        >
-                         {/* Ce conteneur n'est plus qu'un fond cliquable, les blocs sont en absolute au-dessus */}
                        </div>
                      );
                    })}
 
-                   {/* Blocs d'événements positionnés au pixel près (en superposition des cases) */}
+                   {/* Blocs d'événements */}
                    {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
-                     // 1 heure = 64 pixels de haut
-                     // Décalage depuis 7h00 (première heure affichée) -> On décale le bloc plus bas si les minutes > 0
                      const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
                      const heightPx = ((ev.duration || 60) / 60) * 64;
+                     const isSelected = selectedBlockId === ev.id;
 
                      return (
                        <div 
@@ -1163,18 +1185,34 @@ export default function Home() {
                          className="absolute left-1 right-1 z-10 p-0.5"
                          style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} // +40px pour l'en-tête du jour
                        >
-                         <div className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
+                         <div 
+                           onClick={(e) => { 
+                             e.stopPropagation(); 
+                             setSelectedBlockId(isSelected ? null : ev.id); 
+                           }}
+                           className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : ''}`}
+                         >
                            
-                           {/* Bouton supprimer */}
-                           <button 
-                             onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
-                             className="absolute top-1 right-1 text-black/50 hover:text-red-600 font-bold z-20 text-[10px]"
-                           >
-                             ✖
-                           </button>
+                           {/* Boutons d'édition et suppression (visibles uniquement si le bloc est sélectionné) */}
+                           {isSelected && (
+                             <div className="absolute top-1 right-1 flex gap-1 z-20">
+                               <button 
+                                 onClick={(e) => { e.stopPropagation(); openEditBlockModal(ev); }}
+                                 className="text-black/50 hover:text-blue-600 font-bold text-[11px] bg-white/70 backdrop-blur rounded px-1.5 py-0.5 shadow-sm"
+                               >
+                                 ✏️
+                               </button>
+                               <button 
+                                 onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
+                                 className="text-black/50 hover:text-red-600 font-bold text-[11px] bg-white/70 backdrop-blur rounded px-1.5 py-0.5 shadow-sm"
+                               >
+                                 ✖
+                               </button>
+                             </div>
+                           )}
 
                            {/* Contenu */}
-                           <div className="p-1.5 pt-3 overflow-hidden pointer-events-none">
+                           <div className="p-1.5 pt-2 overflow-hidden pointer-events-none flex-1">
                              <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
                              <span className="text-[9px] opacity-70 block">
                                {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
@@ -1182,15 +1220,17 @@ export default function Home() {
                              </span>
                            </div>
 
-                           {/* Poignée de redimensionnement tactile en bas */}
-                           <div 
-                             className="absolute bottom-0 left-0 right-0 h-4 bg-black/10 cursor-ns-resize flex justify-center items-end pb-1"
-                             style={{ touchAction: 'none' }}
-                             onMouseDown={(e) => handleResizeStart(e, ev)}
-                             onTouchStart={(e) => handleResizeStart(e, ev)}
-                           >
-                             <div className="w-6 h-1 bg-black/30 rounded-full" />
-                           </div>
+                           {/* Poignée de redimensionnement (visible uniquement si sélectionné) */}
+                           {isSelected && (
+                             <div 
+                               className="absolute bottom-0 left-0 right-0 h-6 bg-black/10 hover:bg-black/20 cursor-ns-resize flex justify-center items-end pb-1.5"
+                               style={{ touchAction: 'none' }}
+                               onMouseDown={(e) => handleResizeStart(e, ev)}
+                               onTouchStart={(e) => handleResizeStart(e, ev)}
+                             >
+                               <div className="w-8 h-1.5 bg-black/40 rounded-full" />
+                             </div>
+                           )}
 
                          </div>
                        </div>
@@ -1201,11 +1241,13 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide (avec jour et heure modifiables) */}
+           {/* Modal d'ajout / modification rapide */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
-               <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
-                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">Planifier un bloc</h3>
+               <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl animate-fade-in">
+                 <h3 className="font-bold text-lg text-gray-800 border-b pb-2">
+                   {editingBlockId ? 'Modifier la tâche' : 'Planifier une tâche'}
+                 </h3>
                  
                  <div className="flex gap-2">
                    <select 
@@ -1234,7 +1276,9 @@ export default function Home() {
                  </div>
                  
                  <div className="flex gap-2 mt-2">
-                   <button onClick={addBlockToWeek} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">Ajouter</button>
+                   <button onClick={saveBlock} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">
+                     {editingBlockId ? 'Enregistrer' : 'Ajouter'}
+                   </button>
                    <button onClick={() => setShowBlockModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
                  </div>
                </div>
