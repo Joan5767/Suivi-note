@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     - "daily_reminder": true SI l'utilisateur veut une relance ou un rappel tous les jours / quotidiennement. Sinon false.
     - "daily_reminder_time": SI daily_reminder est true, déduis l'heure demandée au format "HH:mm" (ex: "09:00" ou "18:30"). Sinon null.`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
