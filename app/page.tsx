@@ -151,36 +151,6 @@ export default function Home() {
 
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
-  // ==========================================
-  // === OPTIMISATION DU BALAYAGE TACTILE =====
-  // ==========================================
-  const swipeStartX = useRef<number | null>(null);
-
-  const onTouchStartSwipe = (e: React.TouchEvent) => {
-    // Si on pince (2 doigts) ou on redimensionne, on désactive le balayage
-    if (resizingBlock || e.touches.length > 1) {
-      swipeStartX.current = null;
-      return; 
-    }
-    swipeStartX.current = e.touches[0].clientX;
-  };
-
-  const onTouchEndSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || swipeStartX.current === null) return;
-    
-    // IMPORTANT : utiliser changedTouches pour savoir où le doigt a quitté l'écran
-    const endX = e.changedTouches[0].clientX;
-    const distance = swipeStartX.current - endX;
-    
-    if (distance > 50 && visibleDayIndex < 4) {
-      handleDayNavigation(1); // Swipe gauche (jour suivant)
-    } else if (distance < -50 && visibleDayIndex > 0) {
-      handleDayNavigation(-1); // Swipe droit (jour précédent)
-    }
-    
-    swipeStartX.current = null;
-  };
-
   const handleDayNavigation = (direction: number) => {
     setVisibleDayIndex(prev => {
       let newIndex = prev + direction;
@@ -207,7 +177,7 @@ export default function Home() {
   }, []);
 
   // ==========================================
-  // === 2. CRÉATION DU ZOOM CUSTOM DE LA GRILLE
+  // === 2. CAPTEUR CENTRAL (ZOOM + BALAYAGE) =
   // ==========================================
   const gridRef = useRef<HTMLDivElement>(null);
   const [hourHeight, setHourHeight] = useState(64); 
@@ -226,6 +196,9 @@ export default function Home() {
     let startDist = 0;
     let startHeight = 64;
     let rafId: number;
+    
+    let startX = 0;
+    let isSwiping = false;
 
     const getDist = (touches: TouchList) => {
       return Math.hypot(
@@ -239,6 +212,10 @@ export default function Home() {
         if (e.cancelable) e.preventDefault(); 
         startDist = getDist(e.touches);
         startHeight = currentHourHeight.current;
+        isSwiping = false; // On annule le balayage car on pince
+      } else if (e.touches.length === 1) {
+        startX = e.touches[0].clientX;
+        isSwiping = true;
       }
     };
 
@@ -257,13 +234,27 @@ export default function Home() {
         rafId = window.requestAnimationFrame(() => {
           setHourHeight(newHeight);
         });
+        isSwiping = false;
       }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      // DÉTECTION DU BALAYAGE LORSQUE LE DOIGT SE LÈVE
+      if (isSwiping && e.changedTouches.length === 1) {
+        const endX = e.changedTouches[0].clientX;
+        const distance = startX - endX;
+        
+        if (distance > 50) {
+          handleDayNavigation(1); // Swipe vers la gauche (jour suivant)
+        } else if (distance < -50) {
+          handleDayNavigation(-1); // Swipe vers la droite (jour précédent)
+        }
+      }
+
       if (e.touches.length < 2) {
         startDist = 0;
       }
+      isSwiping = false;
     };
 
     grid.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -1338,12 +1329,7 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
-         <div 
-           className="flex flex-col gap-4 animate-fade-in w-full"
-           style={{ touchAction: 'pan-y' }} // NOUVEAU: Empêche Chrome de faire un swipe "retour" natif
-           onTouchStart={onTouchStartSwipe}
-           onTouchEnd={onTouchEndSwipe}
-         >
+         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
@@ -1370,14 +1356,14 @@ export default function Home() {
            </div>
 
            <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Balaye pour les jours | 🔍 Pince pour zoomer</span>
+             <span className="text-xs font-bold text-gray-400">↔️ Glisse pour voir les jours | 🔍 Pince pour zoomer</span>
            </div>
 
            {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
            <div 
              ref={gridRef}
              className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px` }}
+             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
