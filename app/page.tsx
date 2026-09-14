@@ -139,7 +139,7 @@ export default function Home() {
   const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
-  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null); // NOUVEAU: Modale d'aperçu
+  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -149,27 +149,95 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
+  // État de balayage gauche/droite
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchEndX, setTouchEndX] = useState<number | null>(null);
 
+  // État de redimensionnement de bloc
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === SYSTÈME DE ROUTAGE NATIF =====
+  // === NOUVEAU SYSTÈME DE ZOOM (PINCH) ======
   // ==========================================
-  
-  const appStateRef = useRef({
-    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-    openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
-  });
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [hourHeight, setHourHeight] = useState(64); // Hauteur d'une heure en pixels (défaut 64)
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartHeight = useRef<number>(64);
+  const currentHourHeight = useRef(64);
+
+  // Mise à jour de la ref pour l'avoir dans les callbacks tactiles
+  useEffect(() => {
+    currentHourHeight.current = hourHeight;
+  }, [hourHeight]);
 
   useEffect(() => {
-    appStateRef.current = {
-      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-      openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
-    };
-  });
+    // 1. Désactiver le zoom natif du navigateur sur tout le document
+    let meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0');
 
+    // 2. Capter le pinch-to-zoom spécifiquement sur la grille
+    const grid = gridRef.current;
+    if (!grid) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        if (e.cancelable) e.preventDefault(); // Coupe tout comportement natif du navigateur
+        const dist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        pinchStartDist.current = dist;
+        pinchStartHeight.current = currentHourHeight.current;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchStartDist.current) {
+        if (e.cancelable) e.preventDefault();
+        const dist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const scale = dist / pinchStartDist.current;
+        let newHeight = pinchStartHeight.current * scale;
+        
+        // Limites du zoom (30px = très reculé, 160px = très zoomé)
+        if (newHeight < 30) newHeight = 30;
+        if (newHeight > 160) newHeight = 160;
+        
+        setHourHeight(newHeight);
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        pinchStartDist.current = null;
+      }
+    };
+
+    // Les events non passifs sont obligatoires pour bloquer le zoom système
+    grid.addEventListener('touchstart', handleTouchStart, { passive: false });
+    grid.addEventListener('touchmove', handleTouchMove, { passive: false });
+    grid.addEventListener('touchend', handleTouchEnd);
+    grid.addEventListener('touchcancel', handleTouchEnd);
+
+    return () => {
+      grid.removeEventListener('touchstart', handleTouchStart);
+      grid.removeEventListener('touchmove', handleTouchMove);
+      grid.removeEventListener('touchend', handleTouchEnd);
+      grid.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, []);
+
+  // ==========================================
+  // === ROUTAGE NATIF (BOUTON RETOUR) ========
+  // ==========================================
+  
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
@@ -195,7 +263,7 @@ export default function Home() {
           setMainMode('notes'); setIsFocusMode(true); break;
         case '#planning':
           setMainMode('planning'); break;
-        case '#planning-gallery': // NOUVELLE VUE
+        case '#planning-gallery':
           setMainMode('planning_gallery'); break;
         case '#hub':
         default:
@@ -325,13 +393,14 @@ export default function Home() {
   };
 
   const onTouchStartSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock) return;
+    // Si on pince (2 doigts) ou si on redimensionne, on ignore le swipe
+    if (resizingBlock || e.touches.length > 1) return;
     setTouchEndX(null);
     setTouchStartX(e.targetTouches[0].clientX);
   };
 
   const onTouchMoveSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock) return;
+    if (resizingBlock || e.touches.length > 1) return;
     setTouchEndX(e.targetTouches[0].clientX);
   };
 
@@ -414,7 +483,8 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / 64);
+    // Le calcul utilise la hauteur actuelle pour être précis peu importe le niveau de zoom
+    const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
     setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
@@ -443,7 +513,7 @@ export default function Home() {
     } else {
       alert("✅ Modèle sauvegardé avec succès !");
       fetchTemplates();
-      window.location.hash = 'planning-gallery'; // Redirection automatique vers la galerie après sauvegarde
+      window.location.hash = 'planning-gallery'; 
     }
     setLoading(false);
   };
@@ -453,7 +523,7 @@ export default function Home() {
       return;
     }
     setWeeklyBlocks(template.blocks || []);
-    window.location.hash = 'planning'; // Retourne à l'éditeur une fois chargé
+    window.location.hash = 'planning'; 
   };
 
   const deleteSavedTemplate = async (id: string) => {
@@ -463,7 +533,6 @@ export default function Home() {
     }
   };
 
-  // Gestion du Drag & Drop basique pour réorganiser les cartes de la galerie localement
   const handleDragStart = (e: React.DragEvent, index: number) => {
     e.dataTransfer.setData('text/plain', index.toString());
   };
@@ -1212,7 +1281,6 @@ export default function Home() {
                      {WEEK_DAYS.map((dayName, dIdx) => (
                        <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full">
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
-                           // Calcul en pourcentage : 15 heures au total (de 7h à 22h)
                            const topPercent = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) / 15 * 100;
                            const heightPercent = ((ev.duration || 60) / 60) / 15 * 100;
                            return (
@@ -1266,7 +1334,7 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* NOUVEAU BOUTON VERS LA GALERIE */}
+              {/* BOUTON VERS LA GALERIE */}
               <button 
                 onClick={() => window.location.hash = 'planning-gallery'} 
                 className="w-full bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
@@ -1276,54 +1344,54 @@ export default function Home() {
            </div>
 
            <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Fais glisser pour voir les autres jours</span>
+             <span className="text-xs font-bold text-gray-400">↔️ Balaye pour les jours | 🔍 Pince pour zoomer</span>
            </div>
 
-           {/* Grille du planning avec défilement natif fluide */}
-           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+           {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
+           <div 
+             ref={gridRef}
+             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" 
+             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', height: `${15 * hourHeight}px`, touchAction: 'pan-x pan-y' }}
+           >
              
              {/* Colonne des heures (Fixée à gauche) */}
-             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
-               <div className="h-10 border-b border-gray-200 bg-gray-50"></div> {/* Coin vide */}
+             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
                {hoursOfDay.map(hour => (
-                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
+                 <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px` }}>
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
                  </div>
                ))}
              </div>
 
              {/* Colonnes des jours (Glissantes) */}
-             <div className="flex flex-nowrap">
-               {WEEK_DAYS.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative">
-                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
-                       <span className="font-black text-sm text-gray-800">{dayName}</span>
-                   </div>
-                   {hoursOfDay.map(hour => {
-                     const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
-                     return (
-                       <div 
-                         key={hour} 
-                         onClick={(e) => {
-                           if (selectedBlockId) {
-                             setSelectedBlockId(null);
-                             return;
-                           }
-                           const rect = e.currentTarget.getBoundingClientRect();
-                           const offsetY = e.clientY - rect.top;
-                           const minute = Math.floor(offsetY / 16) * 15;
-                           openAddBlockModal(dayName, hour, minute);
-                         }} 
-                         className="h-16 border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"
-                       >
-                       </div>
-                     );
-                   })}
+             <div className="flex flex-1">
+               {visibleDays.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+                   
+                   {/* Lignes de fond (cliquables pour ajouter) */}
+                   {hoursOfDay.map(hour => (
+                     <div 
+                       key={hour} 
+                       onClick={(e) => {
+                         if (selectedBlockId) {
+                           setSelectedBlockId(null);
+                           return;
+                         }
+                         const rect = e.currentTarget.getBoundingClientRect();
+                         const offsetY = e.clientY - rect.top;
+                         const minute = Math.floor(offsetY / (hourHeight / 4)) * 15;
+                         openAddBlockModal(dayName, hour, minute);
+                       }} 
+                       className="border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"
+                       style={{ height: `${hourHeight}px` }}
+                     >
+                     </div>
+                   ))}
 
                    {/* Blocs d'événements */}
                    {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
-                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
-                     const heightPx = ((ev.duration || 60) / 60) * 64;
+                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * hourHeight;
+                     const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
                      
                      const popoverPosition = ev.startHour < 10 
@@ -1334,7 +1402,7 @@ export default function Home() {
                        <div 
                          key={ev.id} 
                          className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-50' : 'z-10'}`}
-                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
+                         style={{ top: `${topPx}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
