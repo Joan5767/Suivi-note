@@ -144,53 +144,50 @@ export default function Home() {
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === INTERCEPTION BLINDÉE DU RETOUR =======
+  // === NOUVEAU SYSTÈME DE ROUTAGE NATIF =====
   // ==========================================
   
-  const appStateRef = useRef({
-    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-    openMenuId, editingId, isFocusMode, activeTab, mainMode
-  });
-
   useEffect(() => {
-    appStateRef.current = {
-      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-      openMenuId, editingId, isFocusMode, activeTab, mainMode
-    };
-  });
+    const handleHashChange = () => {
+      const hash = window.location.hash;
+      
+      // Sécurité : Fermeture de toutes les modales si on appuie sur retour
+      setShowBlockModal(false);
+      setShowCleanupModal(false);
+      setAiProposal(null);
+      setTriggeredAlarm(null);
+      setOpenMenuId(null);
+      setEditingId(null);
 
-  useEffect(() => {
-    // 1. Initialiser le piège avec un hash pour éviter le comportement par défaut
-    if (window.location.hash !== '#app') {
-      window.history.replaceState(null, '', window.location.pathname + '#app');
-    }
-    window.history.pushState({ trap: Date.now() }, '', window.location.pathname + '#app');
-
-    const handlePopState = (e: PopStateEvent) => {
-      const s = appStateRef.current;
-      let handled = false;
-
-      // On vérifie ce qui est ouvert (du plus haut au plus bas niveau)
-      if (s.showBlockModal) { setShowBlockModal(false); handled = true; }
-      else if (s.showCleanupModal) { setShowCleanupModal(false); handled = true; }
-      else if (s.aiProposal) { setAiProposal(null); handled = true; }
-      else if (s.triggeredAlarm) { setTriggeredAlarm(null); handled = true; }
-      else if (s.openMenuId) { setOpenMenuId(null); handled = true; }
-      else if (s.editingId) { setEditingId(null); handled = true; }
-      else if (s.isFocusMode) { setIsFocusMode(false); handled = true; }
-      else if (s.mainMode === 'notes' && s.activeTab !== 'create') { setActiveTab('create'); handled = true; }
-      else if (s.mainMode !== 'hub') { setMainMode('hub'); handled = true; }
-
-      if (handled) {
-        // 2. Le setTimeout permet de tromper la sécurité anti-spam du navigateur
-        setTimeout(() => {
-          window.history.pushState({ trap: Date.now() }, '', window.location.pathname + '#app');
-        }, 10);
+      // Attribution des écrans en fonction du hashtag URL
+      switch(hash) {
+        case '#notes-create':
+          setMainMode('notes'); setActiveTab('create'); setIsFocusMode(false); break;
+        case '#notes-list':
+          setMainMode('notes'); setActiveTab('notes'); setIsFocusMode(false); break;
+        case '#notes-history':
+          setMainMode('notes'); setActiveTab('history'); setIsFocusMode(false); break;
+        case '#notes-focus':
+          setMainMode('notes'); setIsFocusMode(true); break;
+        case '#planning':
+          setMainMode('planning'); break;
+        case '#hub':
+        default:
+          setMainMode('hub'); break;
       }
     };
 
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    // Initialisation silencieuse du Hash au chargement de l'application
+    if (!window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname + '#hub');
+    }
+    
+    // On force la synchronisation de l'état au démarrage
+    handleHashChange();
+
+    // Écoute automatique des changements d'URL (Bouton retour ou clic sur un lien)
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   // ==========================================
@@ -521,6 +518,7 @@ export default function Home() {
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
     fetchNotes();
 
+    window.location.hash = 'notes-list'; // Redirection propre vers la liste via l'URL
     setSuccessMessage('✅ Note créée avec succès !');
     setTimeout(() => setSuccessMessage(null), 3000);
   };
@@ -648,6 +646,7 @@ export default function Home() {
       
       setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
       fetchNotes();
+      window.location.hash = 'notes-list'; // Redirection via URL
       setSuccessMessage('✅ Note créée avec succès par IA !');
       setTimeout(() => setSuccessMessage(null), 3000);
     }
@@ -673,7 +672,8 @@ export default function Home() {
       setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
       setShowCalendarConfig(true);
     }
-    setAiProposal(null); setActiveTab('create');
+    setAiProposal(null);
+    window.location.hash = 'notes-create'; // Redirection via URL
   };
 
   const formatDatesForCalendar = (dateString: string) => {
@@ -1056,10 +1056,10 @@ export default function Home() {
       {mainMode === 'hub' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
            <h1 className="text-3xl font-black text-gray-800 mb-8 text-center">Que veux-tu faire ?</h1>
-           <button onClick={() => setMainMode('notes')} className="w-full max-w-sm bg-gray-900 text-white p-8 rounded-3xl shadow-xl hover:bg-black transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4">
+           <button onClick={() => window.location.hash = 'notes-create'} className="w-full max-w-sm bg-gray-900 text-white p-8 rounded-3xl shadow-xl hover:bg-black transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4">
               <span className="text-5xl">📝</span><span className="text-xl font-bold">Notes & Rappels</span>
            </button>
-           <button onClick={() => setMainMode('planning')} className="w-full max-w-sm bg-blue-600 text-white p-8 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4 border-4 border-blue-500">
+           <button onClick={() => window.location.hash = 'planning'} className="w-full max-w-sm bg-blue-600 text-white p-8 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4 border-4 border-blue-500">
               <span className="text-5xl">📅</span><span className="text-xl font-bold text-center">Planning &<br/>Semaines types</span>
            </button>
         </div>
@@ -1074,7 +1074,7 @@ export default function Home() {
            onTouchEnd={onTouchEndSwipe}
          >
            <div className="flex items-center justify-between mb-2">
-             <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
+             <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
            </div>
 
@@ -1106,12 +1106,6 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                  <button 
-                    onClick={() => {
-                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
-                    }} 
-                    className="text-xs text-red-500 font-bold hidden"
-                  >Supprimer</button>
                 </div>
               )}
            </div>
@@ -1205,7 +1199,7 @@ export default function Home() {
           <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
             {!isFocusMode ? (
               <div className="flex flex-col gap-1">
-                <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">← Menu Principal</button>
+                <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">← Menu Principal</button>
                 <h1 className="text-xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
               </div>
             ) : (
@@ -1217,10 +1211,10 @@ export default function Home() {
             <div className="flex flex-wrap gap-2 w-full sm:w-auto">
               <button 
                 onClick={() => { 
-                  setIsFocusMode(!isFocusMode); 
                   setSkippedFocusIds([]); 
                   setShowArchived(false); 
                   setFocusPhase('rouge'); 
+                  window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
                 }} 
                 className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}
               >
@@ -1231,8 +1225,8 @@ export default function Home() {
 
           {!isFocusMode && (
             <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-md mx-auto">
-              <button type="button" onClick={() => setActiveTab('create')} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>✍️ Créer</button>
-              <button type="button" onClick={() => setActiveTab('notes')} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>📑 Notes</button>
+              <button type="button" onClick={() => window.location.hash = 'notes-create'} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>✍️ Créer</button>
+              <button type="button" onClick={() => window.location.hash = 'notes-list'} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>📑 Notes</button>
             </div>
           )}
 
@@ -1373,7 +1367,7 @@ export default function Home() {
                   <p className="text-gray-600 font-medium">As-tu l'énergie de continuer sur les tâches importantes ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => setFocusPhase('orange')} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on continue</button>
-                    <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                    <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                   </div>
                 </div>
               ) : focusPhase === 'ask_vert' ? (
@@ -1383,7 +1377,7 @@ export default function Home() {
                   <p className="text-gray-600 font-medium">Veux-tu terminer avec les tâches normales ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => setFocusPhase('vert')} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on termine</button>
-                    <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                    <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                   </div>
                 </div>
               ) : currentFocusNote ? (
@@ -1408,7 +1402,7 @@ export default function Home() {
                 // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
                   <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
-                  <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
+                  <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
                 </div>
               )}
             </div>
@@ -1448,7 +1442,7 @@ export default function Home() {
               )}
 
               <div className="mt-12 mb-8 text-center">
-                <button onClick={() => setActiveTab('history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
+                <button onClick={() => window.location.hash = 'notes-history'} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
               </div>
             </>
           )}
@@ -1456,7 +1450,7 @@ export default function Home() {
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => setActiveTab('notes')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
+                 <button onClick={() => window.location.hash = 'notes-list'} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
               <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
