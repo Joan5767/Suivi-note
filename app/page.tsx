@@ -136,6 +136,10 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
+  // Nouveaux états pour gérer le balayage (swipe) tactile
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
+  const [touchEndX, setTouchEndX] = useState<number | null>(null);
+
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
     if (!error && data) setNotes(data);
@@ -213,7 +217,6 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  // === GESTION DE LA PROGRESSION DU MODE FOCUS ===
   useEffect(() => {
     if (!isFocusMode) return;
 
@@ -245,6 +248,30 @@ export default function Home() {
     if (newIndex < 0) newIndex = 0;
     if (newIndex > 4) newIndex = 4;
     setVisibleDayIndex(newIndex);
+  };
+
+  // Gestionnaires tactiles pour le swipe
+  const onTouchStart = (e: React.TouchEvent) => {
+    setTouchEndX(null);
+    setTouchStartX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    setTouchEndX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEnd = () => {
+    if (!touchStartX || !touchEndX) return;
+    const distance = touchStartX - touchEndX;
+    const isLeftSwipe = distance > 50;
+    const isRightSwipe = distance < -50;
+
+    if (isLeftSwipe && visibleDayIndex < 4) {
+      handleDayNavigation(1);
+    }
+    if (isRightSwipe && visibleDayIndex > 0) {
+      handleDayNavigation(-1);
+    }
   };
 
   const openAddBlockModal = (day: string, hour: number) => {
@@ -437,7 +464,6 @@ export default function Home() {
     fetchNotes();
   };
 
-  // === FONCTION IA DÉDIÉE ===
   const processAiNote = async (finalTranscript: string) => {
     if (!finalTranscript.trim()) return alert("❌ Le micro n'a rien enregistré.");
     setIsAiProcessing(true);
@@ -456,24 +482,19 @@ export default function Home() {
     setIsAiProcessing(false);
   };
 
-  // === NOUVEAU SYSTÈME DE DICTÉE (CONTINU ET ÉDITABLE) ===
   const toggleDictation = (mode: 'title' | 'content' | 'list_item' | 'ai') => {
-    // Si on clique sur le même bouton actif, on arrête manuellement l'enregistrement
     if (listeningMode === mode) {
       if (recognitionRef.current) {
         recognitionRef.current.manuallyStopped = true;
         recognitionRef.current.stop();
       }
       setListeningMode('none');
-      
-      // Lancement de l'IA seulement quand on coupe le micro manuellement
       if (mode === 'ai' && recognitionRef.current?.accumulatedTranscript) {
         processAiNote(recognitionRef.current.accumulatedTranscript);
       }
       return;
     }
     
-    // Si on bascule sur un autre champ, on coupe l'ancien
     if (listeningMode !== 'none' && recognitionRef.current) {
       recognitionRef.current.manuallyStopped = true;
       recognitionRef.current.stop();
@@ -486,7 +507,7 @@ export default function Home() {
     recognition.lang = 'fr-FR'; 
     recognition.continuous = true; 
     recognition.interimResults = false; 
-    recognition.manuallyStopped = false; // Flag pour savoir si c'est le navigateur ou l'utilisateur qui a coupé
+    recognition.manuallyStopped = false;
     recognition.accumulatedTranscript = ''; 
     recognitionRef.current = recognition;
     
@@ -494,12 +515,9 @@ export default function Home() {
     
     recognition.onresult = (event: any) => {
       let newText = '';
-      // On ne récupère que les nouveaux mots depuis la dernière écoute
       for (let i = event.resultIndex; i < event.results.length; i++) {
         newText += event.results[i][0].transcript + ' ';
       }
-      
-      // On AJOUTE au texte existant (permet d'effacer/corriger avec le clavier pendant qu'on parle)
       if (mode === 'title') setNewTitle(prev => (prev ? prev + ' ' : '') + newText.trim());
       else if (mode === 'content') setNewContent(prev => (prev ? prev + ' ' : '') + newText.trim());
       else if (mode === 'list_item') setCurrentNewListItem(prev => (prev ? prev + ' ' : '') + newText.trim());
@@ -508,7 +526,6 @@ export default function Home() {
       }
     };
 
-    // La boucle infinie "Pixel 6" : on relance si ce n'est pas un arrêt volontaire
     recognition.onend = () => {
       if (!recognition.manuallyStopped) {
         try {
@@ -961,7 +978,12 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
-         <div className="flex flex-col gap-4 animate-fade-in w-full">
+         <div 
+           className="flex flex-col gap-4 animate-fade-in w-full"
+           onTouchStart={onTouchStart}
+           onTouchMove={onTouchMove}
+           onTouchEnd={onTouchEnd}
+         >
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
@@ -995,12 +1017,18 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
+                  <button 
+                    onClick={() => {
+                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
+                    }} 
+                    className="text-xs text-red-500 font-bold hidden"
+                  >Supprimer</button>
                 </div>
               )}
            </div>
 
-           {/* Navigation des jours (Générique) */}
-           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2">
+           {/* Navigation des jours */}
+           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2 select-none">
              <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
              <div className="flex gap-2 overflow-x-hidden w-full px-2">
                {visibleDays.map((dayName, idx) => (
@@ -1013,7 +1041,7 @@ export default function Home() {
            </div>
 
            {/* Grille des heures */}
-           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
+           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex select-none">
              <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
                {hoursOfDay.map(hour => (
                  <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200"><span className="text-[10px] font-bold text-gray-400">{hour}h</span></div>
@@ -1228,6 +1256,7 @@ export default function Home() {
                 </div>
               )}
 
+              {/* PHASES DE TRANSITION AVEC QUESTIONS */}
               {focusPhase === 'ask_orange' ? (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-orange-400">
                   <span className="text-5xl">🔥</span>
@@ -1249,6 +1278,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : currentFocusNote ? (
+                // AFFICHAGE D'UNE NOTE PENDANT LE FOCUS
                 <div key={currentFocusNote.id} className="w-full max-w-md bg-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col items-center text-center gap-6 border border-gray-100">
                   <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' : currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-green-50 text-green-600 border-green-200'}`}>{currentFocusNote.importance === 'rouge' ? '🔴 Urgent' : currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}</span>
                   {currentFocusNote.title && <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">{currentFocusNote.title}</h2>}
@@ -1266,6 +1296,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
+                // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
                   <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
                   <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
