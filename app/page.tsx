@@ -148,7 +148,8 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
-  const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
+  // Redimensionnement des blocs : une ref évite les pertes d'événements pendant le drag tactile/souris.
+  const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; pointerId: number } | null>(null);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -579,33 +580,57 @@ export default function Home() {
     }
   };
 
-  const handleResizeStart = (e: React.TouchEvent | React.MouseEvent, block: WeeklyBlock) => {
+  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>, block: WeeklyBlock) => {
+    e.preventDefault();
     e.stopPropagation();
-    const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
-    setResizingBlock({
+
+    // Pointer capture = le bloc continue de recevoir les mouvements même si le doigt
+    // ou la souris sort visuellement de la poignée pendant le redimensionnement.
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    resizingBlockRef.current = {
       id: block.id,
-      startY: clientY,
-      initialDuration: block.duration || 60
-    });
+      startY: e.clientY,
+      initialDuration: block.duration || 60,
+      pointerId: e.pointerId
+    };
   };
 
-  const handleResizeMove = (e: React.TouchEvent | React.MouseEvent) => {
-    if (!resizingBlock) return;
+  const handleResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const resizing = resizingBlockRef.current;
+    if (!resizing || resizing.pointerId !== e.pointerId) return;
+
+    e.preventDefault();
     e.stopPropagation();
-    const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
-    const diffY = clientY - resizingBlock.startY;
-    
-    const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
+
+    const diffY = e.clientY - resizing.startY;
+    const activeHourHeight = currentHourHeight.current || 64;
+    const rawDuration = resizing.initialDuration + ((diffY * 60) / activeHourHeight);
+
+    // Pas de 15 minutes, durée minimale de 30 minutes.
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
-    
-    setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
+
+    setWeeklyBlocks(prev => prev.map(b =>
+      b.id === resizing.id ? { ...b, duration: snappedDuration } : b
+    ));
   };
 
-  const handleResizeEnd = (e: React.TouchEvent | React.MouseEvent) => {
-    if (resizingBlock) {
-      e.stopPropagation();
-      setResizingBlock(null);
-    }
+  const handleResizeEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const resizing = resizingBlockRef.current;
+    if (!resizing || resizing.pointerId !== e.pointerId) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch (_) {}
+
+    resizingBlockRef.current = null;
   };
 
   const saveTemplateToDB = async () => {
@@ -690,7 +715,15 @@ export default function Home() {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
+  // Référentiel unique du planning : tous les calculs de position, hauteur et aperçu
+  // utilisent ces constantes pour rester parfaitement alignés.
+  const PLANNING_START_HOUR = 7;
+  const PLANNING_END_HOUR = 22;
+  const PLANNING_HEADER_HEIGHT = 40;
+  const hoursOfDay = Array.from(
+    { length: PLANNING_END_HOUR - PLANNING_START_HOUR + 1 },
+    (_, i) => i + PLANNING_START_HOUR
+  );
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
@@ -1292,8 +1325,8 @@ export default function Home() {
                   <div key={dIdx} className="flex-1 border-r border-gray-200 relative h-full">
                     <div className="text-[10px] font-bold text-center bg-gray-100 py-1 border-b border-gray-200 sticky top-0 z-10">{dayName.substring(0, 3)}</div>
                     {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
-                      const topPercent = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) / 15 * 100;
-                      const heightPercent = ((ev.duration || 60) / 60) / 15 * 100;
+                      const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
+                      const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                       return (
                         <div key={ev.id} className="absolute left-0 right-0 p-0.5" style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}>
                           <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
@@ -1387,8 +1420,8 @@ export default function Home() {
                      {WEEK_DAYS.map((dayName, dIdx) => (
                        <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full">
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
-                           const topPercent = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) / 15 * 100;
-                           const heightPercent = ((ev.duration || 60) / 60) / 15 * 100;
+                           const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
+                           const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                            return (
                              <div 
                                key={ev.id} 
@@ -1472,20 +1505,20 @@ export default function Home() {
              </div>
            </div>
 
-           {/* La grille remonte sous la ligne figée : aucun espace supplémentaire n'est ajouté. */}
+           {/* La grille remonte sous la ligne figée. Sa hauteur est basée sur hoursOfDay.length pour éviter tout écrasement des lignes. */}
            <div className="-mt-10">
            {/* Grille du planning avec DÉFILEMENT HORIZONTAL NATIF + ZOOM PERSONNALISÉ */}
            <div 
              ref={gridRef}
              className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-x pan-y' }}
+             style={{ height: `${hoursOfDay.length * hourHeight + PLANNING_HEADER_HEIGHT}px`, touchAction: 'pan-x pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
              <div className="flex-shrink-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
-               <div className="h-10 border-b border-gray-200 bg-gray-50 sticky top-0 z-30"></div> {/* Coin vide */}
+               <div className="h-10 border-b border-gray-200 bg-gray-50 sticky top-0 z-30" style={{ flexShrink: 0 }}></div> {/* Coin vide */}
                {hoursOfDay.map(hour => (
-                 <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px` }}>
+                 <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px`, flexShrink: 0 }}>
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
                  </div>
                ))}
@@ -1501,9 +1534,9 @@ export default function Home() {
                    daysPerView = 3 => environ 3 jours visibles ; 1.15 => gros zoom ; 7 => semaine entière. */}
                <div className="flex h-full" style={{ minWidth: `${(7 / daysPerView) * 100}%` }}>
                  {WEEK_DAYS.map((dayName) => (
-                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-hidden">
+                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-visible">
                    
-                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
+                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10" style={{ flexShrink: 0 }}>
                        <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
                    </div>
 
@@ -1522,14 +1555,14 @@ export default function Home() {
                          openAddBlockModal(dayName, hour, minute);
                        }} 
                        className="border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"
-                       style={{ height: `${hourHeight}px` }}
+                       style={{ height: `${hourHeight}px`, flexShrink: 0 }}
                      >
                      </div>
                    ))}
 
                    {/* Blocs d'événements */}
                    {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
-                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * hourHeight;
+                     const topPx = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) * hourHeight;
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
                      
@@ -1540,8 +1573,8 @@ export default function Home() {
                      return (
                        <div 
                          key={ev.id} 
-                         className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-50' : 'z-10'}`}
-                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
+                         className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-[400]' : 'z-10'}`}
+                         style={{ top: `${topPx + PLANNING_HEADER_HEIGHT}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
@@ -1568,8 +1601,11 @@ export default function Home() {
                              <div 
                                className="absolute bottom-0 left-0 right-0 h-6 bg-black/20 hover:bg-black/30 cursor-ns-resize flex justify-center items-end pb-1.5 z-30"
                                style={{ touchAction: 'none' }}
-                               onMouseDown={(e) => handleResizeStart(e, ev)}
-                               onTouchStart={(e) => handleResizeStart(e, ev)}
+                               onPointerDown={(e) => handleResizeStart(e, ev)}
+                               onPointerMove={handleResizeMove}
+                               onPointerUp={handleResizeEnd}
+                               onPointerCancel={handleResizeEnd}
+                               onClick={(e) => e.stopPropagation()}
                              >
                                <div className="w-8 h-1.5 bg-white rounded-full shadow-sm" />
                              </div>
@@ -1577,7 +1613,7 @@ export default function Home() {
 
                            {isSelected && (
                              <div 
-                               className="absolute left-1/2 -translate-x-1/2 w-[160px] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[100] cursor-default"
+                               className="absolute left-1/2 -translate-x-1/2 w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[500] cursor-default"
                                style={popoverPosition}
                                onClick={(e) => e.stopPropagation()} 
                              >
@@ -1623,6 +1659,9 @@ export default function Home() {
                    
                    <input 
                      type="time" 
+                     min={`${PLANNING_START_HOUR.toString().padStart(2, '0')}:00`}
+                     max={`${PLANNING_END_HOUR.toString().padStart(2, '0')}:45`}
+                     step={900}
                      value={blockTime} 
                      onChange={(e) => setBlockTime(e.target.value)} 
                      className="flex-1 border border-gray-300 p-2 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
