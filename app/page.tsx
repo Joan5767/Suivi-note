@@ -67,7 +67,7 @@ const formatDuration = (totalMinutes: number) => {
 };
 
 export default function Home() {
-  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning'>('hub');
+  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
@@ -139,6 +139,7 @@ export default function Home() {
   const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
+  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null); // NOUVEAU: Modale d'aperçu
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -153,6 +154,22 @@ export default function Home() {
 
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
+  // ==========================================
+  // === SYSTÈME DE ROUTAGE NATIF =====
+  // ==========================================
+  
+  const appStateRef = useRef({
+    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+    openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+  });
+
+  useEffect(() => {
+    appStateRef.current = {
+      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+      openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+    };
+  });
+
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
@@ -165,6 +182,7 @@ export default function Home() {
       setEditingId(null);
       setEditingBlockId(null);
       setSelectedBlockId(null);
+      setPreviewTemplate(null);
 
       switch(hash) {
         case '#notes-create':
@@ -177,6 +195,8 @@ export default function Home() {
           setMainMode('notes'); setIsFocusMode(true); break;
         case '#planning':
           setMainMode('planning'); break;
+        case '#planning-gallery': // NOUVELLE VUE
+          setMainMode('planning_gallery'); break;
         case '#hub':
         default:
           setMainMode('hub'); break;
@@ -191,6 +211,8 @@ export default function Home() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  // ==========================================
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -421,14 +443,40 @@ export default function Home() {
     } else {
       alert("✅ Modèle sauvegardé avec succès !");
       fetchTemplates();
+      window.location.hash = 'planning-gallery'; // Redirection automatique vers la galerie après sauvegarde
     }
     setLoading(false);
   };
 
   const loadTemplate = (template: any) => {
-    if (window.confirm(`Remplacer ton brouillon actuel par le modèle "${template.name}" ?`)) {
-      setWeeklyBlocks(template.blocks || []);
+    if (weeklyBlocks.length > 0 && !window.confirm(`Écraser ton planning actuel en cours de modification par "${template.name}" ?`)) {
+      return;
     }
+    setWeeklyBlocks(template.blocks || []);
+    window.location.hash = 'planning'; // Retourne à l'éditeur une fois chargé
+  };
+
+  const deleteSavedTemplate = async (id: string) => {
+    if (window.confirm("Es-tu sûr de vouloir supprimer définitivement ce modèle de ta base de données ?")) {
+      await supabase.from('planning_templates').delete().eq('id', id);
+      fetchTemplates();
+    }
+  };
+
+  // Gestion du Drag & Drop basique pour réorganiser les cartes de la galerie localement
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    e.dataTransfer.setData('text/plain', index.toString());
+  };
+
+  const handleDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (draggedIndex === index) return;
+
+    const newTemplates = [...savedTemplates];
+    const [draggedItem] = newTemplates.splice(draggedIndex, 1);
+    newTemplates.splice(index, 0, draggedItem);
+    setSavedTemplates(newTemplates);
   };
 
   const exportWeeklyICS = () => {
@@ -1053,6 +1101,46 @@ export default function Home() {
         </div>
       )}
 
+      {/* MODALE D'APERÇU DU MODÈLE DE SEMAINE */}
+      {previewTemplate && (
+        <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setPreviewTemplate(null)}>
+          <div className="bg-white rounded-2xl p-4 w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-black text-gray-800">{previewTemplate.name}</h2>
+              <button onClick={() => setPreviewTemplate(null)} className="text-gray-400 hover:text-black font-bold text-xl">✖</button>
+            </div>
+            
+            {/* GRILLE MINIATURE AGRANDIE */}
+            <div className="flex-1 bg-gray-50 border border-gray-200 rounded-xl overflow-y-auto relative h-[400px]">
+              <div className="flex h-[800px] w-full relative">
+                {WEEK_DAYS.map((dayName, dIdx) => (
+                  <div key={dIdx} className="flex-1 border-r border-gray-200 relative h-full">
+                    <div className="text-[10px] font-bold text-center bg-gray-100 py-1 border-b border-gray-200 sticky top-0 z-10">{dayName.substring(0, 3)}</div>
+                    {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
+                      const topPercent = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) / 15 * 100;
+                      const heightPercent = ((ev.duration || 60) / 60) / 15 * 100;
+                      return (
+                        <div key={ev.id} className="absolute left-0 right-0 p-0.5" style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}>
+                          <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
+                            <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <button onClick={() => { loadTemplate(previewTemplate); setPreviewTemplate(null); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition-colors">
+                Écraser mon planning par ce modèle
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {aiProposal && (
         <div className="fixed inset-0 bg-black/80 z-[9998] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg flex flex-col gap-4 animate-fade-in border-4 border-purple-500">
@@ -1089,7 +1177,72 @@ export default function Home() {
         </div>
       )}
 
-      {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
+      {/* ================= NOUVELLE VUE : GALERIE DES PLANNINGS ================= */}
+      {mainMode === 'planning_gallery' && (
+        <div className="flex flex-col gap-4 animate-fade-in w-full">
+           <div className="flex items-center justify-between mb-4">
+             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Retour à l'éditeur</button>
+             <h1 className="text-xl font-black text-gray-800">Mes Plannings</h1>
+           </div>
+
+           {savedTemplates.length === 0 ? (
+             <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-3xl p-12 flex flex-col items-center justify-center text-center gap-4">
+                <span className="text-5xl">📂</span>
+                <p className="text-gray-500 font-bold">Tu n'as encore sauvegardé aucun modèle.</p>
+             </div>
+           ) : (
+             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+               {savedTemplates.map((tmpl, index) => (
+                 <div 
+                   key={tmpl.id} 
+                   className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex flex-col transition-transform hover:shadow-md cursor-grab active:cursor-grabbing"
+                   draggable={true}
+                   onDragStart={(e) => handleDragStart(e, index)}
+                   onDragOver={(e) => e.preventDefault()}
+                   onDrop={(e) => handleDrop(e, index)}
+                 >
+                   {/* En-tête de la carte */}
+                   <div className="bg-gray-900 text-white p-3 flex justify-between items-center">
+                     <h3 className="font-bold text-sm truncate">{tmpl.name}</h3>
+                     <span className="text-gray-400 cursor-grab px-1">⣿</span>
+                   </div>
+
+                   {/* GÉNÉRATEUR DE MINIATURE (Aperçu visuel de la grille) */}
+                   <div className="h-32 bg-gray-50 w-full relative flex border-b border-gray-200 p-1 pointer-events-none">
+                     {WEEK_DAYS.map((dayName, dIdx) => (
+                       <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full">
+                         {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
+                           // Calcul en pourcentage : 15 heures au total (de 7h à 22h)
+                           const topPercent = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) / 15 * 100;
+                           const heightPercent = ((ev.duration || 60) / 60) / 15 * 100;
+                           return (
+                             <div 
+                               key={ev.id} 
+                               className={`absolute left-0.5 right-0.5 rounded-[2px] opacity-80 ${ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'}`}
+                               style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}
+                             />
+                           )
+                         })}
+                       </div>
+                     ))}
+                   </div>
+
+                   {/* Boutons d'action */}
+                   <div className="p-2 flex flex-col gap-1.5 bg-gray-50">
+                     <button onClick={() => setPreviewTemplate(tmpl)} className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold text-xs py-2 rounded-lg transition-colors">🔍 Aperçu</button>
+                     <div className="flex gap-1.5">
+                       <button onClick={() => loadTemplate(tmpl)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 rounded-lg transition-colors">Charger</button>
+                       <button onClick={() => deleteSavedTemplate(tmpl.id)} className="bg-red-100 hover:bg-red-200 text-red-600 font-bold text-xs px-3 py-2 rounded-lg transition-colors">🗑️</button>
+                     </div>
+                   </div>
+                 </div>
+               ))}
+             </div>
+           )}
+        </div>
+      )}
+
+      {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
          <div 
            className="flex flex-col gap-4 animate-fade-in w-full"
@@ -1099,39 +1252,27 @@ export default function Home() {
          >
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
-             <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
+             <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
            </div>
 
            {/* Contrôles du modèle */}
            <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div className="flex gap-2">
-                <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-black transition-colors">
-                  💾 Sauvegarder
+                <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-3 rounded-xl text-sm shadow hover:bg-black transition-colors">
+                  💾 Sauvegarder ce brouillon
                 </button>
-                <button onClick={exportWeeklyICS} className="flex-1 bg-purple-600 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-purple-700 transition-colors">
+                <button onClick={exportWeeklyICS} className="flex-1 bg-purple-600 text-white font-bold py-3 rounded-xl text-sm shadow hover:bg-purple-700 transition-colors">
                   📅 Exporter (Agenda)
                 </button>
               </div>
 
-              {savedTemplates.length > 0 && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-xs font-bold text-gray-500">Charger :</span>
-                  <select 
-                    onChange={(e) => {
-                      if (!e.target.value) return;
-                      const tmpl = savedTemplates.find(t => t.id === e.target.value);
-                      if (tmpl) loadTemplate(tmpl);
-                      e.target.value = ''; // Reset select
-                    }}
-                    className="flex-1 border border-gray-300 p-1.5 rounded-lg text-sm font-bold text-black bg-white"
-                  >
-                    <option value="">-- Choisir un modèle --</option>
-                    {savedTemplates.map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {/* NOUVEAU BOUTON VERS LA GALERIE */}
+              <button 
+                onClick={() => window.location.hash = 'planning-gallery'} 
+                className="w-full bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
+              >
+                <span>📂</span> Ouvrir mes plannings sauvegardés ({savedTemplates.length})
+              </button>
            </div>
 
            <div className="text-center mb-1">
@@ -1164,7 +1305,6 @@ export default function Home() {
                        <div 
                          key={hour} 
                          onClick={(e) => {
-                           // NOUVEAU : Blocage de la grille si une tâche est déjà sélectionnée
                            if (selectedBlockId) {
                              setSelectedBlockId(null);
                              return;
@@ -1193,14 +1333,12 @@ export default function Home() {
                      return (
                        <div 
                          key={ev.id} 
-                         // NOUVEAU : Le z-index passe à 50 quand le bloc est sélectionné pour passer au-dessus des heures
                          className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-50' : 'z-10'}`}
                          style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
                              e.stopPropagation(); 
-                             // NOUVEAU : Clic sur une autre tâche désélectionne juste la tâche actuelle
                              if (selectedBlockId && selectedBlockId !== ev.id) {
                                setSelectedBlockId(null);
                              } else {
@@ -1282,7 +1420,6 @@ export default function Home() {
                    />
                  </div>
 
-                 {/* NOUVEAU : AutoFocus supprimé pour éviter l'ouverture intempestive du clavier */}
                  <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" />
                  
                  <div className="flex gap-2 w-full justify-between mt-1">
