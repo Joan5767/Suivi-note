@@ -136,7 +136,8 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
+
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   const [previewTemplate, setPreviewTemplate] = useState<any | null>(null);
@@ -149,29 +150,22 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
-  // État de balayage gauche/droite
-  const [touchStartX, setTouchStartX] = useState<number | null>(null);
-  const [touchEndX, setTouchEndX] = useState<number | null>(null);
-
-  // État de redimensionnement de bloc
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === NOUVEAU SYSTÈME DE ZOOM (PINCH) ======
+  // === SYSTÈME DE ZOOM (PINCH) ==============
   // ==========================================
   const gridRef = useRef<HTMLDivElement>(null);
-  const [hourHeight, setHourHeight] = useState(64); // Hauteur d'une heure en pixels (défaut 64)
+  const [hourHeight, setHourHeight] = useState(64);
   const pinchStartDist = useRef<number | null>(null);
   const pinchStartHeight = useRef<number>(64);
   const currentHourHeight = useRef(64);
 
-  // Mise à jour de la ref pour l'avoir dans les callbacks tactiles
   useEffect(() => {
     currentHourHeight.current = hourHeight;
   }, [hourHeight]);
 
   useEffect(() => {
-    // 1. Désactiver le zoom natif du navigateur sur tout le document
     let meta = document.querySelector('meta[name="viewport"]');
     if (!meta) {
       meta = document.createElement('meta');
@@ -180,13 +174,12 @@ export default function Home() {
     }
     meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0');
 
-    // 2. Capter le pinch-to-zoom spécifiquement sur la grille
     const grid = gridRef.current;
     if (!grid) return;
 
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
-        if (e.cancelable) e.preventDefault(); // Coupe tout comportement natif du navigateur
+        if (e.cancelable) e.preventDefault(); 
         const dist = Math.hypot(
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
@@ -206,7 +199,6 @@ export default function Home() {
         const scale = dist / pinchStartDist.current;
         let newHeight = pinchStartHeight.current * scale;
         
-        // Limites du zoom (30px = très reculé, 160px = très zoomé)
         if (newHeight < 30) newHeight = 30;
         if (newHeight > 160) newHeight = 160;
         
@@ -220,7 +212,6 @@ export default function Home() {
       }
     };
 
-    // Les events non passifs sont obligatoires pour bloquer le zoom système
     grid.addEventListener('touchstart', handleTouchStart, { passive: false });
     grid.addEventListener('touchmove', handleTouchMove, { passive: false });
     grid.addEventListener('touchend', handleTouchEnd);
@@ -238,6 +229,18 @@ export default function Home() {
   // === ROUTAGE NATIF (BOUTON RETOUR) ========
   // ==========================================
   
+  const appStateRef = useRef({
+    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+    openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+  });
+
+  useEffect(() => {
+    appStateRef.current = {
+      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+      openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+    };
+  });
+
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
@@ -385,32 +388,6 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
-  const handleDayNavigation = (direction: number) => {
-    let newIndex = visibleDayIndex + direction;
-    if (newIndex < 0) newIndex = 0;
-    if (newIndex > 4) newIndex = 4;
-    setVisibleDayIndex(newIndex);
-  };
-
-  const onTouchStartSwipe = (e: React.TouchEvent) => {
-    // Si on pince (2 doigts) ou si on redimensionne, on ignore le swipe
-    if (resizingBlock || e.touches.length > 1) return;
-    setTouchEndX(null);
-    setTouchStartX(e.targetTouches[0].clientX);
-  };
-
-  const onTouchMoveSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock || e.touches.length > 1) return;
-    setTouchEndX(e.targetTouches[0].clientX);
-  };
-
-  const onTouchEndSwipe = () => {
-    if (resizingBlock || !touchStartX || !touchEndX) return;
-    const distance = touchStartX - touchEndX;
-    if (distance > 50 && visibleDayIndex < 4) handleDayNavigation(1);
-    if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
-  };
-
   const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
     setEditingBlockId(null);
     setBlockDay(day);
@@ -483,7 +460,6 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    // Le calcul utilise la hauteur actuelle pour être précis peu importe le niveau de zoom
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
@@ -578,9 +554,6 @@ export default function Home() {
     link.href = url; link.download = 'ma_semaine_type.ics'; 
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
-
-  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
@@ -1312,12 +1285,7 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
-         <div 
-           className="flex flex-col gap-4 animate-fade-in w-full"
-           onTouchStart={onTouchStartSwipe}
-           onTouchMove={onTouchMoveSwipe}
-           onTouchEnd={onTouchEndSwipe}
-         >
+         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
@@ -1344,18 +1312,19 @@ export default function Home() {
            </div>
 
            <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Balaye pour les jours | 🔍 Pince pour zoomer</span>
+             <span className="text-xs font-bold text-gray-400">↔️ Glisse pour voir les jours | 🔍 Pince pour zoomer</span>
            </div>
 
            {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
            <div 
              ref={gridRef}
              className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" 
-             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', height: `${15 * hourHeight}px`, touchAction: 'pan-x pan-y' }}
+             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', height: `${15 * hourHeight + 40}px`, touchAction: 'pan-x pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
              <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
+               <div className="h-10 border-b border-gray-200 bg-gray-50 sticky top-0 z-30"></div> {/* Coin vide */}
                {hoursOfDay.map(hour => (
                  <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px` }}>
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
@@ -1364,10 +1333,14 @@ export default function Home() {
              </div>
 
              {/* Colonnes des jours (Glissantes) */}
-             <div className="flex flex-1">
-               {visibleDays.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
+             <div className="flex flex-nowrap">
+               {WEEK_DAYS.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative h-full">
                    
+                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
+                       <span className="font-black text-sm text-gray-800">{dayName}</span>
+                   </div>
+
                    {/* Lignes de fond (cliquables pour ajouter) */}
                    {hoursOfDay.map(hour => (
                      <div 
@@ -1402,7 +1375,7 @@ export default function Home() {
                        <div 
                          key={ev.id} 
                          className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-50' : 'z-10'}`}
-                         style={{ top: `${topPx}px`, height: `${heightPx}px` }} 
+                         style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
