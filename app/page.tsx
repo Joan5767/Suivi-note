@@ -149,41 +149,36 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
+  const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
+
   // ==========================================
   // === OPTIMISATION DU BALAYAGE TACTILE =====
   // ==========================================
   const swipeStartX = useRef<number | null>(null);
-  const swipeEndX = useRef<number | null>(null);
 
   const onTouchStartSwipe = (e: React.TouchEvent) => {
-    // Si on pince (2 doigts) ou si on redimensionne, on ignore le swipe
-    if (resizingBlock || e.touches.length > 1) return; 
-    swipeStartX.current = e.touches[0].clientX;
-    swipeEndX.current = null;
-  };
-
-  const onTouchMoveSwipe = (e: React.TouchEvent) => {
+    // Si on pince (2 doigts) ou on redimensionne, on désactive le balayage
     if (resizingBlock || e.touches.length > 1) {
-      swipeStartX.current = null; // On annule le swipe si on passe à 2 doigts (zoom)
-      return;
+      swipeStartX.current = null;
+      return; 
     }
-    swipeEndX.current = e.touches[0].clientX;
+    swipeStartX.current = e.touches[0].clientX;
   };
 
-  const onTouchEndSwipe = () => {
-    if (resizingBlock || swipeStartX.current === null || swipeEndX.current === null) return;
+  const onTouchEndSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock || swipeStartX.current === null) return;
     
-    const distance = swipeStartX.current - swipeEndX.current;
+    // IMPORTANT : utiliser changedTouches pour savoir où le doigt a quitté l'écran
+    const endX = e.changedTouches[0].clientX;
+    const distance = swipeStartX.current - endX;
     
-    if (distance > 50) {
-      handleDayNavigation(1);
-    } else if (distance < -50) {
-      handleDayNavigation(-1);
+    if (distance > 50 && visibleDayIndex < 4) {
+      handleDayNavigation(1); // Swipe gauche (jour suivant)
+    } else if (distance < -50 && visibleDayIndex > 0) {
+      handleDayNavigation(-1); // Swipe droit (jour précédent)
     }
     
-    // Réinitialisation pour le prochain swipe
     swipeStartX.current = null;
-    swipeEndX.current = null;
   };
 
   const handleDayNavigation = (direction: number) => {
@@ -194,8 +189,6 @@ export default function Home() {
       return newIndex;
     });
   };
-
-  const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -213,12 +206,11 @@ export default function Home() {
     };
   }, []);
 
-
   // ==========================================
   // === 2. CRÉATION DU ZOOM CUSTOM DE LA GRILLE
   // ==========================================
   const gridRef = useRef<HTMLDivElement>(null);
-  const [hourHeight, setHourHeight] = useState(64); // 64px par défaut
+  const [hourHeight, setHourHeight] = useState(64); 
   const currentHourHeight = useRef(64);
 
   useEffect(() => {
@@ -287,7 +279,6 @@ export default function Home() {
       if (rafId) cancelAnimationFrame(rafId);
     };
   }, [mainMode]); 
-
 
   // ==========================================
   // === SYSTÈME DE ROUTAGE NATIF (RETOUR) ====
@@ -523,7 +514,6 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    // Le calcul utilise toujours la hauteur exacte du zoom actuel !
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
@@ -1350,8 +1340,8 @@ export default function Home() {
       {mainMode === 'planning' && (
          <div 
            className="flex flex-col gap-4 animate-fade-in w-full"
+           style={{ touchAction: 'pan-y' }} // NOUVEAU: Empêche Chrome de faire un swipe "retour" natif
            onTouchStart={onTouchStartSwipe}
-           onTouchMove={onTouchMoveSwipe}
            onTouchEnd={onTouchEndSwipe}
          >
            <div className="flex items-center justify-between mb-2">
@@ -1387,7 +1377,7 @@ export default function Home() {
            <div 
              ref={gridRef}
              className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
-             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
+             style={{ height: `${15 * hourHeight + 40}px` }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
