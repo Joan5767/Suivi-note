@@ -126,7 +126,6 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   
@@ -135,10 +134,6 @@ export default function Home() {
   const [blockHour, setBlockHour] = useState(0);
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
-
-  // Nouveaux états pour gérer le balayage (swipe) tactile
-  const [touchStartX, setTouchStartX] = useState<number | null>(null);
-  const [touchEndX, setTouchEndX] = useState<number | null>(null);
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -243,37 +238,6 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
-  const handleDayNavigation = (direction: number) => {
-    let newIndex = visibleDayIndex + direction;
-    if (newIndex < 0) newIndex = 0;
-    if (newIndex > 4) newIndex = 4;
-    setVisibleDayIndex(newIndex);
-  };
-
-  // Gestionnaires tactiles pour le swipe
-  const onTouchStart = (e: React.TouchEvent) => {
-    setTouchEndX(null);
-    setTouchStartX(e.targetTouches[0].clientX);
-  };
-
-  const onTouchMove = (e: React.TouchEvent) => {
-    setTouchEndX(e.targetTouches[0].clientX);
-  };
-
-  const onTouchEnd = () => {
-    if (!touchStartX || !touchEndX) return;
-    const distance = touchStartX - touchEndX;
-    const isLeftSwipe = distance > 50;
-    const isRightSwipe = distance < -50;
-
-    if (isLeftSwipe && visibleDayIndex < 4) {
-      handleDayNavigation(1);
-    }
-    if (isRightSwipe && visibleDayIndex > 0) {
-      handleDayNavigation(-1);
-    }
-  };
-
   const openAddBlockModal = (day: string, hour: number) => {
     setBlockDay(day);
     setBlockHour(hour);
@@ -356,7 +320,6 @@ export default function Home() {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
-  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
   const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
@@ -978,12 +941,7 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
-         <div 
-           className="flex flex-col gap-4 animate-fade-in w-full"
-           onTouchStart={onTouchStart}
-           onTouchMove={onTouchMove}
-           onTouchEnd={onTouchEnd}
-         >
+         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => setMainMode('hub')} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
@@ -1017,42 +975,36 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                  <button 
-                    onClick={() => {
-                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
-                    }} 
-                    className="text-xs text-red-500 font-bold hidden"
-                  >Supprimer</button>
                 </div>
               )}
            </div>
 
-           {/* Navigation des jours */}
-           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2 select-none">
-             <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
-             <div className="flex gap-2 overflow-x-hidden w-full px-2">
-               {visibleDays.map((dayName, idx) => (
-                 <div key={idx} className="flex-1 text-center font-black text-sm text-gray-800 flex flex-col py-1">
-                   {dayName}
+           <div className="text-center mb-1">
+             <span className="text-xs font-bold text-gray-400">↔️ Fais glisser pour voir les autres jours</span>
+           </div>
+
+           {/* Grille du planning avec défilement natif fluide */}
+           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+             
+             {/* Colonne des heures (Fixée à gauche) */}
+             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
+               <div className="h-10 border-b border-gray-200 bg-gray-50"></div> {/* Coin vide */}
+               {hoursOfDay.map(hour => (
+                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
+                   <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
                  </div>
                ))}
              </div>
-             <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
-           </div>
 
-           {/* Grille des heures */}
-           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex select-none">
-             <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
-               {hoursOfDay.map(hour => (
-                 <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200"><span className="text-[10px] font-bold text-gray-400">{hour}h</span></div>
-               ))}
-             </div>
-             <div className="flex flex-1">
-               {visibleDays.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative">
+             {/* Colonnes des jours (Glissantes) */}
+             <div className="flex flex-nowrap">
+               {WEEK_DAYS.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative">
+                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
+                       <span className="font-black text-sm text-gray-800">{dayName}</span>
+                   </div>
                    {hoursOfDay.map(hour => {
                      const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
-                     
                      return (
                        <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
                          {slotEvents.map(ev => (
