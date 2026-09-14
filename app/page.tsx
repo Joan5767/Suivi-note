@@ -88,7 +88,9 @@ export default function Home() {
   
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [focusPhase, setFocusPhase] = useState<'rouge' | 'ask_orange' | 'orange' | 'ask_vert' | 'vert' | 'done'>('rouge');
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
+  
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [historySearch, setHistorySearch] = useState('');
   const [collapsedPriorities, setCollapsedPriorities] = useState<Record<string, boolean>>({
@@ -210,6 +212,34 @@ export default function Home() {
     }, 1000); 
     return () => window.clearInterval(interval);
   }, [notes]);
+
+  // === GESTION DE LA PROGRESSION DU MODE FOCUS ===
+  useEffect(() => {
+    if (!isFocusMode) return;
+
+    const currentFocusable = notes.filter(n => 
+      !n.completed && 
+      !n.is_archived && 
+      (!n.snooze_until || new Date(n.snooze_until).getTime() <= currentTime) && 
+      !skippedFocusIds.includes(n.id)
+    );
+
+    const urgentCount = currentFocusable.filter(n => n.importance === 'rouge').length;
+    const importantCount = currentFocusable.filter(n => n.importance === 'orange').length;
+    const normalCount = currentFocusable.filter(n => n.importance === 'vert').length;
+
+    if (focusPhase === 'rouge' && urgentCount === 0) {
+       if (importantCount > 0) setFocusPhase('ask_orange');
+       else if (normalCount > 0) setFocusPhase('ask_vert');
+       else setFocusPhase('done');
+    } else if (focusPhase === 'orange' && importantCount === 0) {
+       if (normalCount > 0) setFocusPhase('ask_vert');
+       else setFocusPhase('done');
+    } else if (focusPhase === 'vert' && normalCount === 0) {
+       setFocusPhase('done');
+    }
+  }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
+
 
   const handleDayNavigation = (direction: number) => {
     let newIndex = visibleDayIndex + direction;
@@ -613,9 +643,16 @@ export default function Home() {
   let currentFocusNote: Note | null = null;
   let focusStatus = '';
 
-  if (urgentNotes.length > 0) { currentFocusNote = urgentNotes[0]; } 
-  else if (importantNotes.length > 0) { currentFocusNote = importantNotes[0]; focusStatus = 'Plus aucune urgence ✓'; } 
-  else if (normalNotes.length > 0) { currentFocusNote = normalNotes[0]; focusStatus = 'Plus aucune tâche importante ✓'; }
+  if (focusPhase === 'rouge' && urgentNotes.length > 0) { 
+    currentFocusNote = urgentNotes[0]; 
+    focusStatus = 'Priorité Urgente'; 
+  } else if (focusPhase === 'orange' && importantNotes.length > 0) { 
+    currentFocusNote = importantNotes[0]; 
+    focusStatus = 'Priorité Importante'; 
+  } else if (focusPhase === 'vert' && normalNotes.length > 0) { 
+    currentFocusNote = normalNotes[0]; 
+    focusStatus = 'Priorité Normale'; 
+  }
 
   const columns = [
     { id: 'rouge', title: '🔴 Priorité Urgente', notes: displayedNotes.filter(n => n.importance === 'rouge') },
@@ -623,6 +660,9 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
+  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
+
+  // ================= RENDER NOTE ITEM =================
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
       showArchived === true ? 'border-gray-300 bg-gray-50' : 
@@ -792,6 +832,7 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
+      {/* ================= MODALS GLOBALES ================= */}
       {showCleanupModal && (
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
@@ -866,6 +907,7 @@ export default function Home() {
         </div>
       )}
 
+      {/* ================= VUE : HUB PRINCIPAL ================= */}
       {mainMode === 'hub' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
            <h1 className="text-3xl font-black text-gray-800 mb-8 text-center">Que veux-tu faire ?</h1>
@@ -878,6 +920,7 @@ export default function Home() {
         </div>
       )}
 
+      {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
@@ -885,6 +928,7 @@ export default function Home() {
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
            </div>
 
+           {/* Contrôles du modèle */}
            <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div className="flex gap-2">
                 <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-black transition-colors">
@@ -903,7 +947,7 @@ export default function Home() {
                       if (!e.target.value) return;
                       const tmpl = savedTemplates.find(t => t.id === e.target.value);
                       if (tmpl) loadTemplate(tmpl);
-                      e.target.value = '';
+                      e.target.value = ''; // Reset select
                     }}
                     className="flex-1 border border-gray-300 p-1.5 rounded-lg text-sm font-bold text-black bg-white"
                   >
@@ -912,10 +956,17 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
+                  <button 
+                    onClick={() => {
+                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
+                    }} 
+                    className="text-xs text-red-500 font-bold hidden"
+                  >Supprimer</button>
                 </div>
               )}
            </div>
 
+           {/* Navigation des jours (Générique) */}
            <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2">
              <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
              <div className="flex gap-2 overflow-x-hidden w-full px-2">
@@ -928,6 +979,7 @@ export default function Home() {
              <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
            </div>
 
+           {/* Grille des heures */}
            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
              <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
                {hoursOfDay.map(hour => (
@@ -955,6 +1007,7 @@ export default function Home() {
              </div>
            </div>
 
+           {/* Modal d'ajout rapide d'événement générique */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
@@ -976,6 +1029,7 @@ export default function Home() {
          </div>
       )}
 
+      {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
         <div className="animate-fade-in">
           <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
@@ -991,7 +1045,15 @@ export default function Home() {
               </div>
             )}
             <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-              <button onClick={() => { setIsFocusMode(!isFocusMode); setSkippedFocusIds([]); setShowArchived(false); }} className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}>
+              <button 
+                onClick={() => { 
+                  setIsFocusMode(!isFocusMode); 
+                  setSkippedFocusIds([]); 
+                  setShowArchived(false); 
+                  setFocusPhase('rouge'); // Réinitialisation de la phase de focus
+                }} 
+                className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}
+              >
                 {isFocusMode ? 'Quitter le Mode Focus' : '🎯 Mode Focus'}
               </button>
             </div>
@@ -1124,10 +1186,38 @@ export default function Home() {
             </form>
           )}
 
+          {/* ================= MODE FOCUS INTELLIGENT ================= */}
           {isFocusMode ? (
             <div className="flex flex-col items-center justify-center mt-6 mb-12 w-full">
-              {focusStatus && <div className="bg-green-100 text-green-800 px-4 py-2 rounded-full font-bold text-xs shadow-sm mb-6 flex items-center gap-1.5"><span>🎯</span> {focusStatus}</div>}
-              {currentFocusNote ? (
+              {focusStatus && currentFocusNote && (
+                <div className="bg-gray-800 text-white px-4 py-2 rounded-full font-bold text-xs shadow-sm mb-6 flex items-center gap-1.5">
+                  <span>🎯</span> {focusStatus}
+                </div>
+              )}
+
+              {/* PHASES DE TRANSITION AVEC QUESTIONS */}
+              {focusPhase === 'ask_orange' ? (
+                <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-orange-400">
+                  <span className="text-5xl">🔥</span>
+                  <h2 className="text-2xl font-black text-gray-800">Urgences terminées !</h2>
+                  <p className="text-gray-600 font-medium">As-tu l'énergie de continuer sur les tâches importantes ?</p>
+                  <div className="flex w-full gap-3 mt-4">
+                    <button onClick={() => setFocusPhase('orange')} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on continue</button>
+                    <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                  </div>
+                </div>
+              ) : focusPhase === 'ask_vert' ? (
+                <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-green-400">
+                  <span className="text-5xl">🔋</span>
+                  <h2 className="text-2xl font-black text-gray-800">Tâches importantes finies !</h2>
+                  <p className="text-gray-600 font-medium">Veux-tu terminer avec les tâches normales ?</p>
+                  <div className="flex w-full gap-3 mt-4">
+                    <button onClick={() => setFocusPhase('vert')} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on termine</button>
+                    <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                  </div>
+                </div>
+              ) : currentFocusNote ? (
+                // AFFICHAGE D'UNE NOTE PENDANT LE FOCUS
                 <div key={currentFocusNote.id} className="w-full max-w-md bg-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col items-center text-center gap-6 border border-gray-100">
                   <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' : currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-green-50 text-green-600 border-green-200'}`}>{currentFocusNote.importance === 'rouge' ? '🔴 Urgent' : currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}</span>
                   {currentFocusNote.title && <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">{currentFocusNote.title}</h2>}
@@ -1145,6 +1235,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
+                // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
                   <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
                   <button onClick={() => { setIsFocusMode(false); setSkippedFocusIds([]); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
