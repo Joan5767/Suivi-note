@@ -33,8 +33,8 @@ interface WeeklyBlock {
   title: string;
   day: string;
   startHour: number;
-  startMinute: number; // NOUVEAU : Précision des minutes
-  duration: number;    // NOUVEAU : Durée en minutes (défaut 60)
+  startMinute: number;
+  duration: number;
   color: string;
 }
 
@@ -134,15 +134,54 @@ export default function Home() {
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [blockDay, setBlockDay] = useState('Lundi');
-  const [blockTime, setBlockTime] = useState('09:00'); // Gère heure + minute
+  const [blockTime, setBlockTime] = useState('09:00'); 
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchEndX, setTouchEndX] = useState<number | null>(null);
 
-  // État de redimensionnement des blocs
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
+
+  // ==========================================
+  // === INTERCEPTION DU BOUTON RETOUR ========
+  // ==========================================
+  
+  // 1. On crée un "faux" historique au lancement de l'application
+  useEffect(() => {
+    window.history.pushState(null, '', window.location.href);
+  }, []);
+
+  // 2. On écoute quand l'utilisateur appuie sur "Retour"
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      let handled = false;
+
+      // On vérifie ce qui est ouvert et on le ferme en priorité (du plus haut au plus bas)
+      if (showBlockModal) { setShowBlockModal(false); handled = true; }
+      else if (showCleanupModal) { setShowCleanupModal(false); handled = true; }
+      else if (aiProposal) { setAiProposal(null); handled = true; }
+      else if (triggeredAlarm) { setTriggeredAlarm(null); handled = true; }
+      else if (openMenuId) { setOpenMenuId(null); handled = true; }
+      else if (editingId) { setEditingId(null); handled = true; }
+      else if (isFocusMode) { setIsFocusMode(false); handled = true; }
+      else if (mainMode === 'notes' && activeTab !== 'create') { setActiveTab('create'); handled = true; }
+      else if (mainMode !== 'hub') { setMainMode('hub'); handled = true; }
+
+      if (handled) {
+        // Si on a intercepté l'action pour fermer un élément, on remet l'historique en place pour le prochain appui
+        window.history.pushState(null, '', window.location.href);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [
+    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
+    openMenuId, editingId, isFocusMode, activeTab, mainMode
+  ]);
+
+  // ==========================================
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -247,10 +286,6 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
-  // ==========================================
-  // === LOGIQUE DU PLANNING ===
-  // ==========================================
-  
   const handleDayNavigation = (direction: number) => {
     let newIndex = visibleDayIndex + direction;
     if (newIndex < 0) newIndex = 0;
@@ -259,7 +294,7 @@ export default function Home() {
   };
 
   const onTouchStartSwipe = (e: React.TouchEvent) => {
-    if (resizingBlock) return; // Désactive le swipe si on est en train de redimensionner
+    if (resizingBlock) return;
     setTouchEndX(null);
     setTouchStartX(e.targetTouches[0].clientX);
   };
@@ -297,7 +332,7 @@ export default function Home() {
       day: blockDay,
       startHour: startHour,
       startMinute: startMinute,
-      duration: 60, // 1 heure par défaut
+      duration: 60,
       color: blockColor
     };
     setWeeklyBlocks(prev => [...prev, newBlock]);
@@ -308,7 +343,6 @@ export default function Home() {
     setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
   };
 
-  // --- REDIMENSIONNEMENT TACTILE DES TÂCHES ---
   const handleResizeStart = (e: React.TouchEvent | React.MouseEvent, block: WeeklyBlock) => {
     e.stopPropagation();
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
@@ -325,9 +359,8 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    // 1 heure = 64 pixels, donc 1 minute = 64/60 = 1.066 pixels
     let newDuration = resizingBlock.initialDuration + Math.round((diffY * 60) / 64);
-    if (newDuration < 15) newDuration = 15; // Durée minimale de 15 minutes
+    if (newDuration < 15) newDuration = 15;
     
     setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: newDuration } : b));
   };
@@ -700,7 +733,7 @@ export default function Home() {
   const toggleSubtask = async (note: Note, subtaskId: string) => {
     const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
     const allCompleted = updated.every(st => st.completed);
-    const completedAt = allCompleted ? new Date().toISOString() : '';
+    const completedAt = allCompleted ? new DatetoISOString() : '';
     await supabase.from('notes').update({ subtasks: updated, completed: allCompleted, completed_at: completedAt }).eq('id', note.id);
     fetchNotes();
   };
