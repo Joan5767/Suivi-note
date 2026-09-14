@@ -147,8 +147,6 @@ export default function Home() {
   // === INTERCEPTION BLINDÉE DU RETOUR =======
   // ==========================================
   
-  // Ce "tunnel mémoire" permet de lire l'état instantané de l'app 
-  // sans souffrir du léger retard d'affichage de React.
   const appStateRef = useRef({
     showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
     openMenuId, editingId, isFocusMode, activeTab, mainMode
@@ -162,13 +160,17 @@ export default function Home() {
   });
 
   useEffect(() => {
-    // Injecte une fausse page au démarrage pour piéger le bouton retour
-    window.history.pushState(null, '', window.location.href);
+    // 1. Initialiser le piège avec un hash pour éviter le comportement par défaut
+    if (window.location.hash !== '#app') {
+      window.history.replaceState(null, '', window.location.pathname + '#app');
+    }
+    window.history.pushState({ trap: Date.now() }, '', window.location.pathname + '#app');
 
     const handlePopState = (e: PopStateEvent) => {
       const s = appStateRef.current;
       let handled = false;
 
+      // On vérifie ce qui est ouvert (du plus haut au plus bas niveau)
       if (s.showBlockModal) { setShowBlockModal(false); handled = true; }
       else if (s.showCleanupModal) { setShowCleanupModal(false); handled = true; }
       else if (s.aiProposal) { setAiProposal(null); handled = true; }
@@ -180,8 +182,10 @@ export default function Home() {
       else if (s.mainMode !== 'hub') { setMainMode('hub'); handled = true; }
 
       if (handled) {
-        // Bloque la sortie et remet un faux historique immédiatement
-        window.history.pushState(null, '', window.location.href);
+        // 2. Le setTimeout permet de tromper la sécurité anti-spam du navigateur
+        setTimeout(() => {
+          window.history.pushState({ trap: Date.now() }, '', window.location.pathname + '#app');
+        }, 10);
       }
     };
 
@@ -1112,23 +1116,16 @@ export default function Home() {
               )}
            </div>
 
-           {/* Navigation des jours (Générique) */}
-           <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2 select-none">
-             <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
-             <div className="flex gap-2 overflow-x-hidden w-full px-2">
-               {visibleDays.map((dayName, idx) => (
-                 <div key={idx} className="flex-1 text-center font-black text-sm text-gray-800 flex flex-col py-1">
-                   {dayName}
-                 </div>
-               ))}
-             </div>
-             <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
+           <div className="text-center mb-1">
+             <span className="text-xs font-bold text-gray-400">↔️ Fais glisser pour voir les autres jours</span>
            </div>
 
-           {/* Grille des heures en position absolue */}
-           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex select-none relative h-[960px]"> {/* 15 heures * 64px = 960px */}
+           {/* Grille du planning avec défilement natif fluide */}
+           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+             
              {/* Colonne des heures (Fixée à gauche) */}
-             <div className="absolute left-0 top-0 bottom-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
+             <div className="sticky left-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
+               <div className="h-10 border-b border-gray-200 bg-gray-50"></div> {/* Coin vide */}
                {hoursOfDay.map(hour => (
                  <div key={hour} className="h-16 flex items-start justify-center pt-1 border-b border-gray-200">
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
@@ -1136,58 +1133,22 @@ export default function Home() {
                ))}
              </div>
 
-             {/* Colonnes des jours (Position Absolue) */}
-             <div className="flex flex-1 ml-12">
-               {visibleDays.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
-                   {/* Lignes de fond (cliquables pour ajouter à une heure pile) */}
-                   {hoursOfDay.map(hour => (
-                     <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 w-full hover:bg-blue-50/30 cursor-pointer"></div>
-                   ))}
-
-                   {/* Blocs d'événements positionnés au pixel près */}
-                   {weeklyBlocks.filter(b => b.day === dayName).map(ev => {
-                     // 1 heure = 64 pixels de haut
-                     // Décalage depuis 7h00 (première heure affichée)
-                     const topPx = ((ev.startHour - 7) + (ev.startMinute || 0) / 60) * 64;
-                     const heightPx = ((ev.duration || 60) / 60) * 64;
-
+             {/* Colonnes des jours (Glissantes) */}
+             <div className="flex flex-nowrap">
+               {WEEK_DAYS.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative">
+                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
+                       <span className="font-black text-sm text-gray-800">{dayName}</span>
+                   </div>
+                   {hoursOfDay.map(hour => {
+                     const slotEvents = weeklyBlocks.filter(b => b.day === dayName && b.startHour === hour);
                      return (
-                       <div 
-                         key={ev.id} 
-                         className="absolute left-1 right-1 z-10 p-0.5"
-                         style={{ top: `${topPx}px`, height: `${heightPx}px` }}
-                       >
-                         <div className={`relative h-full w-full rounded-lg shadow-sm border overflow-hidden flex flex-col ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
-                           
-                           {/* Bouton supprimer */}
-                           <button 
-                             onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }}
-                             className="absolute top-1 right-1 text-black/50 hover:text-red-600 font-bold z-20 text-[10px]"
-                           >
-                             ✖
-                           </button>
-
-                           {/* Contenu */}
-                           <div className="p-1.5 pt-3 overflow-hidden pointer-events-none">
-                             <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
-                             <span className="text-[9px] opacity-70 block">
-                               {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
-                               ({ev.duration || 60} min)
-                             </span>
+                       <div key={hour} onClick={() => openAddBlockModal(dayName, hour)} className="h-16 border-b border-gray-100 cursor-pointer hover:bg-blue-50/50 p-1 relative">
+                         {slotEvents.map(ev => (
+                           <div key={ev.id} onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className={`absolute inset-x-1 top-1 bottom-1 rounded-lg shadow-sm p-1.5 flex flex-col justify-start overflow-hidden border ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'}`}>
+                             <span className="text-[10px] font-bold leading-tight line-clamp-2">{ev.title}</span>
                            </div>
-
-                           {/* Poignée de redimensionnement tactile en bas */}
-                           <div 
-                             className="absolute bottom-0 left-0 right-0 h-4 bg-black/10 cursor-ns-resize flex justify-center items-end pb-1"
-                             style={{ touchAction: 'none' }}
-                             onMouseDown={(e) => handleResizeStart(e, ev)}
-                             onTouchStart={(e) => handleResizeStart(e, ev)}
-                           >
-                             <div className="w-6 h-1 bg-black/30 rounded-full" />
-                           </div>
-
-                         </div>
+                         ))}
                        </div>
                      );
                    })}
@@ -1196,7 +1157,7 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide (avec jour et heure modifiables) */}
+           {/* Modal d'ajout rapide d'événement générique */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
