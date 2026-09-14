@@ -28,12 +28,11 @@ interface Note {
   created_at?: string; 
 }
 
-// === INTERFACE ROUTINE / SEMAINE TYPE ===
 interface WeeklyBlock {
   id: string;
   title: string;
-  day: string; // 'Lundi', 'Mardi', etc.
-  startHour: number; // 7, 8, 9...
+  day: string;
+  startHour: number;
   color: string;
 }
 
@@ -58,13 +57,11 @@ const urlBase64ToUint8Array = (base64String: string) => {
 };
 
 export default function Home() {
-  // === ÉTATS GLOBAUX & HUB ===
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
-  // === ÉTATS DES NOTES ===
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
@@ -73,8 +70,8 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
-  // Paramétrages avancés de notes
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
@@ -89,7 +86,6 @@ export default function Home() {
   const [enableGoogleCal, setEnableGoogleCal] = useState(true);
   const [enableICal, setEnableICal] = useState(false);
   
-  // Affichage, édition et filtres notes
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
@@ -115,34 +111,29 @@ export default function Home() {
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
-  // IA et Dictée
   const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiProposal, setAiProposal] = useState<any>(null);
   const recognitionRef = useRef<any>(null);
   const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
 
-  // Nettoyage notes
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
-  // === ÉTATS DU PLANNING (SEMAINE TYPE) ===
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
   const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   
-  // Modal Planning
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [blockDay, setBlockDay] = useState('');
   const [blockHour, setBlockHour] = useState(0);
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
-  // === DATA FETCHING ===
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
     if (!error && data) setNotes(data);
@@ -158,7 +149,6 @@ export default function Home() {
     fetchTemplates();
   }, []);
 
-  // === PUSH NOTIFICATIONS ===
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
@@ -194,7 +184,6 @@ export default function Home() {
     }
   };
 
-  // === HORLOGE ET ALARMES ===
   useEffect(() => {
     const interval = window.setInterval(async () => {
       const now = Date.now();
@@ -222,10 +211,6 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [notes]);
 
-  // ==========================================
-  // === LOGIQUE DU PLANNING (SEMAINE TYPE) ===
-  // ==========================================
-  
   const handleDayNavigation = (direction: number) => {
     let newIndex = visibleDayIndex + direction;
     if (newIndex < 0) newIndex = 0;
@@ -284,13 +269,6 @@ export default function Home() {
     }
   };
 
-  const deleteTemplate = async (id: string) => {
-    if (window.confirm("Supprimer ce modèle de ta base de données ?")) {
-      await supabase.from('planning_templates').delete().eq('id', id);
-      fetchTemplates();
-    }
-  };
-
   const exportWeeklyICS = () => {
     if (weeklyBlocks.length === 0) return alert("Le planning est vide !");
     
@@ -325,8 +303,6 @@ export default function Home() {
   const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
   const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
-
-  // === NOTES LOGIC ===
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
     const now = Date.now();
@@ -402,7 +378,10 @@ export default function Home() {
     setShowCalendarConfig(false); setTargetDate(''); setShowAdvancedSettings(false);
     setLoading(false);
     setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
-    fetchNotes(); setActiveTab('notes');
+    fetchNotes();
+
+    setSuccessMessage('✅ Note créée avec succès !');
+    setTimeout(() => setSuccessMessage(null), 3000);
   };
 
   const deleteNote = async (id: string) => {
@@ -494,7 +473,9 @@ export default function Home() {
       if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
       
       setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
-      fetchNotes(); setActiveTab('notes');
+      fetchNotes();
+      setSuccessMessage('✅ Note créée avec succès par IA !');
+      setTimeout(() => setSuccessMessage(null), 3000);
     }
     setLoading(false);
   };
@@ -642,9 +623,6 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
-  const togglePriority = (priorityId: string) => { setCollapsedPriorities(prev => ({ ...prev, [priorityId]: !prev[priorityId] })); };
-
-  // ================= RENDER NOTE ITEM =================
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
       showArchived === true ? 'border-gray-300 bg-gray-50' : 
@@ -814,7 +792,6 @@ export default function Home() {
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
-      {/* ================= MODALS GLOBALES ================= */}
       {showCleanupModal && (
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
@@ -889,7 +866,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* ================= VUE : HUB PRINCIPAL ================= */}
       {mainMode === 'hub' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
            <h1 className="text-3xl font-black text-gray-800 mb-8 text-center">Que veux-tu faire ?</h1>
@@ -902,7 +878,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* ================= VUE : PLANNING (SEMAINE TYPE) ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2">
@@ -910,7 +885,6 @@ export default function Home() {
              <h1 className="text-xl font-black text-gray-800">Modèles de Semaine</h1>
            </div>
 
-           {/* Contrôles du modèle */}
            <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div className="flex gap-2">
                 <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-2 rounded-xl text-sm shadow hover:bg-black transition-colors">
@@ -929,7 +903,7 @@ export default function Home() {
                       if (!e.target.value) return;
                       const tmpl = savedTemplates.find(t => t.id === e.target.value);
                       if (tmpl) loadTemplate(tmpl);
-                      e.target.value = ''; // Reset select
+                      e.target.value = '';
                     }}
                     className="flex-1 border border-gray-300 p-1.5 rounded-lg text-sm font-bold text-black bg-white"
                   >
@@ -938,17 +912,10 @@ export default function Home() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                  <button 
-                    onClick={() => {
-                      const id = window.prompt("ID du modèle à supprimer ? (Tape l'ID ou laisse vide)");
-                    }} 
-                    className="text-xs text-red-500 font-bold hidden"
-                  >Supprimer</button>
                 </div>
               )}
            </div>
 
-           {/* Navigation des jours (Générique) */}
            <div className="flex items-center justify-between bg-white p-3 rounded-2xl shadow-sm border border-gray-200 mt-2">
              <button onClick={() => handleDayNavigation(-1)} disabled={visibleDayIndex === 0} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">◀</button>
              <div className="flex gap-2 overflow-x-hidden w-full px-2">
@@ -961,7 +928,6 @@ export default function Home() {
              <button onClick={() => handleDayNavigation(1)} disabled={visibleDayIndex === 4} className="bg-gray-100 disabled:opacity-30 hover:bg-gray-200 p-2 rounded-xl text-lg transition-colors">▶</button>
            </div>
 
-           {/* Grille des heures */}
            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex">
              <div className="flex flex-col w-12 border-r border-gray-200 bg-gray-50">
                {hoursOfDay.map(hour => (
@@ -989,7 +955,6 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Modal d'ajout rapide d'événement générique */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl">
@@ -1011,7 +976,6 @@ export default function Home() {
          </div>
       )}
 
-      {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
         <div className="animate-fade-in">
           <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
@@ -1149,6 +1113,13 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {successMessage && (
+                <div className="mt-2 p-2 bg-green-100 border border-green-300 text-green-800 text-center font-bold text-xs rounded-lg transition-all">
+                  {successMessage}
+                </div>
+              )}
+
               <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}</button>
             </form>
           )}
