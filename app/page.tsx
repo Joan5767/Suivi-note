@@ -136,8 +136,7 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
-
+  const [visibleDayIndex, setVisibleDayIndex] = useState(0); 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
   const [previewTemplate, setPreviewTemplate] = useState<any | null>(null);
@@ -150,15 +149,33 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
 
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
+  const [touchEndX, setTouchEndX] = useState<number | null>(null);
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
   // ==========================================
-  // === SYSTÈME DE ZOOM (PINCH) ==============
+  // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
+  // ==========================================
+  useEffect(() => {
+    // Interdit formellement au navigateur de faire "loupe" quand on pose 2 doigts sur l'écran
+    const preventNativeZoom = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+    
+    document.addEventListener('touchmove', preventNativeZoom, { passive: false });
+    return () => {
+      document.removeEventListener('touchmove', preventNativeZoom);
+    };
+  }, []);
+
+
+  // ==========================================
+  // === 2. CRÉATION DU ZOOM CUSTOM DE LA GRILLE
   // ==========================================
   const gridRef = useRef<HTMLDivElement>(null);
-  const [hourHeight, setHourHeight] = useState(64);
-  const pinchStartDist = useRef<number | null>(null);
-  const pinchStartHeight = useRef<number>(64);
+  const [hourHeight, setHourHeight] = useState(64); // 64px par défaut
   const currentHourHeight = useRef(64);
 
   useEffect(() => {
@@ -166,49 +183,54 @@ export default function Home() {
   }, [hourHeight]);
 
   useEffect(() => {
-    let meta = document.querySelector('meta[name="viewport"]');
-    if (!meta) {
-      meta = document.createElement('meta');
-      meta.setAttribute('name', 'viewport');
-      document.head.appendChild(meta);
-    }
-    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0');
+    // Ce hook ne s'active QUE quand on est sur la page planning
+    if (mainMode !== 'planning') return;
 
     const grid = gridRef.current;
     if (!grid) return;
 
+    let startDist = 0;
+    let startHeight = 64;
+    let rafId: number;
+
+    const getDist = (touches: TouchList) => {
+      return Math.hypot(
+        touches[0].clientX - touches[1].clientX,
+        touches[0].clientY - touches[1].clientY
+      );
+    };
+
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         if (e.cancelable) e.preventDefault(); 
-        const dist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        pinchStartDist.current = dist;
-        pinchStartHeight.current = currentHourHeight.current;
+        startDist = getDist(e.touches);
+        startHeight = currentHourHeight.current;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && pinchStartDist.current) {
-        if (e.cancelable) e.preventDefault();
-        const dist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        const scale = dist / pinchStartDist.current;
-        let newHeight = pinchStartHeight.current * scale;
+      if (e.touches.length === 2 && startDist > 0) {
+        if (e.cancelable) e.preventDefault(); // Annule toute action native
         
-        if (newHeight < 30) newHeight = 30;
-        if (newHeight > 160) newHeight = 160;
-        
-        setHourHeight(newHeight);
+        const currentDist = getDist(e.touches);
+        const scale = currentDist / startDist;
+        let newHeight = startHeight * scale;
+
+        // Limites du zoom (40px min = dézoomé / 200px max = super zoomé)
+        if (newHeight < 40) newHeight = 40;
+        if (newHeight > 200) newHeight = 200;
+
+        // Mise à jour ultra fluide sans faire lagger React
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = window.requestAnimationFrame(() => {
+          setHourHeight(newHeight);
+        });
       }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2) {
-        pinchStartDist.current = null;
+        startDist = 0;
       }
     };
 
@@ -222,13 +244,14 @@ export default function Home() {
       grid.removeEventListener('touchmove', handleTouchMove);
       grid.removeEventListener('touchend', handleTouchEnd);
       grid.removeEventListener('touchcancel', handleTouchEnd);
+      if (rafId) cancelAnimationFrame(rafId);
     };
-  }, []);
+  }, [mainMode]); 
+
 
   // ==========================================
-  // === ROUTAGE NATIF (BOUTON RETOUR) ========
+  // === SYSTÈME DE ROUTAGE NATIF (RETOUR) ====
   // ==========================================
-  
   const appStateRef = useRef({
     showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
     openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
@@ -388,6 +411,31 @@ export default function Home() {
     }
   }, [isFocusMode, focusPhase, notes, skippedFocusIds, currentTime]);
 
+  const handleDayNavigation = (direction: number) => {
+    let newIndex = visibleDayIndex + direction;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex > 4) newIndex = 4;
+    setVisibleDayIndex(newIndex);
+  };
+
+  const onTouchStartSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock || e.touches.length > 1) return; // Ignore le swipe si 2 doigts (c'est un zoom)
+    setTouchEndX(null);
+    setTouchStartX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMoveSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock || e.touches.length > 1) return;
+    setTouchEndX(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEndSwipe = (e: React.TouchEvent) => {
+    if (resizingBlock || !touchStartX || !touchEndX || e.touches.length > 0) return;
+    const distance = touchStartX - touchEndX;
+    if (distance > 50 && visibleDayIndex < 4) handleDayNavigation(1);
+    if (distance < -50 && visibleDayIndex > 0) handleDayNavigation(-1);
+  };
+
   const openAddBlockModal = (day: string, hour: number, minute: number = 0) => {
     setEditingBlockId(null);
     setBlockDay(day);
@@ -460,6 +508,7 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
+    // Le calcul utilise toujours la hauteur exacte du zoom actuel !
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / hourHeight);
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
@@ -554,6 +603,9 @@ export default function Home() {
     link.href = url; link.download = 'ma_semaine_type.ics'; 
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
+
+  const visibleDays = WEEK_DAYS.slice(visibleDayIndex, visibleDayIndex + 3);
+  const hoursOfDay = Array.from({ length: 16 }).map((_, i) => i + 7);
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
@@ -1285,7 +1337,12 @@ export default function Home() {
 
       {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
-         <div className="flex flex-col gap-4 animate-fade-in w-full">
+         <div 
+           className="flex flex-col gap-4 animate-fade-in w-full"
+           onTouchStart={onTouchStartSwipe}
+           onTouchMove={onTouchMoveSwipe}
+           onTouchEnd={onTouchEndSwipe}
+         >
            <div className="flex items-center justify-between mb-2">
              <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
              <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
@@ -1312,14 +1369,14 @@ export default function Home() {
            </div>
 
            <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ Glisse pour voir les jours | 🔍 Pince pour zoomer</span>
+             <span className="text-xs font-bold text-gray-400">↔️ Balaye pour les jours | 🔍 Pince pour zoomer</span>
            </div>
 
            {/* Grille du planning avec DÉFILEMENT ET ZOOM NATIFS */}
            <div 
              ref={gridRef}
-             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-x-auto relative flex w-full" 
-             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', height: `${15 * hourHeight + 40}px`, touchAction: 'pan-x pan-y' }}
+             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
+             style={{ height: `${15 * hourHeight + 40}px`, touchAction: 'pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
@@ -1333,9 +1390,9 @@ export default function Home() {
              </div>
 
              {/* Colonnes des jours (Glissantes) */}
-             <div className="flex flex-nowrap">
-               {WEEK_DAYS.map((dayName, dIdx) => (
-                 <div key={dIdx} className="flex-1 flex flex-col min-w-[33vw] sm:min-w-[150px] border-r border-gray-100 last:border-r-0 relative h-full">
+             <div className="flex flex-1">
+               {visibleDays.map((dayName, dIdx) => (
+                 <div key={dIdx} className="flex-1 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full">
                    
                    <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10">
                        <span className="font-black text-sm text-gray-800">{dayName}</span>
