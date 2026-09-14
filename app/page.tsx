@@ -58,6 +58,15 @@ const urlBase64ToUint8Array = (base64String: string) => {
   return outputArray;
 };
 
+// === NOUVELLE FONCTION DE FORMATAGE ===
+const formatDuration = (totalMinutes: number) => {
+  const h = Math.floor(totalMinutes / 60);
+  const m = Math.round(totalMinutes % 60);
+  if (h > 0 && m > 0) return `${h}h${m.toString().padStart(2, '0')}`;
+  if (h > 0) return `${h}h`;
+  return `${m} min`;
+};
+
 export default function Home() {
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -367,8 +376,12 @@ export default function Home() {
     setSelectedBlockId(null);
   };
 
+  // NOUVEAU : Message de confirmation avant suppression
   const deleteBlock = (id: string) => {
-    setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
+    if (window.confirm("Es-tu sûr de vouloir supprimer cette tâche de ton planning ?")) {
+      setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
+      setSelectedBlockId(null);
+    }
   };
 
   const handleResizeStart = (e: React.TouchEvent | React.MouseEvent, block: WeeklyBlock) => {
@@ -387,9 +400,7 @@ export default function Home() {
     const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
     const diffY = clientY - resizingBlock.startY;
     
-    // Calcul brut
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / 64);
-    // Arrondi au cran de 15 minutes le plus proche
     const snappedDuration = Math.max(15, Math.round(rawDuration / 15) * 15);
     
     setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
@@ -1216,7 +1227,7 @@ export default function Home() {
                              <span className="text-[10px] font-bold leading-tight block">{ev.title}</span>
                              <span className="text-[9px] opacity-70 block">
                                {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
-                               ({ev.duration || 60} min)
+                               ({formatDuration(ev.duration || 60)})
                              </span>
                            </div>
 
