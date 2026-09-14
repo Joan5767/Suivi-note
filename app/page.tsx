@@ -153,10 +153,6 @@ export default function Home() {
 
   const [resizingBlock, setResizingBlock] = useState<{id: string, startY: number, initialDuration: number} | null>(null);
 
-  // ==========================================
-  // === SYSTÈME DE ROUTAGE NATIF =====
-  // ==========================================
-  
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
@@ -195,8 +191,6 @@ export default function Home() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
-
-  // ==========================================
 
   const fetchNotes = async () => {
     const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
@@ -399,7 +393,6 @@ export default function Home() {
     const diffY = clientY - resizingBlock.startY;
     
     const rawDuration = resizingBlock.initialDuration + ((diffY * 60) / 64);
-    // Arrondi par crans de 15 minutes, et BLOCAGE à 30 minutes minimum
     const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
     
     setWeeklyBlocks(prev => prev.map(b => b.id === resizingBlock.id ? { ...b, duration: snappedDuration } : b));
@@ -1171,7 +1164,11 @@ export default function Home() {
                        <div 
                          key={hour} 
                          onClick={(e) => {
-                           setSelectedBlockId(null); 
+                           // NOUVEAU : Blocage de la grille si une tâche est déjà sélectionnée
+                           if (selectedBlockId) {
+                             setSelectedBlockId(null);
+                             return;
+                           }
                            const rect = e.currentTarget.getBoundingClientRect();
                            const offsetY = e.clientY - rect.top;
                            const minute = Math.floor(offsetY / 16) * 15;
@@ -1189,7 +1186,6 @@ export default function Home() {
                      const heightPx = ((ev.duration || 60) / 60) * 64;
                      const isSelected = selectedBlockId === ev.id;
                      
-                     // Positionnement intelligent de la miniature (pour ne pas sortir de l'écran par le haut)
                      const popoverPosition = ev.startHour < 10 
                        ? { top: 'calc(100% + 5px)' } 
                        : { bottom: 'calc(100% + 5px)' };
@@ -1197,21 +1193,25 @@ export default function Home() {
                      return (
                        <div 
                          key={ev.id} 
-                         className="absolute left-1 right-1 z-10 p-0.5"
+                         // NOUVEAU : Le z-index passe à 50 quand le bloc est sélectionné pour passer au-dessus des heures
+                         className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-50' : 'z-10'}`}
                          style={{ top: `${topPx + 40}px`, height: `${heightPx}px` }} 
                        >
                          <div 
                            onClick={(e) => { 
                              e.stopPropagation(); 
-                             setSelectedBlockId(isSelected ? null : ev.id); 
+                             // NOUVEAU : Clic sur une autre tâche désélectionne juste la tâche actuelle
+                             if (selectedBlockId && selectedBlockId !== ev.id) {
+                               setSelectedBlockId(null);
+                             } else {
+                               setSelectedBlockId(isSelected ? null : ev.id); 
+                             }
                            }}
-                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black z-20' : 'overflow-hidden'}`}
+                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'}`}
                          >
                            
-                           {/* Contenu standard */}
                            <div className="p-1.5 pt-1 flex-1 overflow-hidden pointer-events-none">
                              <span className="text-[10px] font-bold leading-tight line-clamp-1">{ev.title}</span>
-                             {/* NOUVEAU : Masquer le texte si le bloc est trop petit (< 45 min) */}
                              {(ev.duration || 60) >= 45 && (
                                <span className="text-[9px] opacity-70 block mt-0.5">
                                  {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
@@ -1219,7 +1219,6 @@ export default function Home() {
                              )}
                            </div>
 
-                           {/* Poignée de redimensionnement (visible quand sélectionné, reste collée en bas) */}
                            {isSelected && (
                              <div 
                                className="absolute bottom-0 left-0 right-0 h-6 bg-black/20 hover:bg-black/30 cursor-ns-resize flex justify-center items-end pb-1.5 z-30"
@@ -1231,7 +1230,6 @@ export default function Home() {
                              </div>
                            )}
 
-                           {/* NOUVEAU : MINIATURE RÉCAPITULATIVE (POP-UP EXTÉRIEUR AU BLOC) */}
                            {isSelected && (
                              <div 
                                className="absolute left-1/2 -translate-x-1/2 w-[160px] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[100] cursor-default"
@@ -1284,7 +1282,8 @@ export default function Home() {
                    />
                  </div>
 
-                 <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" autoFocus />
+                 {/* NOUVEAU : AutoFocus supprimé pour éviter l'ouverture intempestive du clavier */}
+                 <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" />
                  
                  <div className="flex gap-2 w-full justify-between mt-1">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
