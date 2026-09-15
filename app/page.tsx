@@ -205,12 +205,25 @@ export default function Home() {
   const [blockColor, setBlockColor] = useState('blue');
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
 
+  // Déplacement par appui long : un appui simple ouvre la bulle, un appui maintenu
+  // permet de faire glisser le bloc vers un autre jour ou une autre heure.
+  const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
+  const [draggingBlockPreview, setDraggingBlockPreview] = useState<{ day: string; hour: number; minute: number } | null>(null);
+  const suppressedBlockClickIdsRef = useRef<Set<string>>(new Set());
+  const activeBlockDragCleanupRef = useRef<(() => void) | null>(null);
+
   // Passe à true seulement après la restauration initiale de localStorage. Cela évite
   // que les valeurs par défaut écrasent un brouillon existant au premier rendu.
   const [draftStorageReady, setDraftStorageReady] = useState(false);
 
   // Redimensionnement des blocs : une ref évite les pertes d'événements pendant le drag tactile/souris.
   const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; maxDuration: number; pointerId: number } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      activeBlockDragCleanupRef.current?.();
+    };
+  }, []);
 
   const normalizeWeeklyBlocks = (rawBlocks: unknown): WeeklyBlock[] => {
     if (!Array.isArray(rawBlocks)) return [];
@@ -954,6 +967,225 @@ export default function Home() {
       setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
       setSelectedBlockId(null);
     }
+  };
+
+  const suppressNextBlockClick = (id: string) => {
+    suppressedBlockClickIdsRef.current.add(id);
+    window.setTimeout(() => suppressedBlockClickIdsRef.current.delete(id), 700);
+  };
+
+  const consumeSuppressedBlockClick = (id: string) => {
+    if (!suppressedBlockClickIdsRef.current.has(id)) return false;
+    suppressedBlockClickIdsRef.current.delete(id);
+    return true;
+  };
+
+  const updateDraggedBlockPosition = (block: WeeklyBlock, clientX: number, clientY: number) => {
+    const scroller = daysScrollRef.current;
+    if (!scroller) return;
+
+    // Défilement automatique horizontal quand on approche d'un bord.
+    const scrollerRect = scroller.getBoundingClientRect();
+    const horizontalEdge = Math.min(55, scrollerRect.width * 0.18);
+    if (clientX < scrollerRect.left + horizontalEdge) {
+      scroller.scrollLeft -= 16;
+    } else if (clientX > scrollerRect.right - horizontalEdge) {
+      scroller.scrollLeft += 16;
+    }
+
+    // Et verticalement pour atteindre une heure hors de l'écran sans relâcher.
+    const verticalEdge = 70;
+    if (clientY < verticalEdge) {
+      window.scrollBy(0, -14);
+    } else if (clientY > window.innerHeight - verticalEdge) {
+      window.scrollBy(0, 14);
+    }
+
+    const pointedElement = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    let dayColumn = pointedElement?.closest<HTMLElement>('[data-planning-day]') || null;
+
+    if (!dayColumn) {
+      const columns = Array.from(document.querySelectorAll<HTMLElement>('[data-planning-day]'));
+      dayColumn = columns.find(column => {
+        const rect = column.getBoundingClientRect();
+        return clientX >= rect.left && clientX <= rect.right;
+      }) || null;
+    }
+
+    const targetDay = dayColumn?.dataset.planningDay;
+    if (!dayColumn || !targetDay || !WEEK_DAYS.includes(targetDay)) return;
+
+    const rect = dayColumn.getBoundingClientRect();
+    const relativeY = clientY - rect.top - PLANNING_HEADER_HEIGHT;
+    const rawStartMinutes = PLANNING_START_HOUR * 60 + (relativeY / currentHourHeight.current) * 60;
+
+    const planningStartMinutes = PLANNING_START_HOUR * 60;
+    const planningEndMinutes = (PLANNING_END_HOUR + 1) * 60;
+    const effectiveDuration = block.kind === 'marker' ? 15 : Math.max(15, block.duration || 60);
+    const latestStartMinutes = Math.max(planningStartMinutes, planningEndMinutes - effectiveDuration);
+
+    // Le déplacement se cale sur la même grille de 15 minutes que la création.
+    const snappedMinutes = Math.round(rawStartMinutes / 15) * 15;
+    const safeStartMinutes = Math.min(
+      latestStartMinutes,
+      Math.max(planningStartMinutes, snappedMinutes)
+    );
+
+    const startHour = Math.floor(safeStartMinutes / 60);
+    const startMinute = safeStartMinutes % 60;
+
+    setDraggingBlockPreview({ day: targetDay, hour: startHour, minute: startMinute });
+    setWeeklyBlocks(prev => prev.map(item =>
+      item.id === block.id
+        ? { ...item, day: targetDay, startHour, startMinute }
+        : item
+    ));
+  };
+
+  const startTouchBlockDrag = (e: React.TouchEvent<HTMLDivElement>, block: WeeklyBlock) => {
+    if (e.touches.length !== 1) return;
+    if ((e.target as HTMLElement).closest('[data-block-drag-ignore="true"]')) return;
+
+    activeBlockDragCleanupRef.current?.();
+
+    const touch = e.touches[0];
+    const touchId = touch.identifier;
+    const startX = touch.clientX;
+    const startY = touch.clientY;
+    let active = false;
+    let finished = false;
+
+    const activateDrag = () => {
+      if (finished) return;
+      active = true;
+      setSelectedBlockId(null);
+      setDraggingBlockId(block.id);
+      setDraggingBlockPreview({ day: block.day, hour: block.startHour, minute: block.startMinute || 0 });
+      suppressNextBlockClick(block.id);
+      if ('vibrate' in navigator) navigator.vibrate?.(35);
+    };
+
+    const timer = window.setTimeout(activateDrag, 420);
+
+    const findTouch = (list: TouchList) => {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].identifier === touchId) return list[i];
+      }
+      return null;
+    };
+
+    function handleMove(event: TouchEvent) {
+      const currentTouch = findTouch(event.touches);
+      if (!currentTouch) return;
+
+      // Si l'utilisateur commence à faire défiler avant l'appui long, on annule le drag.
+      if (!active) {
+        const distance = Math.hypot(currentTouch.clientX - startX, currentTouch.clientY - startY);
+        if (distance > 10) cleanup();
+        return;
+      }
+
+      if (event.cancelable) event.preventDefault();
+      updateDraggedBlockPosition(block, currentTouch.clientX, currentTouch.clientY);
+    }
+
+    function handleEnd(event: TouchEvent) {
+      const remainingTouch = findTouch(event.touches);
+      if (remainingTouch) return;
+
+      if (active) {
+        const finalTouch = findTouch(event.changedTouches);
+        if (finalTouch) updateDraggedBlockPosition(block, finalTouch.clientX, finalTouch.clientY);
+      }
+      cleanup();
+    }
+
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('touchmove', handleMove);
+      window.removeEventListener('touchend', handleEnd);
+      window.removeEventListener('touchcancel', handleEnd);
+      if (active) {
+        setDraggingBlockId(null);
+        setDraggingBlockPreview(null);
+        suppressNextBlockClick(block.id);
+      }
+      if (activeBlockDragCleanupRef.current === cleanup) {
+        activeBlockDragCleanupRef.current = null;
+      }
+    }
+
+    window.addEventListener('touchmove', handleMove, { passive: false });
+    window.addEventListener('touchend', handleEnd);
+    window.addEventListener('touchcancel', handleEnd);
+    activeBlockDragCleanupRef.current = cleanup;
+  };
+
+  const startMouseBlockDrag = (e: React.PointerEvent<HTMLDivElement>, block: WeeklyBlock) => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('[data-block-drag-ignore="true"]')) return;
+
+    activeBlockDragCleanupRef.current?.();
+
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let active = false;
+    let finished = false;
+
+    const activateDrag = () => {
+      if (finished) return;
+      active = true;
+      setSelectedBlockId(null);
+      setDraggingBlockId(block.id);
+      setDraggingBlockPreview({ day: block.day, hour: block.startHour, minute: block.startMinute || 0 });
+      suppressNextBlockClick(block.id);
+    };
+
+    const timer = window.setTimeout(activateDrag, 320);
+
+    function handleMove(event: PointerEvent) {
+      if (event.pointerId !== pointerId) return;
+
+      if (!active) {
+        const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
+        if (distance > 8) cleanup();
+        return;
+      }
+
+      if (event.cancelable) event.preventDefault();
+      updateDraggedBlockPosition(block, event.clientX, event.clientY);
+    }
+
+    function handleEnd(event: PointerEvent) {
+      if (event.pointerId !== pointerId) return;
+      if (active) updateDraggedBlockPosition(block, event.clientX, event.clientY);
+      cleanup();
+    }
+
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleEnd);
+      window.removeEventListener('pointercancel', handleEnd);
+      if (active) {
+        setDraggingBlockId(null);
+        setDraggingBlockPreview(null);
+        suppressNextBlockClick(block.id);
+      }
+      if (activeBlockDragCleanupRef.current === cleanup) {
+        activeBlockDragCleanupRef.current = null;
+      }
+    }
+
+    window.addEventListener('pointermove', handleMove, { passive: false });
+    window.addEventListener('pointerup', handleEnd);
+    window.addEventListener('pointercancel', handleEnd);
+    activeBlockDragCleanupRef.current = cleanup;
   };
 
   const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>, block: WeeklyBlock) => {
@@ -2501,7 +2733,7 @@ export default function Home() {
                    daysPerView = 3 => environ 3 jours visibles ; 1.15 => gros zoom ; 7 => semaine entière. */}
                <div className="flex h-full" style={{ minWidth: `${(7 / daysPerView) * 100}%` }}>
                  {WEEK_DAYS.map((dayName) => (
-                   <div key={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-visible">
+                   <div key={dayName} data-planning-day={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-visible">
                    
                    <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10" style={{ flexShrink: 0 }}>
                        <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
@@ -2532,6 +2764,7 @@ export default function Home() {
                      const topPx = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) * hourHeight;
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
+                     const isDragging = draggingBlockId === ev.id;
 
                      if (ev.kind === 'marker') {
                        const markerTop = topPx + PLANNING_HEADER_HEIGHT;
@@ -2542,10 +2775,14 @@ export default function Home() {
                        return (
                          <div
                            key={ev.id}
-                           className={`absolute left-1 right-1 h-6 flex items-center ${isSelected ? 'z-[450]' : 'z-20'}`}
+                           className={`absolute left-1 right-1 h-6 flex items-center select-none ${isDragging ? 'z-[850]' : isSelected ? 'z-[450]' : 'z-20'}`}
                            style={{ top: `${markerTop - 12}px` }}
+                           onTouchStart={(e) => startTouchBlockDrag(e, ev)}
+                           onPointerDown={(e) => startMouseBlockDrag(e, ev)}
+                           onContextMenu={(e) => e.preventDefault()}
                            onClick={(e) => {
                              e.stopPropagation();
+                             if (consumeSuppressedBlockClick(ev.id)) return;
                              if (selectedBlockId && selectedBlockId !== ev.id) {
                                setSelectedBlockId(null);
                              } else {
@@ -2558,11 +2795,12 @@ export default function Home() {
                                ev.color === 'blue' ? 'bg-blue-500' :
                                ev.color === 'green' ? 'bg-green-500' :
                                ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
-                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''}`}
+                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''} ${isDragging ? 'ring-2 ring-purple-500 ring-offset-2 scale-y-150 shadow-lg' : ''}`}
                            />
 
                            {isSelected && (
                              <div
+                               data-block-drag-ignore="true"
                                className="absolute left-1/2 -translate-x-1/2 w-[190px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
                                style={markerPopoverPosition}
                                onClick={(e) => e.stopPropagation()}
@@ -2611,19 +2849,23 @@ export default function Home() {
                      return (
                        <div 
                          key={ev.id} 
-                         className={`absolute left-1 right-1 p-0.5 ${isSelected ? 'z-[400]' : 'z-10'}`}
+                         className={`absolute left-1 right-1 p-0.5 ${isDragging ? 'z-[850]' : isSelected ? 'z-[400]' : 'z-10'}`}
                          style={{ top: `${topPx + PLANNING_HEADER_HEIGHT}px`, height: `${heightPx}px` }} 
                        >
                          <div 
+                           onTouchStart={(e) => startTouchBlockDrag(e, ev)}
+                           onPointerDown={(e) => startMouseBlockDrag(e, ev)}
+                           onContextMenu={(e) => e.preventDefault()}
                            onClick={(e) => { 
-                             e.stopPropagation(); 
+                             e.stopPropagation();
+                             if (consumeSuppressedBlockClick(ev.id)) return;
                              if (selectedBlockId && selectedBlockId !== ev.id) {
                                setSelectedBlockId(null);
                              } else {
                                setSelectedBlockId(isSelected ? null : ev.id); 
                              }
                            }}
-                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'}`}
+                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer select-none ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'} ${isDragging ? 'ring-2 ring-purple-500 shadow-xl scale-[1.02] opacity-90 cursor-grabbing' : ''}`}
                          >
                            
                            <div
@@ -2664,6 +2906,7 @@ export default function Home() {
 
                            {isSelected && (
                              <div 
+                               data-block-drag-ignore="true"
                                className="absolute bottom-0 left-0 right-0 h-6 bg-black/20 hover:bg-black/30 cursor-ns-resize flex justify-center items-end pb-1.5 z-30"
                                style={{ touchAction: 'none' }}
                                onPointerDown={(e) => handleResizeStart(e, ev)}
@@ -2678,6 +2921,7 @@ export default function Home() {
 
                            {isSelected && (
                              <div 
+                               data-block-drag-ignore="true"
                                className="absolute left-1/2 -translate-x-1/2 w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
                                style={popoverPosition}
                                onClick={(e) => e.stopPropagation()} 
@@ -2704,6 +2948,12 @@ export default function Home() {
              </div>
            </div>
            </div>
+
+           {draggingBlockId && draggingBlockPreview && (
+             <div className="fixed left-1/2 -translate-x-1/2 bottom-5 z-[20000] bg-gray-950 text-white px-4 py-2.5 rounded-full shadow-2xl text-sm font-black pointer-events-none border border-white/20">
+               ↔ {draggingBlockPreview.day} · {draggingBlockPreview.hour}h{draggingBlockPreview.minute.toString().padStart(2, '0')}
+             </div>
+           )}
 
            {/* Modal d'ajout / modification rapide */}
            {showBlockModal && (
