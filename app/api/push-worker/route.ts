@@ -112,22 +112,17 @@ const isAuthorized = (request: Request) => {
   return request.headers.get('authorization') === `Bearer ${PUSH_WORKER_SECRET}`;
 };
 
-let cachedSubscriptions: SubscriptionRow[] | null = null;
-
 const getSubscriptions = async () => {
-  if (cachedSubscriptions) return cachedSubscriptions;
-
   const { data, error } = await supabase.from('subscriptions').select('*');
   if (error) throw error;
 
-  // Sécurité supplémentaire : même si la base contient un doublon,
-  // on n'envoie qu'une seule fois par endpoint.
+  // On relit la table à chaque exécution : un nouvel abonnement doit pouvoir
+  // recevoir les rappels immédiatement, même si la fonction Vercel reste chaude.
+  // Le Map reste une protection supplémentaire contre d'éventuels doublons historiques.
   const subscriptions = (data || []) as SubscriptionRow[];
-  cachedSubscriptions = Array.from(
+  return Array.from(
     new Map(subscriptions.map((subscription) => [subscription.endpoint, subscription])).values()
   );
-
-  return cachedSubscriptions;
 };
 
 const sendPush = async (note: NoteRow, titlePrefix: string) => {
@@ -179,7 +174,6 @@ const sendPush = async (note: NoteRow, titlePrefix: string) => {
 
       if (error?.statusCode === 410 || error?.statusCode === 404) {
         await supabase.from('subscriptions').delete().eq('id', sub.id);
-        cachedSubscriptions = cachedSubscriptions?.filter((item) => item.id !== sub.id) || null;
       }
     }
   }

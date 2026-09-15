@@ -25,6 +25,9 @@ interface Note {
   snooze_until?: string | null;
   completed_at?: string | null;
   popup_active?: boolean;
+  last_reminded_at?: string | null;
+  last_email_reminded_at?: string | null;
+  last_popup_reminded_at?: string | null;
   created_at?: string | null; 
 }
 
@@ -555,6 +558,25 @@ export default function Home() {
     fetchTemplates();
   }, []);
 
+  // Resynchronise les données quand l'utilisateur revient dans l'application.
+  // C'est utile car les rappels peuvent être modifiés côté serveur pendant que
+  // l'application est en arrière-plan.
+  useEffect(() => {
+    const syncWhenVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      void fetchNotes();
+      void fetchTemplates();
+    };
+
+    window.addEventListener('focus', syncWhenVisible);
+    document.addEventListener('visibilitychange', syncWhenVisible);
+
+    return () => {
+      window.removeEventListener('focus', syncWhenVisible);
+      document.removeEventListener('visibilitychange', syncWhenVisible);
+    };
+  }, []);
+
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
@@ -616,6 +638,29 @@ export default function Home() {
     const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
   }, [notes]);
+
+  const acknowledgeTriggeredAlarm = async () => {
+    const alarm = triggeredAlarm;
+    if (!alarm) return;
+
+    // Ferme immédiatement la modale et met aussi l'état local à jour pour éviter
+    // que l'interface reste sur « En cours... » en attendant une resynchronisation.
+    setTriggeredAlarm(null);
+    locallyTriggeredAlarmIdsRef.current.add(alarm.id);
+    setNotes(prev => prev.map(note =>
+      note.id === alarm.id ? { ...note, popup_active: false } : note
+    ));
+
+    const { error } = await supabase
+      .from('notes')
+      .update({ popup_active: false })
+      .eq('id', alarm.id);
+
+    if (error) {
+      console.error('Erreur acquittement alarme :', error);
+      await fetchNotes();
+    }
+  };
 
   useEffect(() => {
     if (!isFocusMode) return;
@@ -1229,6 +1274,14 @@ export default function Home() {
       }
     };
 
+    recognition.onerror = (event: any) => {
+      const fatalErrors = new Set(['not-allowed', 'service-not-allowed', 'audio-capture']);
+      if (fatalErrors.has(event?.error)) {
+        recognition.manuallyStopped = true;
+        setListeningMode('none');
+      }
+    };
+
     recognition.onend = () => {
       if (!recognition.manuallyStopped) {
         try {
@@ -1243,7 +1296,9 @@ export default function Home() {
 
     try {
       recognition.start();
-    } catch (e) {}
+    } catch (e) {
+      setListeningMode('none');
+    }
   };
 
   const normalizeAiListItems = (value: unknown) => {
@@ -1369,6 +1424,19 @@ export default function Home() {
   };
 
   const loadProposalIntoForm = (data: AiProposal) => {
+    // On repart d'une configuration avancée propre pour éviter qu'un ancien
+    // rappel/e-mail resté dans le formulaire se mélange à la nouvelle proposition IA.
+    setSendImmediateEmail(false);
+    setActivateReminder(false);
+    setReminderPopupActive(false);
+    setDailyTime('09:00');
+    setShowDailyConfig(false);
+    setShowPopupConfig(false);
+    setPopupHours('');
+    setPopupMinutes('');
+    setShowCalendarConfig(false);
+    setTargetDate('');
+
     if (typeof data?.title === 'string') setNewTitle(data.title);
     if (typeof data?.content === 'string') setNewContent(data.content);
 
@@ -1518,7 +1586,17 @@ export default function Home() {
       ? editingDailyTime
       : '09:00';
 
-    const { error } = await supabase.from('notes').update({
+    const previousNote = notes.find(note => note.id === id);
+    const emailReminderChanged = Boolean(
+      editingReminderActive &&
+      (!previousNote?.reminder_active || previousNote?.daily_reminder_time !== safeDailyTime)
+    );
+    const popupReminderChanged = Boolean(
+      editingReminderPopupActive &&
+      (!previousNote?.reminder_popup_active || previousNote?.daily_reminder_time !== safeDailyTime)
+    );
+
+    const updatePayload: Record<string, any> = {
       title: editingTitle.trim(),
       content: editingContent.trim(),
       target_date: finalTargetDate,
@@ -1527,7 +1605,15 @@ export default function Home() {
       reminder_active: editingReminderActive,
       reminder_popup_active: editingReminderPopupActive,
       daily_reminder_time: safeDailyTime,
-    }).eq('id', id);
+    };
+
+    // Si l'utilisateur active un canal ou change l'heure de relance, on remet
+    // son horodatage à zéro afin que la nouvelle configuration puisse être
+    // prise en compte le jour même.
+    if (emailReminderChanged) updatePayload.last_email_reminded_at = null;
+    if (popupReminderChanged) updatePayload.last_popup_reminded_at = null;
+
+    const { error } = await supabase.from('notes').update(updatePayload).eq('id', id);
 
     if (error) {
       alert("Erreur lors de l'enregistrement : " + error.message);
@@ -1897,7 +1983,7 @@ export default function Home() {
           <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
             <span className="text-6xl">⏰</span><h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
             {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
-            <button onClick={() => setTriggeredAlarm(null)} className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full">J'AI COMPRIS (STOP)</button>
+            <button onClick={acknowledgeTriggeredAlarm} className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full">J'AI COMPRIS (STOP)</button>
           </div>
         </div>
       )}
