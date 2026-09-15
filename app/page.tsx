@@ -2234,7 +2234,7 @@ export default function Home() {
              {/* Colonnes des jours : vraie zone défilable horizontalement au doigt */}
              <div
                ref={daysScrollRef}
-               className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+               className={`flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain relative ${selectedBlockId ? 'z-40' : 'z-0'}`}
                style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y' }}
              >
                {/* La largeur varie avec le zoom horizontal.
@@ -2362,7 +2362,7 @@ export default function Home() {
 
                            {isSelected && (
                              <div 
-                               className="absolute left-1/2 -translate-x-1/2 w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[500] cursor-default"
+                               className="absolute left-1/2 -translate-x-1/2 w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
                                style={popoverPosition}
                                onClick={(e) => e.stopPropagation()} 
                              >
