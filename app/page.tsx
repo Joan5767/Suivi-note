@@ -195,6 +195,12 @@ export default function Home() {
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<PlanningTemplate[]>([]); 
   const [previewTemplate, setPreviewTemplate] = useState<PlanningTemplate | null>(null);
+
+  // Si un planning sauvegardé est chargé, on conserve son identité et son état d'origine.
+  // Ainsi, « Enregistrer » met à jour CE planning au lieu d'en créer un nouveau.
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+  const [activeTemplateName, setActiveTemplateName] = useState('');
+  const [planningSavedSnapshot, setPlanningSavedSnapshot] = useState<string | null>(null);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -282,6 +288,29 @@ export default function Home() {
     });
   };
 
+  // Empreinte stable d'un planning pour savoir s'il a réellement été modifié.
+  // L'ordre interne du tableau n'a pas d'importance visuelle, on trie donc par id.
+  const getPlanningSnapshot = (blocks: WeeklyBlock[]) =>
+    JSON.stringify(
+      blocks
+        .map(block => ({
+          id: block.id,
+          title: block.title,
+          day: block.day,
+          startHour: block.startHour,
+          startMinute: block.startMinute || 0,
+          duration: block.kind === 'marker' ? 0 : (block.duration || 60),
+          color: block.color,
+          kind: block.kind === 'marker' ? 'marker' : 'task',
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+    );
+
+  const currentPlanningSnapshot = getPlanningSnapshot(weeklyBlocks);
+  const isPlanningDirty = activeTemplateId
+    ? planningSavedSnapshot !== currentPlanningSnapshot
+    : weeklyBlocks.length > 0;
+
   // ==========================================
   // === PROTECTION CONTRE LE RAFRAÎCHISSEMENT ACCIDENTEL
   // ==========================================
@@ -344,6 +373,15 @@ export default function Home() {
         const draft = JSON.parse(savedPlanningDraft);
         const restoredBlocks = normalizeWeeklyBlocks(draft?.weeklyBlocks);
         if (restoredBlocks.length > 0) setWeeklyBlocks(restoredBlocks);
+        if (typeof draft?.activeTemplateId === 'string' && draft.activeTemplateId) {
+          setActiveTemplateId(draft.activeTemplateId);
+        }
+        if (typeof draft?.activeTemplateName === 'string') {
+          setActiveTemplateName(draft.activeTemplateName);
+        }
+        if (typeof draft?.planningSavedSnapshot === 'string') {
+          setPlanningSavedSnapshot(draft.planningSavedSnapshot);
+        }
       }
     } catch (error) {
       console.warn('Impossible de restaurer les brouillons locaux :', error);
@@ -419,12 +457,17 @@ export default function Home() {
     try {
       window.localStorage.setItem(
         PLANNING_DRAFT_STORAGE_KEY,
-        JSON.stringify({ weeklyBlocks })
+        JSON.stringify({
+          weeklyBlocks,
+          activeTemplateId,
+          activeTemplateName,
+          planningSavedSnapshot,
+        })
       );
     } catch (error) {
       console.warn('Impossible de sauvegarder le brouillon du planning :', error);
     }
-  }, [draftStorageReady, weeklyBlocks]);
+  }, [draftStorageReady, weeklyBlocks, activeTemplateId, activeTemplateName, planningSavedSnapshot]);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -1251,26 +1294,69 @@ export default function Home() {
 
   const saveTemplateToDB = async () => {
     if (weeklyBlocks.length === 0) {
-      alert("Ton planning est vide ! Ajoute des tâches avant de sauvegarder.");
+      alert("Ton planning est vide ! Ajoute des tâches ou des repères avant de sauvegarder.");
       return;
     }
 
-    const name = window.prompt("Donne un nom à ce modèle de semaine (ex: 'Semaine d'école' ou 'Vacances') :");
+    const normalizedBlocks = normalizeWeeklyBlocks(weeklyBlocks);
+
+    // Un planning déjà chargé doit être MIS À JOUR, jamais dupliqué silencieusement.
+    if (activeTemplateId) {
+      if (!isPlanningDirty) {
+        alert("✓ Ce planning est déjà à jour.");
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('planning_templates')
+          .update({ blocks: normalizedBlocks })
+          .eq('id', activeTemplateId)
+          .select('id')
+          .single();
+
+        if (error) throw error;
+        if (!data?.id) throw new Error("Le planning sauvegardé n'existe plus.");
+
+        setWeeklyBlocks(normalizedBlocks);
+        setPlanningSavedSnapshot(getPlanningSnapshot(normalizedBlocks));
+        await fetchTemplates();
+        alert(`✅ « ${activeTemplateName || 'Planning'} » a été mis à jour.`);
+      } catch (error: any) {
+        alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Aucun modèle chargé : on crée un nouveau planning une seule fois,
+    // puis il devient le planning actif pour les sauvegardes suivantes.
+    const name = window.prompt("Donne un nom à ce planning (ex: 'Semaine d'école' ou 'Vacances') :");
     const cleanName = name?.trim();
     if (!cleanName) return;
 
     setLoading(true);
     try {
-      const { error } = await supabase.from('planning_templates').insert([{
-        name: cleanName,
-        blocks: normalizeWeeklyBlocks(weeklyBlocks),
-      }]);
+      const { data, error } = await supabase
+        .from('planning_templates')
+        .insert([{
+          name: cleanName,
+          blocks: normalizedBlocks,
+        }])
+        .select('*')
+        .single();
 
       if (error) throw error;
 
+      const createdBlocks = normalizeWeeklyBlocks(data?.blocks || normalizedBlocks);
+      setWeeklyBlocks(createdBlocks);
+      setActiveTemplateId(data.id);
+      setActiveTemplateName(typeof data.name === 'string' ? data.name : cleanName);
+      setPlanningSavedSnapshot(getPlanningSnapshot(createdBlocks));
       await fetchTemplates();
-      window.location.hash = 'planning-gallery';
-      alert("✅ Modèle sauvegardé avec succès !");
+      alert("✅ Planning sauvegardé ! Les prochaines modifications mettront à jour ce même planning.");
     } catch (error: any) {
       alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
     } finally {
@@ -1279,17 +1365,92 @@ export default function Home() {
   };
 
   const loadTemplate = (template: PlanningTemplate) => {
+    const hasUnsavedChanges = activeTemplateId ? isPlanningDirty : weeklyBlocks.length > 0;
+
     if (
-      weeklyBlocks.length > 0 &&
-      !window.confirm(`Écraser ton planning actuel en cours de modification par "${template.name}" ?`)
+      hasUnsavedChanges &&
+      !window.confirm(
+        activeTemplateId
+          ? `Tu as des modifications non enregistrées sur « ${activeTemplateName || 'le planning en cours'} ». Les abandonner et charger « ${template.name} » ?`
+          : `Abandonner le brouillon actuel et charger « ${template.name} » ?`
+      )
     ) {
       return;
     }
 
-    setWeeklyBlocks(normalizeWeeklyBlocks(template.blocks));
+    const loadedBlocks = normalizeWeeklyBlocks(template.blocks);
+    setWeeklyBlocks(loadedBlocks);
+    setActiveTemplateId(template.id);
+    setActiveTemplateName(template.name);
+    setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
     setSelectedBlockId(null);
     setEditingBlockId(null);
     window.location.hash = 'planning';
+  };
+
+  const startNewPlanning = () => {
+    if (
+      weeklyBlocks.length > 0 &&
+      !window.confirm(
+        activeTemplateId && isPlanningDirty
+          ? `Commencer un nouveau planning ? Les modifications non enregistrées de « ${activeTemplateName || 'ton planning'} » seront abandonnées.`
+          : 'Commencer un nouveau planning vide ? Le planning sauvegardé actuel restera intact.'
+      )
+    ) {
+      return;
+    }
+
+    setWeeklyBlocks([]);
+    setActiveTemplateId(null);
+    setActiveTemplateName('');
+    setPlanningSavedSnapshot(null);
+    setSelectedBlockId(null);
+    setEditingBlockId(null);
+    setPreviewTemplate(null);
+    window.location.hash = 'planning';
+  };
+
+  const duplicateSavedTemplate = async (template: PlanningTemplate) => {
+    const proposedName = `${template.name} - copie`;
+    const name = window.prompt("Nom du planning dupliqué :", proposedName);
+    const cleanName = name?.trim();
+    if (!cleanName) return;
+
+    const duplicatedBlocks = normalizeWeeklyBlocks(template.blocks).map(block => ({
+      ...block,
+      id: crypto.randomUUID(),
+    }));
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('planning_templates')
+        .insert([{
+          name: cleanName,
+          blocks: duplicatedBlocks,
+        }])
+        .select('*')
+        .single();
+
+      if (error) throw error;
+
+      const createdBlocks = normalizeWeeklyBlocks(data?.blocks || duplicatedBlocks);
+      await fetchTemplates();
+
+      // La copie s'ouvre directement : on peut partir de la même base sans toucher à l'original.
+      setWeeklyBlocks(createdBlocks);
+      setActiveTemplateId(data.id);
+      setActiveTemplateName(typeof data.name === 'string' ? data.name : cleanName);
+      setPlanningSavedSnapshot(getPlanningSnapshot(createdBlocks));
+      setSelectedBlockId(null);
+      setEditingBlockId(null);
+      setPreviewTemplate(null);
+      window.location.hash = 'planning';
+    } catch (error: any) {
+      alert("Erreur lors de la duplication : " + (error?.message || "erreur inconnue"));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const deleteSavedTemplate = async (id: string) => {
@@ -1305,6 +1466,13 @@ export default function Home() {
     }
 
     if (previewTemplate?.id === id) setPreviewTemplate(null);
+    if (activeTemplateId === id) {
+      // Le contenu reste dans l'éditeur comme brouillon indépendant, mais il n'est plus lié
+      // à un planning supprimé.
+      setActiveTemplateId(null);
+      setActiveTemplateName('');
+      setPlanningSavedSnapshot(null);
+    }
     await fetchTemplates();
   };
 
@@ -2597,8 +2765,13 @@ export default function Home() {
                    onDrop={(e) => handleDrop(e, index)}
                  >
                    {/* En-tête de la carte */}
-                   <div className="bg-gray-900 text-white p-3 flex justify-between items-center">
-                     <h3 className="font-bold text-sm truncate">{tmpl.name}</h3>
+                   <div className="bg-gray-900 text-white p-3 flex justify-between items-center gap-2">
+                     <div className="min-w-0 flex items-center gap-2">
+                       <h3 className="font-bold text-sm truncate">{tmpl.name}</h3>
+                       {activeTemplateId === tmpl.id && (
+                         <span className="flex-shrink-0 bg-green-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full">EN COURS</span>
+                       )}
+                     </div>
                      <span className="text-gray-400 cursor-grab px-1">⣿</span>
                    </div>
 
@@ -2637,8 +2810,9 @@ export default function Home() {
                    <div className="p-2 flex flex-col gap-1.5 bg-gray-50">
                      <button onClick={() => setPreviewTemplate(tmpl)} className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold text-xs py-2 rounded-lg transition-colors">🔍 Aperçu</button>
                      <div className="flex gap-1.5">
-                       <button onClick={() => loadTemplate(tmpl)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 rounded-lg transition-colors">Charger</button>
-                       <button onClick={() => deleteSavedTemplate(tmpl.id)} className="bg-red-100 hover:bg-red-200 text-red-600 font-bold text-xs px-3 py-2 rounded-lg transition-colors">🗑️</button>
+                       <button onClick={() => loadTemplate(tmpl)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] py-2 rounded-lg transition-colors">Charger</button>
+                       <button onClick={() => duplicateSavedTemplate(tmpl)} className="flex-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold text-[11px] py-2 rounded-lg transition-colors">⧉ Dupliquer</button>
+                       <button onClick={() => deleteSavedTemplate(tmpl.id)} className="bg-red-100 hover:bg-red-200 text-red-600 font-bold text-xs px-2.5 py-2 rounded-lg transition-colors">🗑️</button>
                      </div>
                    </div>
                  </div>
@@ -2651,29 +2825,55 @@ export default function Home() {
       {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
-           <div className="flex items-center justify-between mb-2">
+           <div className="flex items-center justify-between mb-2 gap-3">
              <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
-             <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
+             <div className="text-right min-w-0">
+               <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
+               {activeTemplateId && (
+                 <p className={`text-[11px] font-bold truncate ${isPlanningDirty ? 'text-orange-600' : 'text-green-600'}`}>
+                   {activeTemplateName} · {isPlanningDirty ? 'modifié' : 'à jour'}
+                 </p>
+               )}
+             </div>
            </div>
 
            {/* Contrôles du modèle */}
            <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div className="flex gap-2">
-                <button onClick={saveTemplateToDB} className="flex-1 bg-gray-900 text-white font-bold py-3 rounded-xl text-sm shadow hover:bg-black transition-colors">
-                  💾 Sauvegarder ce brouillon
+                <button
+                  onClick={saveTemplateToDB}
+                  disabled={Boolean(activeTemplateId) && !isPlanningDirty}
+                  className={`flex-1 font-bold py-3 rounded-xl text-sm shadow transition-colors ${
+                    activeTemplateId && !isPlanningDirty
+                      ? 'bg-green-100 text-green-700 cursor-default'
+                      : 'bg-gray-900 text-white hover:bg-black'
+                  }`}
+                >
+                  {activeTemplateId
+                    ? (isPlanningDirty ? '💾 Enregistrer les modifications' : '✓ Planning à jour')
+                    : '💾 Sauvegarder comme nouveau planning'}
                 </button>
                 <button onClick={exportWeeklyICS} className="flex-1 bg-purple-600 text-white font-bold py-3 rounded-xl text-sm shadow hover:bg-purple-700 transition-colors">
                   📅 Exporter (Agenda)
                 </button>
               </div>
 
-              {/* BOUTON VERS LA GALERIE */}
-              <button 
-                onClick={() => window.location.hash = 'planning-gallery'} 
-                className="w-full bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
-              >
-                <span>📂</span> Ouvrir mes plannings sauvegardés ({savedTemplates.length})
-              </button>
+              {/* NOUVEAU PLANNING + GALERIE */}
+              <div className="flex gap-2">
+                <button
+                  onClick={startNewPlanning}
+                  className="bg-white border-2 border-gray-300 text-gray-800 font-bold px-4 py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors"
+                  title="Commencer un planning vide sans modifier le planning sauvegardé actuel"
+                >
+                  ➕ Nouveau
+                </button>
+                <button 
+                  onClick={() => window.location.hash = 'planning-gallery'} 
+                  className="flex-1 bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
+                >
+                  <span>📂</span> Mes plannings sauvegardés ({savedTemplates.length})
+                </button>
+              </div>
            </div>
 
            <div className="text-center mb-1">
