@@ -201,6 +201,7 @@ export default function Home() {
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const [activeTemplateName, setActiveTemplateName] = useState('');
   const [planningSavedSnapshot, setPlanningSavedSnapshot] = useState<string | null>(null);
+  const [showClosePlanningModal, setShowClosePlanningModal] = useState(false);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -1294,10 +1295,10 @@ export default function Home() {
     resizingBlockRef.current = null;
   };
 
-  const saveTemplateToDB = async () => {
+  const saveTemplateToDB = async (): Promise<boolean> => {
     if (weeklyBlocks.length === 0) {
       alert("Ton planning est vide ! Ajoute des tâches ou des repères avant de sauvegarder.");
-      return;
+      return false;
     }
 
     const normalizedBlocks = normalizeWeeklyBlocks(weeklyBlocks);
@@ -1306,7 +1307,7 @@ export default function Home() {
     if (activeTemplateId) {
       if (!isPlanningDirty) {
         alert("✓ Ce planning est déjà à jour.");
-        return;
+        return true;
       }
 
       setLoading(true);
@@ -1325,19 +1326,20 @@ export default function Home() {
         setPlanningSavedSnapshot(getPlanningSnapshot(normalizedBlocks));
         await fetchTemplates();
         alert(`✅ « ${activeTemplateName || 'Planning'} » a été mis à jour.`);
+        return true;
       } catch (error: any) {
         alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+        return false;
       } finally {
         setLoading(false);
       }
-      return;
     }
 
     // Aucun modèle chargé : on crée un nouveau planning une seule fois,
     // puis il devient le planning actif pour les sauvegardes suivantes.
     const name = window.prompt("Donne un nom à ce planning (ex: 'Semaine d'école' ou 'Vacances') :");
     const cleanName = name?.trim();
-    if (!cleanName) return;
+    if (!cleanName) return false;
 
     setLoading(true);
     try {
@@ -1359,11 +1361,42 @@ export default function Home() {
       setPlanningSavedSnapshot(getPlanningSnapshot(createdBlocks));
       await fetchTemplates();
       alert("✅ Planning sauvegardé ! Les prochaines modifications mettront à jour ce même planning.");
+      return true;
     } catch (error: any) {
       alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+      return false;
     } finally {
       setLoading(false);
     }
+  };
+
+  const closePlanningNow = () => {
+    setWeeklyBlocks([]);
+    setActiveTemplateId(null);
+    setActiveTemplateName('');
+    setPlanningSavedSnapshot(null);
+    setSelectedBlockId(null);
+    setEditingBlockId(null);
+    setPreviewTemplate(null);
+    setShowBlockModal(false);
+    setShowClosePlanningModal(false);
+    window.location.hash = 'planning';
+  };
+
+  const requestClosePlanning = () => {
+    const hasUnsavedChanges = activeTemplateId ? isPlanningDirty : weeklyBlocks.length > 0;
+
+    if (hasUnsavedChanges) {
+      setShowClosePlanningModal(true);
+      return;
+    }
+
+    closePlanningNow();
+  };
+
+  const saveAndClosePlanning = async () => {
+    const saved = await saveTemplateToDB();
+    if (saved) closePlanningNow();
   };
 
   const loadTemplate = (template: PlanningTemplate) => {
@@ -2729,6 +2762,46 @@ export default function Home() {
         </div>
       )}
 
+      {/* MODALE : FERMER LE PLANNING */}
+      {showClosePlanningModal && (
+        <div className="fixed inset-0 bg-black/70 z-[12000] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4">
+            <div>
+              <h2 className="text-xl font-black text-gray-900">Fermer le planning ?</h2>
+              <p className="text-sm text-gray-600 font-semibold mt-2">
+                {activeTemplateId
+                  ? <>Tu as des modifications non enregistrées sur <strong>« {activeTemplateName || 'ce planning'} »</strong>.</>
+                  : <>Ce nouveau planning contient des modifications qui ne sont pas encore sauvegardées.</>}
+              </p>
+            </div>
+
+            <button
+              onClick={() => void saveAndClosePlanning()}
+              disabled={loading}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-black py-3 rounded-xl shadow"
+            >
+              {loading ? 'Enregistrement…' : '💾 Enregistrer et fermer'}
+            </button>
+
+            <button
+              onClick={closePlanningNow}
+              disabled={loading}
+              className="w-full bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-700 font-black py-3 rounded-xl border border-red-200"
+            >
+              Fermer sans enregistrer
+            </button>
+
+            <button
+              onClick={() => setShowClosePlanningModal(false)}
+              disabled={loading}
+              className="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-800 font-bold py-3 rounded-xl"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ================= VUE : HUB PRINCIPAL ================= */}
       {mainMode === 'hub' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
@@ -2869,7 +2942,7 @@ export default function Home() {
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2 gap-3">
-             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
+             <button onClick={requestClosePlanning} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">✕ Fermer le planning</button>
              <div className="text-right min-w-0">
                <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
                {activeTemplateId && (
