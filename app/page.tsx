@@ -110,7 +110,7 @@ const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
 const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
 export default function Home() {
-  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning' | 'planning_gallery'>('hub');
+  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
@@ -729,6 +729,8 @@ export default function Home() {
         case '#notes-focus':
           setMainMode('notes'); setIsFocusMode(true); break;
         case '#planning':
+          setMainMode('planning_home'); break;
+        case '#planning-editor':
           setMainMode('planning'); break;
         case '#planning-gallery':
           setMainMode('planning_gallery'); break;
@@ -1385,7 +1387,7 @@ export default function Home() {
     setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
     setSelectedBlockId(null);
     setEditingBlockId(null);
-    window.location.hash = 'planning';
+    window.location.hash = 'planning-editor';
   };
 
   const startNewPlanning = () => {
@@ -1407,7 +1409,7 @@ export default function Home() {
     setSelectedBlockId(null);
     setEditingBlockId(null);
     setPreviewTemplate(null);
-    window.location.hash = 'planning';
+    window.location.hash = 'planning-editor';
   };
 
   const duplicateSavedTemplate = async (template: PlanningTemplate) => {
@@ -1445,7 +1447,7 @@ export default function Home() {
       setSelectedBlockId(null);
       setEditingBlockId(null);
       setPreviewTemplate(null);
-      window.location.hash = 'planning';
+      window.location.hash = 'planning-editor';
     } catch (error: any) {
       alert("Erreur lors de la duplication : " + (error?.message || "erreur inconnue"));
     } finally {
@@ -2740,11 +2742,52 @@ export default function Home() {
         </div>
       )}
 
+      {/* ================= VUE : ACCUEIL PLANNING ================= */}
+      {mainMode === 'planning_home' && (
+        <div className="flex flex-col items-center justify-center min-h-[78vh] gap-6 animate-fade-in">
+          <div className="w-full max-w-xl flex items-center justify-between mb-2">
+            <button
+              onClick={() => window.location.hash = 'hub'}
+              className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors"
+            >
+              ← Menu Principal
+            </button>
+            <h1 className="text-2xl font-black text-gray-800">Planning</h1>
+          </div>
+
+          <p className="text-sm text-gray-500 font-semibold text-center max-w-md -mt-2 mb-2">
+            Choisis si tu veux partir d'un planning vide ou ouvrir un planning déjà sauvegardé.
+          </p>
+
+          <button
+            onClick={startNewPlanning}
+            className="w-full max-w-md bg-blue-600 text-white p-7 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-5 text-left border-4 border-blue-500"
+          >
+            <span className="text-5xl flex-shrink-0">➕</span>
+            <span className="flex flex-col">
+              <span className="text-xl font-black">Nouveau planning</span>
+              <span className="text-sm font-semibold text-blue-100 mt-1">Commencer sur une semaine vide</span>
+            </span>
+          </button>
+
+          <button
+            onClick={() => window.location.hash = 'planning-gallery'}
+            className="w-full max-w-md bg-white text-gray-900 p-7 rounded-3xl shadow-lg hover:shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-5 text-left border-2 border-gray-300"
+          >
+            <span className="text-5xl flex-shrink-0">📂</span>
+            <span className="flex flex-col min-w-0">
+              <span className="text-xl font-black">Plannings sauvegardés</span>
+              <span className="text-sm font-semibold text-gray-500 mt-1">{savedTemplates.length} planning{savedTemplates.length > 1 ? 's' : ''} disponible{savedTemplates.length > 1 ? 's' : ''}</span>
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* ================= NOUVELLE VUE : GALERIE DES PLANNINGS ================= */}
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-4">
-             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Retour à l'éditeur</button>
+             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
              <h1 className="text-xl font-black text-gray-800">Mes Plannings</h1>
            </div>
 
@@ -2826,7 +2869,7 @@ export default function Home() {
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-2 gap-3">
-             <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Menu Principal</button>
+             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
              <div className="text-right min-w-0">
                <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
                {activeTemplateId && (
