@@ -287,6 +287,16 @@ export default function Home() {
     Math.min(14, 14 - Math.max(0, daysPerView - 3) * 1.5)
   );
 
+  // Taille du texte des tâches liée aux deux niveaux de zoom du planning.
+  // - Zoom horizontal : moins de jours visibles = colonnes plus larges = texte plus grand.
+  // - Zoom vertical : heures plus hautes = davantage de place = texte plus grand.
+  // La taille reste bornée pour conserver une bonne lisibilité aux extrêmes.
+  const horizontalTaskFontBase = Math.max(7, Math.min(14, 10 + (3 - daysPerView) * 1.2));
+  const verticalTaskFontFactor = Math.max(0.85, Math.min(1.35, Math.sqrt(hourHeight / 64)));
+  const planningTaskFontSize = Math.max(7, Math.min(14, horizontalTaskFontBase * verticalTaskFontFactor));
+  const planningTaskTimeFontSize = Math.max(6, Math.min(12, planningTaskFontSize * 0.84));
+  const planningTaskPadding = Math.max(2, Math.min(6, planningTaskFontSize * 0.48));
+
   useEffect(() => {
     currentHourHeight.current = hourHeight;
   }, [hourHeight]);
@@ -2262,6 +2272,21 @@ export default function Home() {
                      const topPx = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) * hourHeight;
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
+
+                     // Le contenu du bloc s'adapte à sa taille réelle à l'écran.
+                     // Une tâche haute peut afficher plusieurs lignes ; une tâche très petite
+                     // privilégie le titre et masque l'heure si elle n'a pas assez de place.
+                     const showTaskTime = heightPx >= planningTaskFontSize * 3.5;
+                     const taskTimeHeight = showTaskTime ? planningTaskTimeFontSize * 1.25 + 2 : 0;
+                     const resizeHandleSpace = isSelected ? 24 : 0;
+                     const taskTitleAvailableHeight = Math.max(
+                       planningTaskFontSize * 1.15,
+                       heightPx - (planningTaskPadding * 2) - taskTimeHeight - resizeHandleSpace
+                     );
+                     const taskTitleLineCount = Math.max(
+                       1,
+                       Math.min(6, Math.floor(taskTitleAvailableHeight / (planningTaskFontSize * 1.15)))
+                     );
                      
                      const popoverPosition = ev.startHour < 10 
                        ? { top: 'calc(100% + 5px)' } 
@@ -2285,11 +2310,38 @@ export default function Home() {
                            className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'}`}
                          >
                            
-                           <div className="p-1.5 pt-1 flex-1 overflow-hidden pointer-events-none">
-                             <span className="text-[10px] font-bold leading-tight line-clamp-1">{ev.title}</span>
-                             {(ev.duration || 60) >= 45 && (
-                               <span className="text-[9px] opacity-70 block mt-0.5">
-                                 {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'} 
+                           <div
+                             className="flex-1 overflow-hidden pointer-events-none"
+                             style={{
+                               padding: `${planningTaskPadding}px`,
+                               paddingTop: `${Math.max(2, planningTaskPadding * 0.75)}px`,
+                             }}
+                           >
+                             <span
+                               className="font-bold block"
+                               style={{
+                                 fontSize: `${planningTaskFontSize}px`,
+                                 lineHeight: 1.15,
+                                 display: '-webkit-box',
+                                 WebkitBoxOrient: 'vertical',
+                                 WebkitLineClamp: taskTitleLineCount,
+                                 overflow: 'hidden',
+                                 overflowWrap: 'anywhere',
+                               }}
+                             >
+                               {ev.title}
+                             </span>
+                             {showTaskTime && (
+                               <span
+                                 className="opacity-70 block"
+                                 style={{
+                                   marginTop: `${Math.max(1, planningTaskFontSize * 0.12)}px`,
+                                   fontSize: `${planningTaskTimeFontSize}px`,
+                                   lineHeight: 1.1,
+                                   whiteSpace: 'nowrap',
+                                 }}
+                               >
+                                 {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'}
                                </span>
                              )}
                            </div>
