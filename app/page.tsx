@@ -45,6 +45,21 @@ interface PlanningTemplate {
   created_at?: string | null;
 }
 
+interface AiProposal {
+  title: string;
+  content: string;
+  importance: 'vert' | 'orange' | 'rouge';
+  is_list: boolean;
+  list_items: string[];
+  calendar_time: string | null;
+  popup_time: string | null;
+  send_email: boolean;
+  daily_reminder: boolean;
+  daily_reminder_time: string | null;
+  daily_reminder_email: boolean;
+  daily_reminder_popup: boolean;
+}
+
 const getSafeTime = (dateStr?: string | null) => {
   if (!dateStr) return 0;
   const s = dateStr.trim().replace(' ', 'T');
@@ -143,7 +158,7 @@ export default function Home() {
 
   const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
-  const [aiProposal, setAiProposal] = useState<any>(null);
+  const [aiProposal, setAiProposal] = useState<AiProposal | null>(null);
   const recognitionRef = useRef<any>(null);
   const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
   const locallyTriggeredAlarmIdsRef = useRef<Set<string>>(new Set());
@@ -1161,7 +1176,8 @@ export default function Home() {
         throw new Error(errData.error || "Erreur inconnue");
       }
 
-      setAiProposal(await res.json());
+      const proposal = await res.json();
+      setAiProposal(proposal as AiProposal);
     } catch (e: any) {
       alert("❌ Erreur IA/réseau : " + (e?.message || "erreur inconnue"));
     } finally {
@@ -1230,7 +1246,34 @@ export default function Home() {
     } catch (e) {}
   };
 
-  const confirmAiNote = async (data: any) => {
+  const normalizeAiListItems = (value: unknown) => {
+    if (!Array.isArray(value)) return [] as string[];
+
+    return value
+      .filter((item): item is string => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+  };
+
+  const getAiReminderChannels = (data: Partial<AiProposal>) => {
+    const dailyReminderRequested = Boolean(data.daily_reminder);
+    const explicitEmail = Boolean(data.daily_reminder_email);
+    const explicitPopup = Boolean(data.daily_reminder_popup);
+
+    // Compatibilité avec les anciennes réponses IA : un simple « rappelle-moi tous les jours »
+    // devient un push, ce qui correspond mieux au sens naturel de « rappel » qu'un e-mail.
+    if (dailyReminderRequested && !explicitEmail && !explicitPopup) {
+      return { email: false, popup: true };
+    }
+
+    return {
+      email: explicitEmail,
+      popup: explicitPopup,
+    };
+  };
+
+  const confirmAiNote = async (data: AiProposal) => {
     setLoading(true);
 
     try {
@@ -1249,7 +1292,10 @@ export default function Home() {
 
       const targetDateValue = popupIso || calendarIso;
       const isPopupActive = Boolean(popupIso);
-      const dailyReminderActive = Boolean(data?.daily_reminder);
+      const listItems = normalizeAiListItems(data?.list_items);
+      const isList = Boolean(data?.is_list || listItems.length > 0);
+      const reminderChannels = getAiReminderChannels(data || {});
+      const dailyReminderActive = reminderChannels.email || reminderChannels.popup;
       const dailyReminderTime =
         typeof data?.daily_reminder_time === 'string' &&
         /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
@@ -1261,14 +1307,18 @@ export default function Home() {
           ? data.importance
           : 'vert';
 
+      const subtasks = isList
+        ? listItems.map(text => ({ id: crypto.randomUUID(), text, completed: false }))
+        : [];
+
       const { error } = await supabase.from('notes').insert([{
         title: typeof data?.title === 'string' ? data.title.trim() : '',
         content: typeof data?.content === 'string' ? data.content.trim() : '',
         importance: safeImportance,
-        subtasks: [],
-        is_list: Boolean(data?.is_list),
-        reminder_active: dailyReminderActive,
-        reminder_popup_active: false,
+        subtasks,
+        is_list: isList,
+        reminder_active: dailyReminderActive && reminderChannels.email,
+        reminder_popup_active: dailyReminderActive && reminderChannels.popup,
         daily_reminder_time: dailyReminderTime,
         target_date: targetDateValue,
         popup_active: isPopupActive,
@@ -1318,7 +1368,7 @@ export default function Home() {
     }
   };
 
-  const loadProposalIntoForm = (data: any) => {
+  const loadProposalIntoForm = (data: AiProposal) => {
     if (typeof data?.title === 'string') setNewTitle(data.title);
     if (typeof data?.content === 'string') setNewContent(data.content);
 
@@ -1326,7 +1376,10 @@ export default function Home() {
       setImportance(data.importance);
     }
 
-    if (data?.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+    const listItems = normalizeAiListItems(data?.list_items);
+    const isList = Boolean(data?.is_list || listItems.length > 0);
+    setNoteMode(isList ? 'list' : 'text');
+    setNewListItems(isList ? listItems : []);
 
     if (data?.send_email) {
       setSendImmediateEmail(true);
@@ -1334,7 +1387,9 @@ export default function Home() {
     }
 
     if (data?.daily_reminder) {
-      setActivateReminder(true);
+      const reminderChannels = getAiReminderChannels(data);
+      setActivateReminder(reminderChannels.email);
+      setReminderPopupActive(reminderChannels.popup);
       setDailyTime(
         typeof data.daily_reminder_time === 'string' &&
         /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
@@ -1895,9 +1950,27 @@ export default function Home() {
               <p><strong className="text-purple-700">Titre :</strong> {aiProposal.title || '(Vide)'}</p>
               {aiProposal.content && <p><strong className="text-purple-700">Contenu :</strong> {aiProposal.content}</p>}
               <p><strong className="text-purple-700">Format :</strong> {aiProposal.is_list ? 'Liste de tâches ✅' : 'Note texte 📝'}</p>
+              {aiProposal.is_list && aiProposal.list_items?.length > 0 && (
+                <div className="bg-white border border-purple-200 rounded-lg p-3">
+                  <strong className="text-purple-700">Éléments :</strong>
+                  <ul className="list-disc pl-5 mt-1 space-y-1 text-sm">
+                    {aiProposal.list_items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
               <p><strong className="text-purple-700">Priorité :</strong> {aiProposal.importance === 'rouge' ? '🔴 Urgente' : aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'}</p>
               {aiProposal.send_email && <p className="bg-blue-100 p-2 rounded text-blue-900 border border-blue-200"><strong>📨 E-mail :</strong> Envoi immédiat activé</p>}
-              {aiProposal.daily_reminder && <p className="bg-green-100 p-2 rounded text-green-900 border border-green-200"><strong>🔄 Relance quotidienne :</strong> Activée à {aiProposal.daily_reminder_time || '09:00'}</p>}
+              {aiProposal.daily_reminder && (
+                <p className="bg-green-100 p-2 rounded text-green-900 border border-green-200">
+                  <strong>🔄 Relance quotidienne :</strong> {aiProposal.daily_reminder_time || '09:00'}
+                  {' — '}
+                  {aiProposal.daily_reminder_email && aiProposal.daily_reminder_popup
+                    ? 'e-mail + notification'
+                    : aiProposal.daily_reminder_email
+                      ? 'e-mail'
+                      : 'notification'}
+                </p>
+              )}
               {aiProposal.popup_time && <p className="bg-indigo-100 p-2 rounded text-indigo-900 border border-indigo-200"><strong>⏰ Alarme pop-up :</strong> {new Date(getSafeTime(aiProposal.popup_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}</p>}
               {aiProposal.calendar_time && <p className="bg-purple-100 p-2 rounded text-purple-900 border border-purple-200"><strong>📅 Ajout Agenda :</strong> {new Date(getSafeTime(aiProposal.calendar_time)).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'})}</p>}
             </div>
