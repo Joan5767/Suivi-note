@@ -25,6 +25,7 @@ interface Note {
   snooze_until?: string | null;
   completed_at?: string | null;
   popup_active?: boolean;
+  duration_minutes?: number | null;
   last_reminded_at?: string | null;
   last_email_reminded_at?: string | null;
   last_popup_reminded_at?: string | null;
@@ -39,6 +40,7 @@ interface WeeklyBlock {
   startMinute: number;
   duration: number;
   color: string;
+  kind?: 'task' | 'marker';
 }
 
 interface PlanningTemplate {
@@ -102,6 +104,11 @@ const formatDuration = (totalMinutes: number) => {
   return `${m} min`;
 };
 
+// Sauvegarde locale des brouillons : protège les saisies en cas de rafraîchissement
+// accidentel, fermeture du navigateur ou redémarrage de la PWA.
+const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
+const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
+
 export default function Home() {
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -116,6 +123,8 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
+  const [newDurationHours, setNewDurationHours] = useState('');
+  const [newDurationMinutes, setNewDurationMinutes] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -157,6 +166,8 @@ export default function Home() {
   const [editingReminderActive, setEditingReminderActive] = useState(false);
   const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
+  const [editingDurationHours, setEditingDurationHours] = useState('');
+  const [editingDurationMinutes, setEditingDurationMinutes] = useState('');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
   const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
@@ -192,6 +203,11 @@ export default function Home() {
   const [blockTime, setBlockTime] = useState('09:00'); 
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
+  const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
+
+  // Passe à true seulement après la restauration initiale de localStorage. Cela évite
+  // que les valeurs par défaut écrasent un brouillon existant au premier rendu.
+  const [draftStorageReady, setDraftStorageReady] = useState(false);
 
   // Redimensionnement des blocs : une ref évite les pertes d'événements pendant le drag tactile/souris.
   const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; maxDuration: number; pointerId: number } | null>(null);
@@ -227,10 +243,15 @@ export default function Home() {
       const startMinute = safeStart % 60;
       const maxDuration = Math.max(15, planningEndMinutes - safeStart);
 
+      const kind: 'task' | 'marker' = raw.kind === 'marker' ? 'marker' : 'task';
+
       const rawDuration = Number(raw.duration ?? 60);
       const snappedDuration =
         Math.round((Number.isFinite(rawDuration) ? rawDuration : 60) / 15) * 15;
-      const duration = Math.min(maxDuration, Math.max(15, snappedDuration));
+      const duration =
+        kind === 'marker'
+          ? 0
+          : Math.min(maxDuration, Math.max(15, snappedDuration));
 
       return [{
         id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
@@ -243,9 +264,154 @@ export default function Home() {
           typeof raw.color === 'string' && allowedColors.has(raw.color)
             ? raw.color
             : 'blue',
+        kind,
       }];
     });
   };
+
+  // ==========================================
+  // === PROTECTION CONTRE LE RAFRAÎCHISSEMENT ACCIDENTEL
+  // ==========================================
+  useEffect(() => {
+    // Sur Chrome/Android et les navigateurs compatibles, ceci désactive le geste
+    // « tirer vers le bas pour rafraîchir » sans empêcher le scroll normal de la page.
+    const html = document.documentElement;
+    const body = document.body;
+    const previousHtmlOverscrollY = html.style.overscrollBehaviorY;
+    const previousBodyOverscrollY = body.style.overscrollBehaviorY;
+
+    html.style.overscrollBehaviorY = 'none';
+    body.style.overscrollBehaviorY = 'none';
+
+    return () => {
+      html.style.overscrollBehaviorY = previousHtmlOverscrollY;
+      body.style.overscrollBehaviorY = previousBodyOverscrollY;
+    };
+  }, []);
+
+  // ==========================================
+  // === RESTAURATION AUTOMATIQUE DES BROUILLONS
+  // ==========================================
+  useEffect(() => {
+    try {
+      const savedNoteDraft = window.localStorage.getItem(NOTE_DRAFT_STORAGE_KEY);
+      if (savedNoteDraft) {
+        const draft = JSON.parse(savedNoteDraft);
+
+        if (typeof draft.newTitle === 'string') setNewTitle(draft.newTitle);
+        if (typeof draft.newContent === 'string') setNewContent(draft.newContent);
+        if (draft.importance === 'vert' || draft.importance === 'orange' || draft.importance === 'rouge') {
+          setImportance(draft.importance);
+        }
+        if (draft.noteMode === 'text' || draft.noteMode === 'list') setNoteMode(draft.noteMode);
+        if (Array.isArray(draft.newListItems)) {
+          setNewListItems(draft.newListItems.filter((item: unknown): item is string => typeof item === 'string'));
+        }
+        if (typeof draft.currentNewListItem === 'string') setCurrentNewListItem(draft.currentNewListItem);
+        if (typeof draft.newDurationHours === 'string') setNewDurationHours(draft.newDurationHours);
+        if (typeof draft.newDurationMinutes === 'string') setNewDurationMinutes(draft.newDurationMinutes);
+
+        if (typeof draft.showAdvancedSettings === 'boolean') setShowAdvancedSettings(draft.showAdvancedSettings);
+        if (typeof draft.sendImmediateEmail === 'boolean') setSendImmediateEmail(draft.sendImmediateEmail);
+        if (typeof draft.showPopupConfig === 'boolean') setShowPopupConfig(draft.showPopupConfig);
+        if (typeof draft.popupHours === 'string') setPopupHours(draft.popupHours);
+        if (typeof draft.popupMinutes === 'string') setPopupMinutes(draft.popupMinutes);
+        if (typeof draft.showDailyConfig === 'boolean') setShowDailyConfig(draft.showDailyConfig);
+        if (typeof draft.activateReminder === 'boolean') setActivateReminder(draft.activateReminder);
+        if (typeof draft.reminderPopupActive === 'boolean') setReminderPopupActive(draft.reminderPopupActive);
+        if (typeof draft.dailyTime === 'string') setDailyTime(draft.dailyTime);
+        if (typeof draft.showCalendarConfig === 'boolean') setShowCalendarConfig(draft.showCalendarConfig);
+        if (typeof draft.targetDate === 'string') setTargetDate(draft.targetDate);
+        if (typeof draft.enableGoogleCal === 'boolean') setEnableGoogleCal(draft.enableGoogleCal);
+        if (typeof draft.enableICal === 'boolean') setEnableICal(draft.enableICal);
+      }
+
+      const savedPlanningDraft = window.localStorage.getItem(PLANNING_DRAFT_STORAGE_KEY);
+      if (savedPlanningDraft) {
+        const draft = JSON.parse(savedPlanningDraft);
+        const restoredBlocks = normalizeWeeklyBlocks(draft?.weeklyBlocks);
+        if (restoredBlocks.length > 0) setWeeklyBlocks(restoredBlocks);
+      }
+    } catch (error) {
+      console.warn('Impossible de restaurer les brouillons locaux :', error);
+    } finally {
+      setDraftStorageReady(true);
+    }
+  }, []);
+
+  // Sauvegarde automatiquement le formulaire de création de note à chaque modification.
+  useEffect(() => {
+    if (!draftStorageReady) return;
+
+    try {
+      window.localStorage.setItem(
+        NOTE_DRAFT_STORAGE_KEY,
+        JSON.stringify({
+          newTitle,
+          newContent,
+          importance,
+          noteMode,
+          newListItems,
+          currentNewListItem,
+          newDurationHours,
+          newDurationMinutes,
+          showAdvancedSettings,
+          sendImmediateEmail,
+          showPopupConfig,
+          popupHours,
+          popupMinutes,
+          showDailyConfig,
+          activateReminder,
+          reminderPopupActive,
+          dailyTime,
+          showCalendarConfig,
+          targetDate,
+          enableGoogleCal,
+          enableICal,
+        })
+      );
+    } catch (error) {
+      console.warn('Impossible de sauvegarder le brouillon de note :', error);
+    }
+  }, [
+    draftStorageReady,
+    newTitle,
+    newContent,
+    importance,
+    noteMode,
+    newListItems,
+    currentNewListItem,
+    newDurationHours,
+    newDurationMinutes,
+    showAdvancedSettings,
+    sendImmediateEmail,
+    showPopupConfig,
+    popupHours,
+    popupMinutes,
+    showDailyConfig,
+    activateReminder,
+    reminderPopupActive,
+    dailyTime,
+    showCalendarConfig,
+    targetDate,
+    enableGoogleCal,
+    enableICal,
+  ]);
+
+  // Sauvegarde également le planning en cours tant qu'il n'a pas forcément été enregistré
+  // dans Supabase. Un refresh accidentel ne détruit donc plus la semaine en préparation.
+  useEffect(() => {
+    if (!draftStorageReady) return;
+
+    try {
+      window.localStorage.setItem(
+        PLANNING_DRAFT_STORAGE_KEY,
+        JSON.stringify({ weeklyBlocks })
+      );
+    } catch (error) {
+      console.warn('Impossible de sauvegarder le brouillon du planning :', error);
+    }
+  }, [draftStorageReady, weeklyBlocks]);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -706,6 +872,7 @@ export default function Home() {
     setBlockTime(`${h}:${m}`);
     setBlockTitle('');
     setBlockColor('blue');
+    setBlockKind('task');
     setShowBlockModal(true);
   };
 
@@ -717,6 +884,7 @@ export default function Home() {
     setBlockTime(`${h}:${m}`);
     setBlockTitle(block.title);
     setBlockColor(block.color);
+    setBlockKind(block.kind === 'marker' ? 'marker' : 'task');
     setShowBlockModal(true);
   };
 
@@ -747,26 +915,31 @@ export default function Home() {
     if (editingBlockId) {
       setWeeklyBlocks(prev => prev.map(b => {
         if (b.id !== editingBlockId) return b;
-        const safeDuration = Math.min(maxDuration, Math.max(15, b.duration || 60));
+        const safeDuration =
+          blockKind === 'marker'
+            ? 0
+            : Math.min(maxDuration, Math.max(15, b.duration || 60));
         return {
           ...b,
-          title: blockTitle,
+          title: blockTitle.trim(),
           day: blockDay,
           startHour,
           startMinute,
           duration: safeDuration,
-          color: blockColor
+          color: blockColor,
+          kind: blockKind,
         };
       }));
     } else {
       const newBlock: WeeklyBlock = {
         id: crypto.randomUUID(),
-        title: blockTitle,
+        title: blockTitle.trim(),
         day: blockDay,
         startHour,
         startMinute,
-        duration: Math.min(60, maxDuration),
-        color: blockColor
+        duration: blockKind === 'marker' ? 0 : Math.min(60, maxDuration),
+        color: blockColor,
+        kind: blockKind,
       };
       setWeeklyBlocks(prev => [...prev, newBlock]);
     }
@@ -777,7 +950,7 @@ export default function Home() {
   };
 
   const deleteBlock = (id: string) => {
-    if (window.confirm("Es-tu sûr de vouloir supprimer cette tâche de ton planning ?")) {
+    if (window.confirm("Es-tu sûr de vouloir supprimer cet élément de ton planning ?")) {
       setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
       setSelectedBlockId(null);
     }
@@ -937,7 +1110,7 @@ export default function Home() {
     let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\n";
     const daysMap: Record<string, number> = { 'Dimanche': 0, 'Lundi': 1, 'Mardi': 2, 'Mercredi': 3, 'Jeudi': 4, 'Vendredi': 5, 'Samedi': 6 };
     
-    weeklyBlocks.forEach(block => {
+    weeklyBlocks.filter(block => block.kind !== 'marker').forEach(block => {
       const today = new Date();
       const targetDay = daysMap[block.day];
       const date = new Date(today);
@@ -1059,6 +1232,10 @@ export default function Home() {
               .map(item => ({ id: crypto.randomUUID(), text: item, completed: false }))
           : [];
 
+      const durationHours = Math.max(0, Number.parseInt(newDurationHours || '0', 10) || 0);
+      const durationMinutesPart = Math.max(0, Number.parseInt(newDurationMinutes || '0', 10) || 0);
+      const totalDurationMinutes = Math.min(7 * 24 * 60, durationHours * 60 + durationMinutesPart);
+
       const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
 
       const { error } = await supabase.from('notes').insert([{
@@ -1072,6 +1249,7 @@ export default function Home() {
         daily_reminder_time: safeDailyTime,
         target_date: finalTargetDate,
         popup_active: finalPopupActive,
+        duration_minutes: totalDurationMinutes > 0 ? totalDurationMinutes : null,
       }]);
 
       if (error) throw error;
@@ -1107,6 +1285,8 @@ export default function Home() {
       setImportance('vert');
       setNewListItems([]);
       setCurrentNewListItem('');
+      setNewDurationHours('');
+      setNewDurationMinutes('');
       setSendImmediateEmail(false);
       setShowPopupConfig(false);
       setPopupHours('');
@@ -1507,15 +1687,20 @@ export default function Home() {
     window.location.hash = 'notes-create';
   };
 
-  const formatDatesForCalendar = (dateString: string) => {
+  const formatDatesForCalendar = (dateString: string, durationMinutes?: number | null) => {
     const time = getSafeTime(dateString);
     if (!time) return null;
 
     const formatUtc = (date: Date) =>
       date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
+    const safeDurationMinutes =
+      typeof durationMinutes === 'number' && Number.isFinite(durationMinutes) && durationMinutes > 0
+        ? Math.min(7 * 24 * 60, Math.round(durationMinutes))
+        : 60;
+
     const date = new Date(time);
-    const endDate = new Date(time + 60 * 60 * 1000);
+    const endDate = new Date(time + safeDurationMinutes * 60 * 1000);
 
     return {
       start: formatUtc(date),
@@ -1524,7 +1709,7 @@ export default function Home() {
   };
 
   const getGoogleCalendarLink = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '');
+    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
     if (!dates) return '#';
 
     const title = encodeURIComponent(note.title || 'Note');
@@ -1537,7 +1722,7 @@ export default function Home() {
   };
 
   const downloadICS = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '');
+    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
     if (!dates) return;
 
     const uid = `${note.id}@suivi-note`;
@@ -1606,6 +1791,10 @@ export default function Home() {
       (!previousNote?.reminder_popup_active || previousNote?.daily_reminder_time !== safeDailyTime)
     );
 
+    const editDurationHours = Math.max(0, Number.parseInt(editingDurationHours || '0', 10) || 0);
+    const editDurationMinutesPart = Math.max(0, Number.parseInt(editingDurationMinutes || '0', 10) || 0);
+    const editTotalDurationMinutes = Math.min(7 * 24 * 60, editDurationHours * 60 + editDurationMinutesPart);
+
     const updatePayload: Record<string, any> = {
       title: editingTitle.trim(),
       content: editingContent.trim(),
@@ -1615,6 +1804,7 @@ export default function Home() {
       reminder_active: editingReminderActive,
       reminder_popup_active: editingReminderPopupActive,
       daily_reminder_time: safeDailyTime,
+      duration_minutes: editTotalDurationMinutes > 0 ? editTotalDurationMinutes : null,
     };
 
     // Si l'utilisateur active un canal ou change l'heure de relance, on remet
@@ -1640,6 +1830,9 @@ export default function Home() {
     setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
     setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
     setEditingReminderPopupActive(note.reminder_popup_active || false); setEditingDailyTime(note.daily_reminder_time || '09:00');
+    const noteDuration = typeof note.duration_minutes === 'number' && note.duration_minutes > 0 ? note.duration_minutes : 0;
+    setEditingDurationHours(noteDuration > 0 ? Math.floor(noteDuration / 60).toString() : '');
+    setEditingDurationMinutes(noteDuration > 0 ? (noteDuration % 60).toString() : '');
     setShowEditingPopupConfig(false); setShowEditingDailyConfig(false); setShowEditingExactDateConfig(false);
     setEditingPopupHours(''); setEditingPopupMinutes('');
   };
@@ -1817,6 +2010,14 @@ export default function Home() {
               <option value="rouge">🔴 Priorité Urgente</option>
             </select>
 
+            <div className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 p-2">
+              <span className="text-xs font-bold text-amber-900 whitespace-nowrap">⏱ Durée :</span>
+              <input type="number" min="0" max="168" placeholder="0" value={editingDurationHours} onChange={(e) => setEditingDurationHours(e.target.value)} className="w-14 p-1 border border-amber-300 rounded text-center text-black text-xs bg-white" />
+              <span className="text-xs font-bold text-amber-900">h</span>
+              <input type="number" min="0" max="59" placeholder="0" value={editingDurationMinutes} onChange={(e) => setEditingDurationMinutes(e.target.value)} className="w-14 p-1 border border-amber-300 rounded text-center text-black text-xs bg-white" />
+              <span className="text-xs font-bold text-amber-900">min</span>
+            </div>
+
             <div className="flex flex-col">
               <button type="button" onClick={() => setShowEditingDailyConfig(!showEditingDailyConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingDailyConfig ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-green-50 text-green-800 border-green-200 hover:bg-green-100'}`}>
                 <span>🔄 Configurer les relances</span> <span>{showEditingDailyConfig ? '▲' : '▼'}</span>
@@ -1885,6 +2086,11 @@ export default function Home() {
              )}
              <div className={`font-bold text-base ${showArchived === true ? 'text-gray-500' : 'text-gray-900'}`}>{note.title}</div>
              <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{note.content}</div>
+             {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
+               <div className={`mt-1 text-[11px] font-bold ${showArchived === true ? 'text-gray-400' : 'text-amber-700'}`}>
+                 ⏱ Durée : {formatDuration(note.duration_minutes)}
+               </div>
+             )}
           </div>
         )}
       </div>
@@ -2007,25 +2213,67 @@ export default function Home() {
               <button onClick={() => setPreviewTemplate(null)} className="text-gray-400 hover:text-black font-bold text-xl">✖</button>
             </div>
             
-            {/* GRILLE MINIATURE AGRANDIE */}
+            {/* GRILLE MINIATURE AGRANDIE AVEC REPÈRES HORAIRES */}
             <div className="flex-1 bg-gray-50 border border-gray-200 rounded-xl overflow-y-auto relative h-[400px]">
               <div className="flex h-[800px] w-full relative">
-                {WEEK_DAYS.map((dayName, dIdx) => (
-                  <div key={dIdx} className="flex-1 border-r border-gray-200 relative h-full">
-                    <div className="text-[10px] font-bold text-center bg-gray-100 py-1 border-b border-gray-200 sticky top-0 z-10">{dayName.substring(0, 3)}</div>
-                    {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
-                      const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
-                      const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
-                      return (
-                        <div key={ev.id} className="absolute left-0 right-0 p-0.5" style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}>
-                          <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
-                            <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
+
+                {/* Colonne des heures : reste visible à gauche pendant le défilement vertical */}
+                <div className="w-8 flex-shrink-0 bg-gray-100 border-r border-gray-300 relative z-20">
+                  <div className="h-6 sticky top-0 z-30 bg-gray-100 border-b border-gray-200" />
+                  <div className="relative" style={{ height: 'calc(100% - 24px)' }}>
+                    {hoursOfDay.map((hour, index) => (
+                      <div
+                        key={hour}
+                        className="absolute left-0 right-0 text-[8px] font-bold text-gray-500 text-center leading-none"
+                        style={{
+                          top: `${(index / hoursOfDay.length) * 100}%`,
+                          transform: 'translateY(2px)'
+                        }}
+                      >
+                        {hour}h
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
+
+                {/* Jours + blocs */}
+                <div className="flex flex-1 min-w-0 h-full relative">
+                  {WEEK_DAYS.map((dayName, dIdx) => (
+                    <div key={dIdx} className="flex-1 border-r border-gray-200 relative h-full min-w-0">
+                      <div className="h-6 text-[10px] font-bold text-center bg-gray-100 flex items-center justify-center border-b border-gray-200 sticky top-0 z-10">
+                        {dayName.substring(0, 3)}
+                      </div>
+
+                      <div className="absolute left-0 right-0 bottom-0" style={{ top: '24px' }}>
+                        {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
+                          const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
+
+                          if (ev.kind === 'marker') {
+                            return (
+                              <div
+                                key={ev.id}
+                                className="absolute left-0 right-0 z-20 flex items-center"
+                                style={{ top: `${topPercent}%`, height: '8px', transform: 'translateY(-50%)' }}
+                                title={ev.title}
+                              >
+                                <div className={`w-full h-[4px] rounded-full shadow-sm ${ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'}`} />
+                              </div>
+                            );
+                          }
+
+                          const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
+                          return (
+                            <div key={ev.id} className="absolute left-0 right-0 p-0.5" style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}>
+                              <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
+                                <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -2128,11 +2376,23 @@ export default function Home() {
                        <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full">
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                            const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
+                           const colorClass = ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500';
+
+                           if (ev.kind === 'marker') {
+                             return (
+                               <div
+                                 key={ev.id}
+                                 className={`absolute left-0.5 right-0.5 h-[3px] rounded-full opacity-90 ${colorClass}`}
+                                 style={{ top: `${topPercent}%`, transform: 'translateY(-50%)' }}
+                               />
+                             );
+                           }
+
                            const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                            return (
                              <div 
                                key={ev.id} 
-                               className={`absolute left-0.5 right-0.5 rounded-[2px] opacity-80 ${ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'}`}
+                               className={`absolute left-0.5 right-0.5 rounded-[2px] opacity-80 ${colorClass}`}
                                style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}
                              />
                            )
@@ -2273,6 +2533,62 @@ export default function Home() {
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
 
+                     if (ev.kind === 'marker') {
+                       const markerTop = topPx + PLANNING_HEADER_HEIGHT;
+                       const markerPopoverPosition = ev.startHour < 10
+                         ? { top: 'calc(50% + 8px)' }
+                         : { bottom: 'calc(50% + 8px)' };
+
+                       return (
+                         <div
+                           key={ev.id}
+                           className={`absolute left-1 right-1 h-6 flex items-center ${isSelected ? 'z-[450]' : 'z-20'}`}
+                           style={{ top: `${markerTop - 12}px` }}
+                           onClick={(e) => {
+                             e.stopPropagation();
+                             if (selectedBlockId && selectedBlockId !== ev.id) {
+                               setSelectedBlockId(null);
+                             } else {
+                               setSelectedBlockId(isSelected ? null : ev.id);
+                             }
+                           }}
+                         >
+                           <div
+                             className={`w-full h-[5px] rounded-full shadow-sm cursor-pointer transition-all ${
+                               ev.color === 'blue' ? 'bg-blue-500' :
+                               ev.color === 'green' ? 'bg-green-500' :
+                               ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
+                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''}`}
+                           />
+
+                           {isSelected && (
+                             <div
+                               className="absolute left-1/2 -translate-x-1/2 w-[190px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
+                               style={markerPopoverPosition}
+                               onClick={(e) => e.stopPropagation()}
+                             >
+                               <div className="flex items-center gap-2">
+                                 <span className={`block w-8 h-[5px] rounded-full ${
+                                   ev.color === 'blue' ? 'bg-blue-500' :
+                                   ev.color === 'green' ? 'bg-green-500' :
+                                   ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
+                                 }`} />
+                                 <span className="text-[10px] uppercase tracking-wide font-black text-gray-400">Repère horaire</span>
+                               </div>
+                               <h4 className="font-black text-sm text-gray-900 leading-tight">{ev.title}</h4>
+                               <p className="text-xs text-gray-600 font-bold">
+                                 {ev.day} · {ev.startHour}h{ev.startMinute ? ev.startMinute.toString().padStart(2, '0') : '00'}
+                               </p>
+                               <div className="flex gap-2 mt-1">
+                                 <button onClick={(e) => { e.stopPropagation(); openEditBlockModal(ev); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2 rounded-lg text-lg shadow-sm border border-gray-200">✏️</button>
+                                 <button onClick={(e) => { e.stopPropagation(); deleteBlock(ev.id); }} className="flex-1 bg-red-100 hover:bg-red-200 text-red-600 font-bold py-2 rounded-lg text-lg shadow-sm border border-red-200">🗑️</button>
+                               </div>
+                             </div>
+                           )}
+                         </div>
+                       );
+                     }
+
                      // Le contenu du bloc s'adapte à sa taille réelle à l'écran.
                      // Une tâche haute peut afficher plusieurs lignes ; une tâche très petite
                      // privilégie le titre et masque l'heure si elle n'a pas assez de place.
@@ -2394,9 +2710,34 @@ export default function Home() {
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
                <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl animate-fade-in">
                  <h3 className="font-bold text-lg text-gray-800 border-b pb-2">
-                   {editingBlockId ? 'Modifier la tâche' : 'Planifier une tâche'}
+                   {editingBlockId
+                     ? (blockKind === 'marker' ? 'Modifier le repère horaire' : 'Modifier la tâche')
+                     : (blockKind === 'marker' ? 'Ajouter un repère horaire' : 'Planifier une tâche')}
                  </h3>
                  
+                 <div className="grid grid-cols-2 gap-2">
+                   <button
+                     type="button"
+                     onClick={() => setBlockKind('task')}
+                     className={`py-2 px-3 rounded-xl text-sm font-bold border-2 transition-all ${blockKind === 'task' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}
+                   >
+                     🗓️ Tâche
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => setBlockKind('marker')}
+                     className={`py-2 px-3 rounded-xl text-sm font-bold border-2 transition-all ${blockKind === 'marker' ? 'bg-amber-50 border-amber-500 text-amber-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}
+                   >
+                     ➖ Repère horaire
+                   </button>
+                 </div>
+
+                 {blockKind === 'marker' && (
+                   <p className="text-xs text-gray-500 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                     Le repère est une barre fine placée exactement à l&apos;heure choisie. Il ne prend aucune durée dans le planning.
+                   </p>
+                 )}
+
                  <div className="flex gap-2">
                    <select 
                      value={blockDay} 
@@ -2417,7 +2758,13 @@ export default function Home() {
                    />
                  </div>
 
-                 <input type="text" value={blockTitle} onChange={(e) => setBlockTitle(e.target.value)} placeholder="Ex: Entraînement Muay Thai..." className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors" />
+                 <input
+                   type="text"
+                   value={blockTitle}
+                   onChange={(e) => setBlockTitle(e.target.value)}
+                   placeholder={blockKind === 'marker' ? 'Ex: Horaire travail chérie' : 'Ex: Entraînement Muay Thai...'}
+                   className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
+                 />
                  
                  <div className="flex gap-2 w-full justify-between mt-1">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
@@ -2428,7 +2775,7 @@ export default function Home() {
                  
                  <div className="flex gap-2 mt-2">
                    <button onClick={saveBlock} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl shadow">
-                     {editingBlockId ? 'Enregistrer' : 'Ajouter'}
+                     {editingBlockId ? 'Enregistrer' : (blockKind === 'marker' ? 'Ajouter le repère' : 'Ajouter')}
                    </button>
                    <button onClick={() => setShowBlockModal(false)} className="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-xl">Annuler</button>
                  </div>
@@ -2536,6 +2883,15 @@ export default function Home() {
                   <option value="orange">🟠 Priorité Importante</option>
                   <option value="rouge">🔴 Priorité Urgente</option>
                 </select>
+              </div>
+
+              <div className="flex items-center gap-2 w-full p-2 rounded-lg border border-amber-200 bg-amber-50">
+                <span className="text-xs font-bold text-amber-900 whitespace-nowrap">⏱ Durée :</span>
+                <input type="number" min="0" max="168" placeholder="0" value={newDurationHours} onChange={(e) => setNewDurationHours(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-amber-300 rounded text-center text-black font-bold text-xs bg-white" />
+                <span className="text-xs font-bold text-amber-900">h</span>
+                <input type="number" min="0" max="59" placeholder="0" value={newDurationMinutes} onChange={(e) => setNewDurationMinutes(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-amber-300 rounded text-center text-black font-bold text-xs bg-white" />
+                <span className="text-xs font-bold text-amber-900">min</span>
+                <span className="ml-auto text-[10px] text-amber-700">optionnel</span>
               </div>
 
               <div className="border-b border-gray-200 pb-3 mt-1">
@@ -2709,6 +3065,9 @@ export default function Home() {
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
                     <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
+                    {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
+                      <div className="text-[10px] font-bold text-gray-500">⏱ Durée : {formatDuration(note.duration_minutes)}</div>
+                    )}
                     <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                       {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
