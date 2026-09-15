@@ -120,7 +120,13 @@ const getSubscriptions = async () => {
   const { data, error } = await supabase.from('subscriptions').select('*');
   if (error) throw error;
 
-  cachedSubscriptions = (data || []) as SubscriptionRow[];
+  // Sécurité supplémentaire : même si la base contient un doublon,
+  // on n'envoie qu'une seule fois par endpoint.
+  const subscriptions = (data || []) as SubscriptionRow[];
+  cachedSubscriptions = Array.from(
+    new Map(subscriptions.map((subscription) => [subscription.endpoint, subscription])).values()
+  );
+
   return cachedSubscriptions;
 };
 
@@ -138,6 +144,8 @@ const sendPush = async (note: NoteRow, titlePrefix: string) => {
     title: `${titlePrefix}${note.title || 'Note'}`,
     body: note.content || 'Tu as une tâche à traiter.',
     url: '/',
+    tag: `note-${note.id}`,
+    timestamp: Date.now(),
   });
 
   let sent = 0;
@@ -153,7 +161,18 @@ const sendPush = async (note: NoteRow, titlePrefix: string) => {
     };
 
     try {
-      await webpush.sendNotification(pushSubscription, payload);
+      await webpush.sendNotification(
+        pushSubscription,
+        payload,
+        {
+          // Demande une livraison prioritaire au service push.
+          urgency: 'high',
+
+          // Si le téléphone est hors ligne, le message reste valable 5 minutes.
+          TTL: 300,
+        }
+      );
+
       sent += 1;
     } catch (error: any) {
       errors.push(error?.message || 'Erreur push inconnue');
