@@ -21,11 +21,11 @@ interface Note {
   daily_reminder_time?: string;
   subtasks: Subtask[];
   is_list: boolean;
-  target_date?: string;
-  snooze_until?: string;
-  completed_at?: string;
+  target_date?: string | null;
+  snooze_until?: string | null;
+  completed_at?: string | null;
   popup_active?: boolean;
-  created_at?: string; 
+  created_at?: string | null; 
 }
 
 interface WeeklyBlock {
@@ -38,14 +38,32 @@ interface WeeklyBlock {
   color: string;
 }
 
-const getSafeTime = (dateStr?: string) => {
+interface PlanningTemplate {
+  id: string;
+  name: string;
+  blocks: WeeklyBlock[];
+  created_at?: string | null;
+}
+
+const getSafeTime = (dateStr?: string | null) => {
   if (!dateStr) return 0;
-  let s = dateStr.replace(' ', 'T');
-  if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s)) {
-    s += 'Z';
-  }
-  return new Date(s).getTime();
+  const s = dateStr.trim().replace(' ', 'T');
+  const time = new Date(s).getTime();
+  return Number.isNaN(time) ? 0 : time;
 };
+
+const toValidIso = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const time = getSafeTime(value);
+  return time ? new Date(time).toISOString() : '';
+};
+
+const escapeICS = (value: string) =>
+  value
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
 
 const urlBase64ToUint8Array = (base64String: string) => {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -128,6 +146,7 @@ export default function Home() {
   const [aiProposal, setAiProposal] = useState<any>(null);
   const recognitionRef = useRef<any>(null);
   const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
+  const locallyTriggeredAlarmIdsRef = useRef<Set<string>>(new Set());
 
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
@@ -136,9 +155,17 @@ export default function Home() {
   const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+  const PLANNING_START_HOUR = 7;
+  const PLANNING_END_HOUR = 22;
+  const PLANNING_HEADER_HEIGHT = 40;
+  const hoursOfDay = Array.from(
+    { length: PLANNING_END_HOUR - PLANNING_START_HOUR + 1 },
+    (_, i) => i + PLANNING_START_HOUR
+  );
+
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
-  const [savedTemplates, setSavedTemplates] = useState<any[]>([]); 
-  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null);
+  const [savedTemplates, setSavedTemplates] = useState<PlanningTemplate[]>([]); 
+  const [previewTemplate, setPreviewTemplate] = useState<PlanningTemplate | null>(null);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -150,6 +177,57 @@ export default function Home() {
 
   // Redimensionnement des blocs : une ref évite les pertes d'événements pendant le drag tactile/souris.
   const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; maxDuration: number; pointerId: number } | null>(null);
+
+  const normalizeWeeklyBlocks = (rawBlocks: unknown): WeeklyBlock[] => {
+    if (!Array.isArray(rawBlocks)) return [];
+
+    const planningStartMinutes = PLANNING_START_HOUR * 60;
+    const planningEndMinutes = (PLANNING_END_HOUR + 1) * 60;
+    const allowedColors = new Set(['blue', 'green', 'red', 'gray']);
+
+    return rawBlocks.flatMap((raw: any) => {
+      if (!raw || typeof raw !== 'object') return [];
+
+      const day =
+        typeof raw.day === 'string' && WEEK_DAYS.includes(raw.day)
+          ? raw.day
+          : 'Lundi';
+
+      const rawHour = Number(raw.startHour);
+      const rawMinute = Number(raw.startMinute ?? 0);
+      const requestedStart =
+        (Number.isFinite(rawHour) ? rawHour : PLANNING_START_HOUR) * 60 +
+        (Number.isFinite(rawMinute) ? rawMinute : 0);
+
+      const snappedStart = Math.round(requestedStart / 15) * 15;
+      const safeStart = Math.min(
+        planningEndMinutes - 15,
+        Math.max(planningStartMinutes, snappedStart)
+      );
+
+      const startHour = Math.floor(safeStart / 60);
+      const startMinute = safeStart % 60;
+      const maxDuration = Math.max(15, planningEndMinutes - safeStart);
+
+      const rawDuration = Number(raw.duration ?? 60);
+      const snappedDuration =
+        Math.round((Number.isFinite(rawDuration) ? rawDuration : 60) / 15) * 15;
+      const duration = Math.min(maxDuration, Math.max(15, snappedDuration));
+
+      return [{
+        id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
+        title: typeof raw.title === 'string' ? raw.title : '',
+        day,
+        startHour,
+        startMinute,
+        duration,
+        color:
+          typeof raw.color === 'string' && allowedColors.has(raw.color)
+            ? raw.color
+            : 'blue',
+      }];
+    });
+  };
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -422,13 +500,39 @@ export default function Home() {
   // ==========================================
 
   const fetchNotes = async () => {
-    const { data, error } = await supabase.from('notes').select('*').order('created_at', { ascending: false });
-    if (!error && data) setNotes(data);
+    const { data, error } = await supabase
+      .from('notes')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Erreur chargement notes :', error);
+      return false;
+    }
+
+    setNotes((data || []) as Note[]);
+    return true;
   };
 
   const fetchTemplates = async () => {
-    const { data, error } = await supabase.from('planning_templates').select('*').order('created_at', { ascending: false });
-    if (!error && data) setSavedTemplates(data);
+    const { data, error } = await supabase
+      .from('planning_templates')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Erreur chargement plannings :', error);
+      return false;
+    }
+
+    const templates = (data || []).map((template: any) => ({
+      ...template,
+      name: typeof template.name === 'string' ? template.name : 'Planning sans nom',
+      blocks: normalizeWeeklyBlocks(template.blocks),
+    })) as PlanningTemplate[];
+
+    setSavedTemplates(templates);
+    return true;
   };
 
   useEffect(() => { 
@@ -472,29 +576,29 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const interval = window.setInterval(async () => {
+    const tick = () => {
       const now = Date.now();
       setCurrentTime(now);
-      
-      let needsUpdate = false;
-      for (const note of notes) {
-        if (note.popup_active && !note.completed && !note.is_archived && note.target_date) {
-          const targetTime = getSafeTime(note.target_date);
-          if (!isNaN(targetTime) && targetTime <= now) {
-            try {
-              if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification('⏰ Rappel : ' + (note.title || 'Note'), { body: note.content || 'Il est l\'heure !' });
-              }
-            } catch (err) {}
-            
-            setTriggeredAlarm(note);
-            await supabase.from('notes').update({ popup_active: false }).eq('id', note.id);
-            needsUpdate = true;
-          }
-        }
+
+      // Le push système est géré côté serveur par Supabase Cron -> Vercel.
+      // Ici on garde seulement la grande alerte visuelle quand l'application est ouverte.
+      // Le navigateur ne modifie plus popup_active : cela évite une course avec le worker
+      // serveur et donc des notifications perdues ou en doublon.
+      const dueNote = notes.find(note => {
+        if (!note.popup_active || note.completed || note.is_archived || !note.target_date) return false;
+        if (locallyTriggeredAlarmIdsRef.current.has(note.id)) return false;
+        const targetTime = getSafeTime(note.target_date);
+        return targetTime > 0 && targetTime <= now;
+      });
+
+      if (dueNote) {
+        locallyTriggeredAlarmIdsRef.current.add(dueNote.id);
+        setTriggeredAlarm(dueNote);
       }
-      if (needsUpdate) fetchNotes();
-    }, 1000); 
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
   }, [notes]);
 
@@ -671,39 +775,62 @@ export default function Home() {
   };
 
   const saveTemplateToDB = async () => {
-    if (weeklyBlocks.length === 0) return alert("Ton planning est vide ! Ajoute des tâches avant de sauvegarder.");
-    const name = window.prompt("Donne un nom à ce modèle de semaine (ex: 'Semaine d'école' ou 'Vacances') :");
-    if (!name) return;
-
-    setLoading(true);
-    const { error } = await supabase.from('planning_templates').insert([{
-      name: name,
-      blocks: weeklyBlocks
-    }]);
-
-    if (error) {
-      alert("Erreur de sauvegarde : " + error.message);
-    } else {
-      alert("✅ Modèle sauvegardé avec succès !");
-      fetchTemplates();
-      window.location.hash = 'planning-gallery'; 
-    }
-    setLoading(false);
-  };
-
-  const loadTemplate = (template: any) => {
-    if (weeklyBlocks.length > 0 && !window.confirm(`Écraser ton planning actuel en cours de modification par "${template.name}" ?`)) {
+    if (weeklyBlocks.length === 0) {
+      alert("Ton planning est vide ! Ajoute des tâches avant de sauvegarder.");
       return;
     }
-    setWeeklyBlocks(template.blocks || []);
-    window.location.hash = 'planning'; 
+
+    const name = window.prompt("Donne un nom à ce modèle de semaine (ex: 'Semaine d'école' ou 'Vacances') :");
+    const cleanName = name?.trim();
+    if (!cleanName) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from('planning_templates').insert([{
+        name: cleanName,
+        blocks: normalizeWeeklyBlocks(weeklyBlocks),
+      }]);
+
+      if (error) throw error;
+
+      await fetchTemplates();
+      window.location.hash = 'planning-gallery';
+      alert("✅ Modèle sauvegardé avec succès !");
+    } catch (error: any) {
+      alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadTemplate = (template: PlanningTemplate) => {
+    if (
+      weeklyBlocks.length > 0 &&
+      !window.confirm(`Écraser ton planning actuel en cours de modification par "${template.name}" ?`)
+    ) {
+      return;
+    }
+
+    setWeeklyBlocks(normalizeWeeklyBlocks(template.blocks));
+    setSelectedBlockId(null);
+    setEditingBlockId(null);
+    window.location.hash = 'planning';
   };
 
   const deleteSavedTemplate = async (id: string) => {
-    if (window.confirm("Es-tu sûr de vouloir supprimer définitivement ce modèle de ta base de données ?")) {
-      await supabase.from('planning_templates').delete().eq('id', id);
-      fetchTemplates();
+    if (!window.confirm("Es-tu sûr de vouloir supprimer définitivement ce modèle de ta base de données ?")) {
+      return;
     }
+
+    const { error } = await supabase.from('planning_templates').delete().eq('id', id);
+
+    if (error) {
+      alert("Erreur lors de la suppression du planning : " + error.message);
+      return;
+    }
+
+    if (previewTemplate?.id === id) setPreviewTemplate(null);
+    await fetchTemplates();
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -713,12 +840,25 @@ export default function Home() {
   const handleDrop = (e: React.DragEvent, index: number) => {
     e.preventDefault();
     const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (draggedIndex === index) return;
+
+    if (
+      !Number.isInteger(draggedIndex) ||
+      draggedIndex < 0 ||
+      draggedIndex >= savedTemplates.length ||
+      draggedIndex === index
+    ) {
+      return;
+    }
 
     const newTemplates = [...savedTemplates];
     const [draggedItem] = newTemplates.splice(draggedIndex, 1);
+    if (!draggedItem) return;
+
     newTemplates.splice(index, 0, draggedItem);
     setSavedTemplates(newTemplates);
+
+    // Pour l'instant l'ordre est visuel uniquement. Un champ sort_order sera ajouté
+    // lors de la migration multi-utilisateur afin de le rendre persistant proprement.
   };
 
   const exportWeeklyICS = () => {
@@ -753,15 +893,8 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  // Référentiel unique du planning : tous les calculs de position, hauteur et aperçu
-  // utilisent ces constantes pour rester parfaitement alignés.
-  const PLANNING_START_HOUR = 7;
-  const PLANNING_END_HOUR = 22;
-  const PLANNING_HEADER_HEIGHT = 40;
-  const hoursOfDay = Array.from(
-    { length: PLANNING_END_HOUR - PLANNING_START_HOUR + 1 },
-    (_, i) => i + PLANNING_START_HOUR
-  );
+  // Le référentiel horaire du planning est défini plus haut dans le composant
+  // afin que toutes les fonctions utilisent exactement la même plage.
 
   const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
@@ -784,18 +917,38 @@ export default function Home() {
   };
 
   const handleCleanupAction = async (action: 'delete' | 'archive' | 'keep', note: Note) => {
-    if (action === 'delete') await supabase.from('notes').delete().eq('id', note.id);
-    else if (action === 'archive') await supabase.from('notes').update({ is_archived: true }).eq('id', note.id);
-    fetchNotes();
-    setCurrentCleanupIndex(prev => prev + 1);
+    try {
+      if (action === 'delete') {
+        const { error } = await supabase.from('notes').delete().eq('id', note.id);
+        if (error) throw error;
+      } else if (action === 'archive') {
+        const { error } = await supabase
+          .from('notes')
+          .update({ is_archived: true })
+          .eq('id', note.id);
+        if (error) throw error;
+      }
+
+      if (action !== 'keep') await fetchNotes();
+      setCurrentCleanupIndex(prev => prev + 1);
+    } catch (error: any) {
+      alert("Erreur pendant le nettoyage : " + (error?.message || "erreur inconnue"));
+    }
   };
 
   const deleteAllHistory = async () => {
-    if (window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ?')) {
-      setLoading(true);
+    if (!window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ?')) {
+      return;
+    }
+
+    setLoading(true);
+    try {
       const { error } = await supabase.from('notes').delete().eq('completed', true);
-      if (error) alert("Erreur lors de la suppression : " + error.message);
-      else fetchNotes();
+      if (error) throw error;
+      await fetchNotes();
+    } catch (error: any) {
+      alert("Erreur lors de la suppression : " + (error?.message || "erreur inconnue"));
+    } finally {
       setLoading(false);
     }
   };
@@ -805,60 +958,119 @@ export default function Home() {
     if (!newTitle.trim() && !newContent.trim() && newListItems.length === 0) return;
 
     setLoading(true);
-    let finalTargetDate = '';
-    let finalPopupActive = false;
 
-    if (showPopupConfig && (popupHours || popupMinutes)) {
-      const d = new Date();
-      d.setHours(d.getHours() + (parseInt(popupHours) || 0));
-      d.setMinutes(d.getMinutes() + (parseInt(popupMinutes) || 0));
-      finalTargetDate = d.toISOString(); 
-      finalPopupActive = true;
-    } else if (showCalendarConfig && targetDate) {
-      finalTargetDate = new Date(targetDate).toISOString();
-    }
+    try {
+      let finalTargetDate = '';
+      let finalPopupActive = false;
 
-    const finalSubtasks = noteMode === 'list' ? newListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })) : [];
+      if (showPopupConfig && (popupHours || popupMinutes)) {
+        const hours = Math.max(0, Number.parseInt(popupHours || '0', 10) || 0);
+        const minutes = Math.max(0, Number.parseInt(popupMinutes || '0', 10) || 0);
+        const totalMinutes = hours * 60 + minutes;
 
-    const { error } = await supabase.from('notes').insert([{ 
-        title: newTitle, content: newContent, importance, subtasks: finalSubtasks, is_list: noteMode === 'list',
-        reminder_active: activateReminder, reminder_popup_active: reminderPopupActive, daily_reminder_time: dailyTime,
-        target_date: finalTargetDate, popup_active: finalPopupActive
-    }]);
-
-    if (error) { alert("Erreur Supabase : " + error.message); setLoading(false); return; }
-
-    if (sendImmediateEmail) {
-      const mailRes = await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle.trim() ? newTitle : "Nouvelle note", importance })
-      });
-
-      if (!mailRes.ok) {
-        const mailError = await mailRes.json().catch(() => ({}));
-        alert("La note a été créée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || "erreur inconnue"));
+        if (totalMinutes > 0) {
+          finalTargetDate = new Date(Date.now() + totalMinutes * 60 * 1000).toISOString();
+          finalPopupActive = true;
+        }
+      } else if (showCalendarConfig && targetDate) {
+        const calendarTime = getSafeTime(targetDate);
+        if (!calendarTime) {
+          alert("La date choisie n'est pas valide.");
+          return;
+        }
+        finalTargetDate = new Date(calendarTime).toISOString();
       }
+
+      const finalSubtasks =
+        noteMode === 'list'
+          ? newListItems
+              .map(item => item.trim())
+              .filter(Boolean)
+              .map(item => ({ id: crypto.randomUUID(), text: item, completed: false }))
+          : [];
+
+      const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
+
+      const { error } = await supabase.from('notes').insert([{
+        title: newTitle.trim(),
+        content: newContent.trim(),
+        importance,
+        subtasks: finalSubtasks,
+        is_list: noteMode === 'list',
+        reminder_active: activateReminder,
+        reminder_popup_active: reminderPopupActive,
+        daily_reminder_time: safeDailyTime,
+        target_date: finalTargetDate,
+        popup_active: finalPopupActive,
+      }]);
+
+      if (error) throw error;
+
+      if (sendImmediateEmail) {
+        try {
+          const mailRes = await fetch('/api/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: newTitle.trim() ? newTitle.trim() : "Nouvelle note",
+              importance,
+            }),
+          });
+
+          if (!mailRes.ok) {
+            const mailError = await mailRes.json().catch(() => ({}));
+            alert(
+              "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+              (mailError.error || "erreur inconnue")
+            );
+          }
+        } catch (mailError: any) {
+          alert(
+            "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+            (mailError?.message || "erreur réseau")
+          );
+        }
+      }
+
+      setNewTitle('');
+      setNewContent('');
+      setImportance('vert');
+      setNewListItems([]);
+      setCurrentNewListItem('');
+      setSendImmediateEmail(false);
+      setShowPopupConfig(false);
+      setPopupHours('');
+      setPopupMinutes('');
+      setShowDailyConfig(false);
+      setActivateReminder(false);
+      setReminderPopupActive(false);
+      setShowCalendarConfig(false);
+      setTargetDate('');
+      setShowAdvancedSettings(false);
+      setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
+
+      await fetchNotes();
+      window.location.hash = 'notes-list';
+      setSuccessMessage('✅ Note créée avec succès !');
+      window.setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error: any) {
+      alert("Erreur Supabase : " + (error?.message || "erreur inconnue"));
+    } finally {
+      setLoading(false);
     }
-
-    setNewTitle(''); setNewContent(''); setImportance('vert'); setNewListItems([]); setCurrentNewListItem('');
-    setSendImmediateEmail(false); setShowPopupConfig(false); setPopupHours(''); setPopupMinutes('');
-    setShowDailyConfig(false); setActivateReminder(false); setReminderPopupActive(false);
-    setShowCalendarConfig(false); setTargetDate(''); setShowAdvancedSettings(false);
-    setLoading(false);
-    setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
-    fetchNotes();
-
-    window.location.hash = 'notes-list';
-    setSuccessMessage('✅ Note créée avec succès !');
-    setTimeout(() => setSuccessMessage(null), 3000);
   };
 
   const deleteNote = async (id: string) => {
-    if (window.confirm('Es-tu sûr de vouloir supprimer cette note définitivement ?')) {
-      await supabase.from('notes').delete().eq('id', id); 
-      fetchNotes();
+    if (!window.confirm('Es-tu sûr de vouloir supprimer cette note définitivement ?')) return;
+
+    const { error } = await supabase.from('notes').delete().eq('id', id);
+
+    if (error) {
+      alert("Erreur lors de la suppression : " + error.message);
+      return;
     }
+
+    await fetchNotes();
   };
 
   const triggerImmediateEmail = async (note: Note) => {
@@ -883,36 +1095,78 @@ export default function Home() {
   };
 
   const updateNote = async (id: string, field: string, value: any) => {
+    let updatePayload: Record<string, any>;
+
     if (field === 'completed') {
-      const completedAt = value ? new Date().toISOString() : '';
-      await supabase.from('notes').update({ completed: value, completed_at: completedAt }).eq('id', id);
+      const isCompleted = Boolean(value);
+      updatePayload = {
+        completed: isCompleted,
+        completed_at: isCompleted ? new Date().toISOString() : null,
+        ...(isCompleted ? { popup_active: false } : {}),
+      };
     } else {
-      await supabase.from('notes').update({ [field]: value }).eq('id', id);
+      updatePayload = { [field]: value };
     }
-    fetchNotes();
+
+    const { error } = await supabase
+      .from('notes')
+      .update(updatePayload)
+      .eq('id', id);
+
+    if (error) {
+      alert("Erreur de mise à jour : " + error.message);
+      return false;
+    }
+
+    await fetchNotes();
+    return true;
+  };
+
+  const clearNoteDate = async (id: string) => {
+    const { error } = await supabase
+      .from('notes')
+      .update({ target_date: '', popup_active: false })
+      .eq('id', id);
+
+    if (error) {
+      alert("Erreur lors de l'annulation de la date : " + error.message);
+      return;
+    }
+
+    locallyTriggeredAlarmIdsRef.current.delete(id);
+    await fetchNotes();
   };
 
   const processAiNote = async (finalTranscript: string) => {
-    if (!finalTranscript.trim()) return alert("❌ Le micro n'a rien enregistré.");
+    if (!finalTranscript.trim()) {
+      alert("❌ Le micro n'a rien enregistré.");
+      return;
+    }
+
     setIsAiProcessing(true);
     try {
       const res = await fetch('/api/gemini', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: finalTranscript,
           currentDate: new Date().toLocaleString('fr-FR'),
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          timezoneOffsetMinutes: new Date().getTimezoneOffset()
-        })
+          timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+        }),
       });
+
       if (!res.ok) {
-        const errData = await res.json();
-        alert("❌ Erreur Google : " + (errData.error || "Erreur inconnue"));
-      } else {
-        setAiProposal(await res.json());
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Erreur inconnue");
       }
-    } catch (e: any) { alert("❌ Erreur réseau : " + e.message); }
-    setIsAiProcessing(false);
+
+      setAiProposal(await res.json());
+    } catch (e: any) {
+      alert("❌ Erreur IA/réseau : " + (e?.message || "erreur inconnue"));
+    } finally {
+      setIsAiProcessing(false);
+    }
   };
 
   const toggleDictation = (mode: 'title' | 'content' | 'list_item' | 'ai') => {
@@ -980,53 +1234,72 @@ export default function Home() {
     setLoading(true);
 
     try {
-      let targetDateValue = '';
-      if (data.popup_time) targetDateValue = new Date(data.popup_time).toISOString();
-      else if (data.calendar_time) targetDateValue = new Date(data.calendar_time).toISOString();
+      const popupIso = toValidIso(data?.popup_time);
+      const calendarIso = toValidIso(data?.calendar_time);
 
-      const isPopupActive = !!data.popup_time;
-      const dailyReminderActive = !!data.daily_reminder;
+      if (data?.popup_time && !popupIso) {
+        alert("L'IA a proposé une heure de rappel invalide. Modifie la proposition manuellement.");
+        return;
+      }
+
+      if (!data?.popup_time && data?.calendar_time && !calendarIso) {
+        alert("L'IA a proposé une date de calendrier invalide. Modifie la proposition manuellement.");
+        return;
+      }
+
+      const targetDateValue = popupIso || calendarIso;
+      const isPopupActive = Boolean(popupIso);
+      const dailyReminderActive = Boolean(data?.daily_reminder);
       const dailyReminderTime =
-        typeof data.daily_reminder_time === 'string' && /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
+        typeof data?.daily_reminder_time === 'string' &&
+        /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
           ? data.daily_reminder_time
           : '09:00';
 
+      const safeImportance =
+        data?.importance === 'rouge' || data?.importance === 'orange' || data?.importance === 'vert'
+          ? data.importance
+          : 'vert';
+
       const { error } = await supabase.from('notes').insert([{
-        title: data.title || '',
-        content: data.content || '',
-        importance: data.importance || 'vert',
+        title: typeof data?.title === 'string' ? data.title.trim() : '',
+        content: typeof data?.content === 'string' ? data.content.trim() : '',
+        importance: safeImportance,
         subtasks: [],
-        is_list: data.is_list || false,
+        is_list: Boolean(data?.is_list),
         reminder_active: dailyReminderActive,
         reminder_popup_active: false,
         daily_reminder_time: dailyReminderTime,
         target_date: targetDateValue,
-        popup_active: isPopupActive
+        popup_active: isPopupActive,
       }]);
 
-      if (error) {
-        alert("Erreur Supabase : " + error.message);
-        return;
-      }
+      if (error) throw error;
 
-      if (data.send_email) {
-        const mailRes = await fetch('/api/notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: data.title || 'Nouvelle note',
-            importance: data.importance || 'vert'
-          })
-        });
+      if (data?.send_email) {
+        try {
+          const mailRes = await fetch('/api/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: data?.title || 'Nouvelle note',
+              importance: safeImportance,
+            }),
+          });
 
-        if (!mailRes.ok) {
-          const mailError = await mailRes.json().catch(() => ({}));
-          alert("La note a été créée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || "erreur inconnue"));
+          if (!mailRes.ok) {
+            const mailError = await mailRes.json().catch(() => ({}));
+            alert(
+              "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+              (mailError.error || "erreur inconnue")
+            );
+          }
+        } catch (mailError: any) {
+          alert(
+            "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+            (mailError?.message || "erreur réseau")
+          );
         }
-      }
-
-      if (isPopupActive && 'Notification' in window && Notification.permission !== 'granted') {
-        Notification.requestPermission().catch(() => {});
       }
 
       setAiProposal(null);
@@ -1034,92 +1307,181 @@ export default function Home() {
       setNewContent('');
       setNewListItems([]);
       setCurrentNewListItem('');
-      fetchNotes();
+      await fetchNotes();
       window.location.hash = 'notes-list';
       setSuccessMessage('✅ Note créée avec succès par IA !');
-      setTimeout(() => setSuccessMessage(null), 3000);
+      window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
-      alert("Erreur lors de la création IA : " + e.message);
+      alert("Erreur lors de la création IA : " + (e?.message || "erreur inconnue"));
     } finally {
       setLoading(false);
     }
   };
 
   const loadProposalIntoForm = (data: any) => {
-    if (data.title) setNewTitle(data.title);
-    if (data.content) setNewContent(data.content);
-    if (data.importance) setImportance(data.importance);
-    if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+    if (typeof data?.title === 'string') setNewTitle(data.title);
+    if (typeof data?.content === 'string') setNewContent(data.content);
 
-    if (data.send_email) {
+    if (data?.importance === 'vert' || data?.importance === 'orange' || data?.importance === 'rouge') {
+      setImportance(data.importance);
+    }
+
+    if (data?.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+
+    if (data?.send_email) {
       setSendImmediateEmail(true);
       setShowAdvancedSettings(true);
     }
 
-    if (data.daily_reminder) {
+    if (data?.daily_reminder) {
       setActivateReminder(true);
-      setDailyTime(data.daily_reminder_time || '09:00');
+      setDailyTime(
+        typeof data.daily_reminder_time === 'string' &&
+        /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
+          ? data.daily_reminder_time
+          : '09:00'
+      );
       setShowDailyConfig(true);
       setShowAdvancedSettings(true);
     }
     
-    if (data.popup_time) {
-      const diffMs = getSafeTime(data.popup_time) - Date.now();
-      if (diffMs > 0) {
-        const totalMin = Math.floor(diffMs / (1000 * 60));
-        setPopupHours(Math.floor(totalMin / 60).toString()); setPopupMinutes((totalMin % 60).toString());
+    if (data?.popup_time) {
+      const popupTime = getSafeTime(data.popup_time);
+      const diffMs = popupTime - Date.now();
+
+      if (popupTime > 0 && diffMs > 0) {
+        const totalMin = Math.max(1, Math.ceil(diffMs / (1000 * 60)));
+        setPopupHours(Math.floor(totalMin / 60).toString());
+        setPopupMinutes((totalMin % 60).toString());
         setShowPopupConfig(true);
+        setShowAdvancedSettings(true);
       }
-    } else if (data.calendar_time) {
-      const d = new Date(data.calendar_time);
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      setTargetDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
-      setShowCalendarConfig(true);
+    } else if (data?.calendar_time) {
+      const calendarTime = getSafeTime(data.calendar_time);
+
+      if (calendarTime > 0) {
+        const d = new Date(calendarTime);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        setTargetDate(
+          `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+        );
+        setShowCalendarConfig(true);
+        setShowAdvancedSettings(true);
+      }
     }
+
     setAiProposal(null);
     window.location.hash = 'notes-create';
   };
 
   const formatDatesForCalendar = (dateString: string) => {
-    if (!dateString) return null;
-    const date = new Date(getSafeTime(dateString)); 
-    const pad = (n: number) => (n < 10 ? '0' + n : n);
-    const start = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
-    const endDate = new Date(date.getTime() + 60 * 60 * 1000);
-    const end = `${endDate.getFullYear()}${pad(endDate.getMonth() + 1)}${pad(endDate.getDate())}T${pad(endDate.getHours())}${pad(endDate.getMinutes())}00`;
-    return { start, end };
+    const time = getSafeTime(dateString);
+    if (!time) return null;
+
+    const formatUtc = (date: Date) =>
+      date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+
+    const date = new Date(time);
+    const endDate = new Date(time + 60 * 60 * 1000);
+
+    return {
+      start: formatUtc(date),
+      end: formatUtc(endDate),
+    };
   };
 
   const getGoogleCalendarLink = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || ''); if (!dates) return '#';
-    const text = encodeURIComponent(note.title || 'Note'); const details = encodeURIComponent(note.content || '');
-    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${dates.start}/${dates.end}&details=${details}`;
+    const dates = formatDatesForCalendar(note.target_date || '');
+    if (!dates) return '#';
+
+    const title = encodeURIComponent(note.title || 'Note');
+    const details = encodeURIComponent(note.content || '');
+    const timeZone = encodeURIComponent(
+      Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Paris'
+    );
+
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${dates.start}/${dates.end}&details=${details}&ctz=${timeZone}`;
   };
 
   const downloadICS = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || ''); if (!dates) return;
-    const icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${note.title || 'Note'}\nDESCRIPTION:${note.content || ''}\nDTSTART:${dates.start}\nDTEND:${dates.end}\nEND:VEVENT\nEND:VCALENDAR`.replace(/\n/g, '\r\n');
-    const blob = new Blob([icsContent], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+    const dates = formatDatesForCalendar(note.target_date || '');
+    if (!dates) return;
+
+    const uid = `${note.id}@suivi-note`;
+    const dtstamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Suivi Note//FR',
+      'BEGIN:VEVENT',
+      `UID:${escapeICS(uid)}`,
+      `DTSTAMP:${dtstamp}`,
+      `SUMMARY:${escapeICS(note.title || 'Note')}`,
+      `DESCRIPTION:${escapeICS(note.content || '')}`,
+      `DTSTART:${dates.start}`,
+      `DTEND:${dates.end}`,
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'rendez-vous.ics';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
   
   const saveEdit = async (id: string) => {
-    let finalTargetDate = editingTargetDate; 
+    let finalTargetDate = editingTargetDate;
     let finalPopupActive = editingPopupActive;
 
     if (showEditingPopupConfig && (editingPopupHours || editingPopupMinutes)) {
-      const d = new Date();
-      d.setHours(d.getHours() + (parseInt(editingPopupHours) || 0));
-      d.setMinutes(d.getMinutes() + (parseInt(editingPopupMinutes) || 0));
-      finalTargetDate = d.toISOString(); finalPopupActive = true;
+      const hours = Math.max(0, Number.parseInt(editingPopupHours || '0', 10) || 0);
+      const minutes = Math.max(0, Number.parseInt(editingPopupMinutes || '0', 10) || 0);
+      const totalMinutes = hours * 60 + minutes;
+
+      if (totalMinutes > 0) {
+        finalTargetDate = new Date(Date.now() + totalMinutes * 60 * 1000).toISOString();
+        finalPopupActive = true;
+      }
+    } else if (finalTargetDate) {
+      const normalized = toValidIso(finalTargetDate);
+      if (!normalized) {
+        alert("La date choisie n'est pas valide.");
+        return;
+      }
+      finalTargetDate = normalized;
     }
 
-    await supabase.from('notes').update({ 
-      title: editingTitle, content: editingContent, target_date: finalTargetDate, popup_active: finalPopupActive,
-      importance: editingImportance, reminder_active: editingReminderActive, reminder_popup_active: editingReminderPopupActive,
-      daily_reminder_time: editingDailyTime
+    if (!finalTargetDate) finalPopupActive = false;
+
+    const safeDailyTime = /^\d{2}:\d{2}$/.test(editingDailyTime)
+      ? editingDailyTime
+      : '09:00';
+
+    const { error } = await supabase.from('notes').update({
+      title: editingTitle.trim(),
+      content: editingContent.trim(),
+      target_date: finalTargetDate,
+      popup_active: finalPopupActive,
+      importance: editingImportance,
+      reminder_active: editingReminderActive,
+      reminder_popup_active: editingReminderPopupActive,
+      daily_reminder_time: safeDailyTime,
     }).eq('id', id);
-    setEditingId(null); fetchNotes();
+
+    if (error) {
+      alert("Erreur lors de l'enregistrement : " + error.message);
+      return;
+    }
+
+    locallyTriggeredAlarmIdsRef.current.delete(id);
+    setEditingId(null);
+    await fetchNotes();
   };
 
   const startEditing = (note: Note) => {
@@ -1132,9 +1494,20 @@ export default function Home() {
   };
 
   const snoozeNote = async (id: string, days: number) => {
-    const snoozeDate = new Date(); snoozeDate.setDate(snoozeDate.getDate() + days);
-    await supabase.from('notes').update({ snooze_until: snoozeDate.toISOString() }).eq('id', id);
-    fetchNotes();
+    const snoozeDate = new Date();
+    snoozeDate.setDate(snoozeDate.getDate() + days);
+
+    const { error } = await supabase
+      .from('notes')
+      .update({ snooze_until: snoozeDate.toISOString() })
+      .eq('id', id);
+
+    if (error) {
+      alert("Erreur lors du masquage : " + error.message);
+      return;
+    }
+
+    await fetchNotes();
   };
 
   const handleSnoozeClick = (id: string) => {
@@ -1147,23 +1520,68 @@ export default function Home() {
   };
 
   const toggleSubtask = async (note: Note, subtaskId: string) => {
-    const updated = (note.subtasks || []).map(st => st.id === subtaskId ? { ...st, completed: !st.completed } : st);
-    const allCompleted = updated.every(st => st.completed);
-    const completedAt = allCompleted ? new Date().toISOString() : '';
-    await supabase.from('notes').update({ subtasks: updated, completed: allCompleted, completed_at: completedAt }).eq('id', note.id);
-    fetchNotes();
+    const updated = (note.subtasks || []).map(st =>
+      st.id === subtaskId ? { ...st, completed: !st.completed } : st
+    );
+
+    const allCompleted = updated.length > 0 && updated.every(st => st.completed);
+    const { error } = await supabase.from('notes').update({
+      subtasks: updated,
+      completed: allCompleted,
+      completed_at: allCompleted ? new Date().toISOString() : null,
+      ...(allCompleted ? { popup_active: false } : {}),
+    }).eq('id', note.id);
+
+    if (error) {
+      alert("Erreur lors de la mise à jour de la liste : " + error.message);
+      return;
+    }
+
+    await fetchNotes();
   };
 
   const addSubtask = async (note: Note) => {
-    const text = newSubtaskTexts[note.id]; if (!text || !text.trim()) return;
-    const updatedSubtasks = [...(note.subtasks || []), { id: crypto.randomUUID(), text, completed: false }];
-    await supabase.from('notes').update({ subtasks: updatedSubtasks }).eq('id', note.id);
-    setNewSubtaskTexts(prev => ({ ...prev, [note.id]: '' })); fetchNotes();
+    const rawText = newSubtaskTexts[note.id];
+    const cleanText = rawText?.trim();
+    if (!cleanText) return;
+
+    const updatedSubtasks = [
+      ...(note.subtasks || []),
+      { id: crypto.randomUUID(), text: cleanText, completed: false },
+    ];
+
+    const { error } = await supabase.from('notes').update({
+      subtasks: updatedSubtasks,
+      completed: false,
+      completed_at: null,
+    }).eq('id', note.id);
+
+    if (error) {
+      alert("Erreur lors de l'ajout : " + error.message);
+      return;
+    }
+
+    setNewSubtaskTexts(prev => ({ ...prev, [note.id]: '' }));
+    await fetchNotes();
   };
 
   const deleteSubtask = async (note: Note, subtaskId: string) => {
     const updated = (note.subtasks || []).filter(st => st.id !== subtaskId);
-    await supabase.from('notes').update({ subtasks: updated }).eq('id', note.id); fetchNotes();
+    const allCompleted = updated.length > 0 && updated.every(st => st.completed);
+
+    const { error } = await supabase.from('notes').update({
+      subtasks: updated,
+      completed: allCompleted,
+      completed_at: allCompleted ? new Date().toISOString() : null,
+      ...(allCompleted ? { popup_active: false } : {}),
+    }).eq('id', note.id);
+
+    if (error) {
+      alert("Erreur lors de la suppression : " + error.message);
+      return;
+    }
+
+    await fetchNotes();
   };
 
   const displayedNotes = notes.filter(n => {
@@ -1340,10 +1758,10 @@ export default function Home() {
         <div className={`flex flex-col gap-1.5 mt-1 mb-1 p-2 rounded border ${showArchived === true ? 'bg-gray-100 border-gray-200' : 'bg-blue-50/50 border-blue-100'}`}>
           <div className="flex justify-between items-center w-full">
             <span className={`text-[11px] font-bold ${showArchived === true ? 'text-gray-500' : 'text-blue-800'}`}>
-              📅 {new Date(note.target_date.length === 16 ? note.target_date + ':00' : note.target_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              📅 {new Date(getSafeTime(note.target_date)).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
               {note.popup_active && ' 🔔'}
             </span>
-            <button onClick={() => { updateNote(note.id, 'target_date', ''); updateNote(note.id, 'popup_active', false); }} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
+            <button onClick={() => clearNoteDate(note.id)} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {enableGoogleCal && (
@@ -2084,7 +2502,8 @@ export default function Home() {
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                       {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
                     </div>
-                    <div className="flex justify-end mt-1">
+                    <div className="flex justify-end gap-2 mt-1">
+                      <button onClick={() => updateNote(note.id, 'completed', false)} className="bg-white border border-gray-300 text-blue-600 px-3 py-1 rounded text-xs font-bold hover:bg-blue-50 hover:border-blue-200 transition-colors">↩ Réactiver</button>
                       <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">🗑️ Supprimer</button>
                     </div>
                   </div>
