@@ -750,6 +750,46 @@ export default function Home() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  // Navigation propre de la partie Planning : on garde une seule entrée enfant
+  // (éditeur OU galerie) dans l'historique. Passer plusieurs fois de l'un à l'autre
+  // ne remplit donc plus le bouton Retour du téléphone avec toutes les étapes.
+  const refreshRouteFromCurrentHash = () => {
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  };
+
+  const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
+    const currentHash = window.location.hash;
+    const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
+    const currentIsPlanningChild = currentHash === '#planning-editor' || currentHash === '#planning-gallery';
+
+    if (currentIsPlanningChild) {
+      // Éditeur <-> galerie = même niveau logique : on remplace l'étape courante.
+      window.history.replaceState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
+      refreshRouteFromCurrentHash();
+      return;
+    }
+
+    // Depuis l'accueil Planning, on crée une seule vraie étape enfant.
+    window.history.pushState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+  };
+
+  const navigatePlanningHome = () => {
+    const currentHash = window.location.hash;
+    const currentIsPlanningChild = currentHash === '#planning-editor' || currentHash === '#planning-gallery';
+
+    if (currentIsPlanningChild && window.history.state?.planningChild) {
+      // L'accueil Planning est juste derrière l'enfant dans l'historique contrôlé.
+      window.history.back();
+      return;
+    }
+
+    // Cas de secours (ex. ouverture directe / refresh sur une URL enfant).
+    const targetUrl = `${window.location.pathname}${window.location.search}#planning`;
+    window.history.replaceState({ ...(window.history.state || {}), planningChild: false }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+  };
+
   // ==========================================
 
   const fetchNotes = async () => {
@@ -1380,7 +1420,7 @@ export default function Home() {
     setPreviewTemplate(null);
     setShowBlockModal(false);
     setShowClosePlanningModal(false);
-    window.location.hash = 'planning';
+    navigatePlanningHome();
   };
 
   const requestClosePlanning = () => {
@@ -1420,7 +1460,7 @@ export default function Home() {
     setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
     setSelectedBlockId(null);
     setEditingBlockId(null);
-    window.location.hash = 'planning-editor';
+    navigatePlanningChild('#planning-editor');
   };
 
   const startNewPlanning = () => {
@@ -1442,7 +1482,7 @@ export default function Home() {
     setSelectedBlockId(null);
     setEditingBlockId(null);
     setPreviewTemplate(null);
-    window.location.hash = 'planning-editor';
+    navigatePlanningChild('#planning-editor');
   };
 
   const duplicateSavedTemplate = async (template: PlanningTemplate) => {
@@ -1480,7 +1520,7 @@ export default function Home() {
       setSelectedBlockId(null);
       setEditingBlockId(null);
       setPreviewTemplate(null);
-      window.location.hash = 'planning-editor';
+      navigatePlanningChild('#planning-editor');
     } catch (error: any) {
       alert("Erreur lors de la duplication : " + (error?.message || "erreur inconnue"));
     } finally {
@@ -2844,7 +2884,7 @@ export default function Home() {
           </button>
 
           <button
-            onClick={() => window.location.hash = 'planning-gallery'}
+            onClick={() => navigatePlanningChild('#planning-gallery')}
             className="w-full max-w-md bg-white text-gray-900 p-7 rounded-3xl shadow-lg hover:shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-5 text-left border-2 border-gray-300"
           >
             <span className="text-5xl flex-shrink-0">📂</span>
@@ -2860,7 +2900,7 @@ export default function Home() {
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="flex items-center justify-between mb-4">
-             <button onClick={() => window.location.hash = 'planning'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
+             <button onClick={navigatePlanningHome} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
              <h1 className="text-xl font-black text-gray-800">Mes Plannings</h1>
            </div>
 
@@ -2984,7 +3024,7 @@ export default function Home() {
                   ➕ Nouveau
                 </button>
                 <button 
-                  onClick={() => window.location.hash = 'planning-gallery'} 
+                  onClick={() => navigatePlanningChild('#planning-gallery')} 
                   className="flex-1 bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
                 >
                   <span>📂</span> Mes plannings sauvegardés ({savedTemplates.length})
