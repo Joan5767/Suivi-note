@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
   try {
-    const { text, currentDate } = await req.json();
+    const { text, currentDate, timeZone, timezoneOffsetMinutes } = await req.json();
     const apiKey = process.env.GEMINI_API_KEY?.trim();
 
     if (!apiKey) {
@@ -11,6 +11,8 @@ export async function POST(req: Request) {
 
     const prompt = `Tu es l'assistant intelligent d'une application de productivité. L'utilisateur a dicté ce texte : "${text}".
     Aujourd'hui nous sommes le : ${currentDate}.
+    Fuseau horaire de l'utilisateur : ${timeZone || 'inconnu'} (getTimezoneOffset = ${timezoneOffsetMinutes ?? 'inconnu'} minutes).
+    Pour toute date/heure déduite de la demande, respecte l'heure locale de l'utilisateur. Retourne une date ISO 8601 avec un décalage UTC explicite (ex: 2026-09-15T17:00:00+02:00) plutôt qu'un Z arbitraire.
     
     Ton unique rôle est d'analyser la demande et de la convertir STRICTEMENT en un objet JSON valide.
     RÈGLE ABSOLUE : Extrais les informations de configuration (dates, heures, e-mails, rappels) pour remplir les clés spécifiques, et NE LES RÉPÈTE PAS dans le titre ou le contenu.

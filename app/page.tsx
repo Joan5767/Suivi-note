@@ -149,7 +149,7 @@ export default function Home() {
   const [blockColor, setBlockColor] = useState('blue');
 
   // Redimensionnement des blocs : une ref évite les pertes d'événements pendant le drag tactile/souris.
-  const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; pointerId: number } | null>(null);
+  const resizingBlockRef = useRef<{ id: string; startY: number; initialDuration: number; maxDuration: number; pointerId: number } | null>(null);
 
   // ==========================================
   // === 1. BLOCAGE DU ZOOM NATIF DU NAVIGATEUR
@@ -548,26 +548,55 @@ export default function Home() {
 
   const saveBlock = () => {
     if (!blockTitle.trim()) return;
+
     const [hStr, mStr] = blockTime.split(':');
-    const startHour = parseInt(hStr, 10);
-    const startMinute = parseInt(mStr, 10) || 0;
+    const parsedHour = parseInt(hStr, 10);
+    const parsedMinute = parseInt(mStr, 10);
+
+    if (!Number.isFinite(parsedHour) || !Number.isFinite(parsedMinute)) {
+      alert("Heure invalide.");
+      return;
+    }
+
+    // La grille couvre 7:00 -> 23:00 (la ligne 22h représente 22:00 à 23:00).
+    // On borne l'heure par pas de 15 min pour empêcher un bloc de sortir de la grille.
+    const planningStartMinutes = PLANNING_START_HOUR * 60;
+    const planningEndMinutes = (PLANNING_END_HOUR + 1) * 60;
+    const requestedStartMinutes = parsedHour * 60 + parsedMinute;
+    const snappedStartMinutes = Math.round(requestedStartMinutes / 15) * 15;
+    const safeStartMinutes = Math.min(planningEndMinutes - 15, Math.max(planningStartMinutes, snappedStartMinutes));
+
+    const startHour = Math.floor(safeStartMinutes / 60);
+    const startMinute = safeStartMinutes % 60;
+    const maxDuration = Math.max(15, planningEndMinutes - safeStartMinutes);
 
     if (editingBlockId) {
-      setWeeklyBlocks(prev => prev.map(b => b.id === editingBlockId ? {
-        ...b, title: blockTitle, day: blockDay, startHour, startMinute, color: blockColor
-      } : b));
+      setWeeklyBlocks(prev => prev.map(b => {
+        if (b.id !== editingBlockId) return b;
+        const safeDuration = Math.min(maxDuration, Math.max(15, b.duration || 60));
+        return {
+          ...b,
+          title: blockTitle,
+          day: blockDay,
+          startHour,
+          startMinute,
+          duration: safeDuration,
+          color: blockColor
+        };
+      }));
     } else {
       const newBlock: WeeklyBlock = {
         id: crypto.randomUUID(),
         title: blockTitle,
         day: blockDay,
-        startHour: startHour,
-        startMinute: startMinute,
-        duration: 60,
+        startHour,
+        startMinute,
+        duration: Math.min(60, maxDuration),
         color: blockColor
       };
       setWeeklyBlocks(prev => [...prev, newBlock]);
     }
+
     setShowBlockModal(false);
     setEditingBlockId(null);
     setSelectedBlockId(null);
@@ -590,10 +619,15 @@ export default function Home() {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch (_) {}
 
+    const planningEndMinutes = (PLANNING_END_HOUR + 1) * 60;
+    const blockStartMinutes = block.startHour * 60 + (block.startMinute || 0);
+    const maxDuration = Math.max(15, planningEndMinutes - blockStartMinutes);
+
     resizingBlockRef.current = {
       id: block.id,
       startY: e.clientY,
       initialDuration: block.duration || 60,
+      maxDuration,
       pointerId: e.pointerId
     };
   };
@@ -609,8 +643,11 @@ export default function Home() {
     const activeHourHeight = currentHourHeight.current || 64;
     const rawDuration = resizing.initialDuration + ((diffY * 60) / activeHourHeight);
 
-    // Pas de 15 minutes, durée minimale de 30 minutes.
-    const snappedDuration = Math.max(30, Math.round(rawDuration / 15) * 15);
+    // Pas de 15 minutes. On empêche également le bloc de dépasser le bas de la grille.
+    const snappedDuration = Math.min(
+      resizing.maxDuration,
+      Math.max(15, Math.round(rawDuration / 15) * 15)
+    );
 
     setWeeklyBlocks(prev => prev.map(b =>
       b.id === resizing.id ? { ...b, duration: snappedDuration } : b
@@ -713,6 +750,7 @@ export default function Home() {
     const link = document.createElement('a'); 
     link.href = url; link.download = 'ma_semaine_type.ics'; 
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Référentiel unique du planning : tous les calculs de position, hauteur et aperçu
@@ -791,7 +829,16 @@ export default function Home() {
     if (error) { alert("Erreur Supabase : " + error.message); setLoading(false); return; }
 
     if (sendImmediateEmail) {
-      await fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle.trim() ? newTitle : "Nouvelle note", importance }) });
+      const mailRes = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle.trim() ? newTitle : "Nouvelle note", importance })
+      });
+
+      if (!mailRes.ok) {
+        const mailError = await mailRes.json().catch(() => ({}));
+        alert("La note a été créée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || "erreur inconnue"));
+      }
     }
 
     setNewTitle(''); setNewContent(''); setImportance('vert'); setNewListItems([]); setCurrentNewListItem('');
@@ -815,9 +862,23 @@ export default function Home() {
   };
 
   const triggerImmediateEmail = async (note: Note) => {
-    if (window.confirm('Es-tu sûr de vouloir envoyer un e-mail immédiat pour cette note ?')) {
-      await fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance }) });
+    if (!window.confirm('Es-tu sûr de vouloir envoyer un e-mail immédiat pour cette note ?')) return;
+
+    try {
+      const res = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Erreur inconnue");
+      }
+
       alert('E-mail envoyé avec succès !');
+    } catch (e: any) {
+      alert("Échec de l'envoi de l'e-mail : " + e.message);
     }
   };
 
@@ -837,7 +898,12 @@ export default function Home() {
     try {
       const res = await fetch('/api/gemini', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: finalTranscript, currentDate: new Date().toLocaleString('fr-FR') })
+        body: JSON.stringify({
+          text: finalTranscript,
+          currentDate: new Date().toLocaleString('fr-FR'),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezoneOffsetMinutes: new Date().getTimezoneOffset()
+        })
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -912,29 +978,71 @@ export default function Home() {
 
   const confirmAiNote = async (data: any) => {
     setLoading(true);
-    let targetDateValue = '';
-    if (data.popup_time) targetDateValue = new Date(data.popup_time).toISOString();
-    else if (data.calendar_time) targetDateValue = new Date(data.calendar_time).toISOString();
-    
-    const isPopupActive = !!data.popup_time; 
 
-    const { error } = await supabase.from('notes').insert([{
-      title: data.title || '', content: data.content || '', importance: data.importance || 'vert', subtasks: [],
-      is_list: data.is_list || false, reminder_active: false, reminder_popup_active: false,
-      target_date: targetDateValue, popup_active: isPopupActive
-    }]);
+    try {
+      let targetDateValue = '';
+      if (data.popup_time) targetDateValue = new Date(data.popup_time).toISOString();
+      else if (data.calendar_time) targetDateValue = new Date(data.calendar_time).toISOString();
 
-    if (error) alert("Erreur Supabase : " + error.message);
-    else {
-      if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
-      
-      setAiProposal(null); setNewTitle(''); setNewContent(''); setNewListItems([]); setCurrentNewListItem('');
+      const isPopupActive = !!data.popup_time;
+      const dailyReminderActive = !!data.daily_reminder;
+      const dailyReminderTime =
+        typeof data.daily_reminder_time === 'string' && /^\d{2}:\d{2}$/.test(data.daily_reminder_time)
+          ? data.daily_reminder_time
+          : '09:00';
+
+      const { error } = await supabase.from('notes').insert([{
+        title: data.title || '',
+        content: data.content || '',
+        importance: data.importance || 'vert',
+        subtasks: [],
+        is_list: data.is_list || false,
+        reminder_active: dailyReminderActive,
+        reminder_popup_active: false,
+        daily_reminder_time: dailyReminderTime,
+        target_date: targetDateValue,
+        popup_active: isPopupActive
+      }]);
+
+      if (error) {
+        alert("Erreur Supabase : " + error.message);
+        return;
+      }
+
+      if (data.send_email) {
+        const mailRes = await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: data.title || 'Nouvelle note',
+            importance: data.importance || 'vert'
+          })
+        });
+
+        if (!mailRes.ok) {
+          const mailError = await mailRes.json().catch(() => ({}));
+          alert("La note a été créée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || "erreur inconnue"));
+        }
+      }
+
+      if (isPopupActive && 'Notification' in window && Notification.permission !== 'granted') {
+        Notification.requestPermission().catch(() => {});
+      }
+
+      setAiProposal(null);
+      setNewTitle('');
+      setNewContent('');
+      setNewListItems([]);
+      setCurrentNewListItem('');
       fetchNotes();
       window.location.hash = 'notes-list';
       setSuccessMessage('✅ Note créée avec succès par IA !');
       setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (e: any) {
+      alert("Erreur lors de la création IA : " + e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const loadProposalIntoForm = (data: any) => {
@@ -942,6 +1050,18 @@ export default function Home() {
     if (data.content) setNewContent(data.content);
     if (data.importance) setImportance(data.importance);
     if (data.is_list !== undefined) setNoteMode(data.is_list ? 'list' : 'text');
+
+    if (data.send_email) {
+      setSendImmediateEmail(true);
+      setShowAdvancedSettings(true);
+    }
+
+    if (data.daily_reminder) {
+      setActivateReminder(true);
+      setDailyTime(data.daily_reminder_time || '09:00');
+      setShowDailyConfig(true);
+      setShowAdvancedSettings(true);
+    }
     
     if (data.popup_time) {
       const diffMs = getSafeTime(data.popup_time) - Date.now();
@@ -980,7 +1100,7 @@ export default function Home() {
     const dates = formatDatesForCalendar(note.target_date || ''); if (!dates) return;
     const icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${note.title || 'Note'}\nDESCRIPTION:${note.content || ''}\nDTSTART:${dates.start}\nDTEND:${dates.end}\nEND:VEVENT\nEND:VCALENDAR`.replace(/\n/g, '\r\n');
     const blob = new Blob([icsContent], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'rendez-vous.ics'; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
   };
   
   const saveEdit = async (id: string) => {

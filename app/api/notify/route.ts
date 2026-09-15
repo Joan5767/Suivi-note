@@ -9,7 +9,7 @@ export async function POST(request: Request) {
     const icon = importance === 'rouge' ? '🔴' : importance === 'orange' ? '🟠' : '🟢';
     const color = importance === 'rouge' ? '#ef4444' : importance === 'orange' ? '#f97316' : '#22c55e';
 
-    await resend.emails.send({
+    const { error: resendError } = await resend.emails.send({
       from: 'Rappels <onboarding@resend.dev>',
       to: process.env.NOTIFICATION_EMAIL!,
       subject: `📝 NOUVELLE NOTE : ${title}`,
@@ -25,6 +25,10 @@ export async function POST(request: Request) {
         </div>
       `
     });
+
+    if (resendError) {
+      return NextResponse.json({ error: resendError.message || "Erreur Resend" }, { status: 502 });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
