@@ -202,6 +202,7 @@ export default function Home() {
   const [activeTemplateName, setActiveTemplateName] = useState('');
   const [planningSavedSnapshot, setPlanningSavedSnapshot] = useState<string | null>(null);
   const [showClosePlanningModal, setShowClosePlanningModal] = useState(false);
+  const [planningExitTarget, setPlanningExitTarget] = useState<'home' | 'gallery'>('home');
   const [showPlanningAbout, setShowPlanningAbout] = useState(false);
   const [showPlanningGestures, setShowPlanningGestures] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -224,6 +225,9 @@ export default function Home() {
   const [draggingBlockPreview, setDraggingBlockPreview] = useState<{ day: string; hour: number; minute: number } | null>(null);
   const suppressedBlockClickIdsRef = useRef<Set<string>>(new Set());
   const activeBlockDragCleanupRef = useRef<(() => void) | null>(null);
+  // Permet à une sortie déjà confirmée (Enregistrer / Ne pas enregistrer) de traverser
+  // le routeur sans rouvrir immédiatement la demande de sauvegarde.
+  const planningExitInProgressRef = useRef(false);
 
   // Passe à true seulement après la restauration initiale de localStorage. Cela évite
   // que les valeurs par défaut écrasent un brouillon existant au premier rendu.
@@ -699,22 +703,64 @@ export default function Home() {
   // ==========================================
   // === SYSTÈME DE ROUTAGE NATIF (RETOUR) ====
   // ==========================================
+  const clearPlanningEditorState = () => {
+    setWeeklyBlocks([]);
+    setActiveTemplateId(null);
+    setActiveTemplateName('');
+    setPlanningSavedSnapshot(null);
+    setSelectedBlockId(null);
+    setEditingBlockId(null);
+    setPreviewTemplate(null);
+    setShowBlockModal(false);
+  };
+
   const appStateRef = useRef({
-    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-    openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+    showBlockModal, showCleanupModal, aiProposal, triggeredAlarm,
+    openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate,
+    activeTemplateId, isPlanningDirty, weeklyBlockCount: weeklyBlocks.length
   });
 
   useEffect(() => {
     appStateRef.current = {
-      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm, 
-      openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate
+      showBlockModal, showCleanupModal, aiProposal, triggeredAlarm,
+      openMenuId, editingId, isFocusMode, activeTab, mainMode, previewTemplate,
+      activeTemplateId, isPlanningDirty, weeklyBlockCount: weeklyBlocks.length
     };
   });
 
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
-      
+      const routeState = appStateRef.current;
+
+      const confirmedPlanningExit = planningExitInProgressRef.current;
+      if (confirmedPlanningExit) planningExitInProgressRef.current = false;
+
+      // Retour Android / navigateur depuis l'éditeur : s'il y a des changements,
+      // on reste dans l'éditeur jusqu'au choix Enregistrer / Ne pas enregistrer.
+      if (!confirmedPlanningExit && routeState.mainMode === 'planning' && hash !== '#planning-editor') {
+        const hasUnsavedChanges = routeState.activeTemplateId
+          ? routeState.isPlanningDirty
+          : routeState.weeklyBlockCount > 0;
+
+        if (hasUnsavedChanges) {
+          setPlanningExitTarget(hash === '#planning-gallery' ? 'gallery' : 'home');
+          setShowClosePlanningModal(true);
+
+          if (hash === '#planning') {
+            window.setTimeout(() => window.history.forward(), 0);
+          } else {
+            const editorUrl = `${window.location.pathname}${window.location.search}#planning-editor`;
+            window.history.replaceState({ ...(window.history.state || {}), planningChild: true }, '', editorUrl);
+          }
+          return;
+        }
+
+        clearPlanningEditorState();
+      } else if (confirmedPlanningExit || hash === '#planning' || hash === '#planning-gallery') {
+        clearPlanningEditorState();
+      }
+
       setShowBlockModal(false);
       setShowCleanupModal(false);
       setAiProposal(null);
@@ -753,7 +799,7 @@ export default function Home() {
     if (!window.location.hash) {
       window.history.replaceState(null, '', window.location.pathname + '#hub');
     }
-    
+
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
@@ -1435,64 +1481,45 @@ export default function Home() {
     }
   };
 
-  const closePlanningNow = () => {
-    setWeeklyBlocks([]);
-    setActiveTemplateId(null);
-    setActiveTemplateName('');
-    setPlanningSavedSnapshot(null);
-    setSelectedBlockId(null);
-    setEditingBlockId(null);
-    setPreviewTemplate(null);
-    setShowBlockModal(false);
+  const finishPlanningExit = (target: 'home' | 'gallery') => {
+    planningExitInProgressRef.current = true;
+    clearPlanningEditorState();
     setShowClosePlanningModal(false);
-    navigatePlanningHome();
+
+    if (target === 'gallery') {
+      navigatePlanningChild('#planning-gallery');
+    } else {
+      navigatePlanningHome();
+    }
   };
 
-  const requestClosePlanning = () => {
+  const requestPlanningExit = (target: 'home' | 'gallery') => {
     const hasUnsavedChanges = activeTemplateId ? isPlanningDirty : weeklyBlocks.length > 0;
+    setPlanningExitTarget(target);
 
     if (hasUnsavedChanges) {
       setShowClosePlanningModal(true);
       return;
     }
 
-    closePlanningNow();
+    finishPlanningExit(target);
   };
 
-  const saveAndClosePlanning = async () => {
+  const saveAndExitPlanning = async () => {
     const saved = await saveTemplateToDB();
-    if (saved) closePlanningNow();
+    if (saved) finishPlanningExit(planningExitTarget);
   };
 
-  const loadTemplate = (template: PlanningTemplate) => {
-    const hasUnsavedChanges = activeTemplateId ? isPlanningDirty : weeklyBlocks.length > 0;
+  const cancelPlanningExit = () => {
+    setShowClosePlanningModal(false);
 
-    if (
-      hasUnsavedChanges &&
-      !window.confirm(
-        activeTemplateId
-          ? `Tu as des modifications non enregistrées sur « ${activeTemplateName || 'le planning en cours'} ». Les abandonner et charger « ${template.name} » ?`
-          : `Abandonner le brouillon actuel et charger « ${template.name} » ?`
-      )
-    ) {
-      return;
+    if (window.location.hash !== '#planning-editor' && mainMode === 'planning') {
+      const editorUrl = `${window.location.pathname}${window.location.search}#planning-editor`;
+      window.history.replaceState({ ...(window.history.state || {}), planningChild: true }, '', editorUrl);
     }
-
-    const loadedBlocks = normalizeWeeklyBlocks(template.blocks);
-    setWeeklyBlocks(loadedBlocks);
-    setActiveTemplateId(template.id);
-    setActiveTemplateName(template.name);
-    setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
-    setSelectedBlockId(null);
-    setEditingBlockId(null);
-    navigatePlanningChild('#planning-editor');
   };
 
-  const replacePlanningFromPreview = (template: PlanningTemplate) => {
-    if (!window.confirm("Le brouillon actuel ne sera pas enregistré. Voulez-vous continuer ?")) {
-      return;
-    }
-
+  const editSavedTemplate = (template: PlanningTemplate) => {
     const loadedBlocks = normalizeWeeklyBlocks(template.blocks);
     setWeeklyBlocks(loadedBlocks);
     setActiveTemplateId(template.id);
@@ -2889,8 +2916,8 @@ export default function Home() {
             </div>
 
             <div className="mt-4">
-              <button onClick={() => replacePlanningFromPreview(previewTemplate)} className="w-full bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 rounded-xl transition-colors">
-                Remplacer planning en cours par ce modèle
+              <button onClick={() => editSavedTemplate(previewTemplate)} className="w-full bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 rounded-xl transition-colors">
+                Éditer le planning
               </button>
             </div>
           </div>
@@ -2938,39 +2965,39 @@ export default function Home() {
         </div>
       )}
 
-      {/* MODALE : FERMER LE PLANNING */}
+      {/* MODALE : QUITTER L'ÉDITION DU PLANNING */}
       {showClosePlanningModal && (
-        <div className="fixed inset-0 bg-black/70 z-[12000] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4">
+        <div className="fixed inset-0 bg-black/45 z-[12000] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-[#FBF9F4] border border-[#DDD5C7] rounded-[26px] shadow-2xl p-6 w-full max-w-md flex flex-col gap-4">
             <div>
-              <h2 className="text-xl font-black text-gray-900">Fermer le planning ?</h2>
-              <p className="text-sm text-gray-600 font-semibold mt-2">
+              <h2 className="text-xl font-black text-[#46513F]">Enregistrer les modifications ?</h2>
+              <p className="text-sm text-[#6A6258] font-semibold mt-2">
                 {activeTemplateId
-                  ? <>Tu as des modifications non enregistrées sur <strong>« {activeTemplateName || 'ce planning'} »</strong>.</>
-                  : <>Ce nouveau planning contient des modifications qui ne sont pas encore sauvegardées.</>}
+                  ? <>Tu as modifié <strong>« {activeTemplateName || 'ce planning'} »</strong>. Veux-tu enregistrer les modifications avant de quitter l&apos;édition ?</>
+                  : <>Ce nouveau planning n&apos;est pas encore sauvegardé. Veux-tu l&apos;enregistrer avant de quitter l&apos;édition ?</>}
               </p>
             </div>
 
             <button
-              onClick={() => void saveAndClosePlanning()}
+              onClick={() => void saveAndExitPlanning()}
               disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-black py-3 rounded-xl shadow"
+              className="w-full bg-[#C8D2BC] hover:bg-[#BAC7AD] disabled:opacity-60 text-[#35412F] font-black py-3 rounded-xl"
             >
-              {loading ? 'Enregistrement…' : '💾 Enregistrer et fermer'}
+              {loading ? 'Enregistrement…' : '💾 Enregistrer'}
             </button>
 
             <button
-              onClick={closePlanningNow}
+              onClick={() => finishPlanningExit(planningExitTarget)}
               disabled={loading}
-              className="w-full bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-700 font-black py-3 rounded-xl border border-red-200"
+              className="w-full bg-[#E9DDD0] hover:bg-[#DFCFBE] disabled:opacity-60 text-[#684F3D] font-black py-3 rounded-xl border border-[#DCCBBC]"
             >
-              Fermer sans enregistrer
+              Ne pas enregistrer
             </button>
 
             <button
-              onClick={() => setShowClosePlanningModal(false)}
+              onClick={cancelPlanningExit}
               disabled={loading}
-              className="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-800 font-bold py-3 rounded-xl"
+              className="w-full bg-[#EEE9E0] hover:bg-[#E5DED4] disabled:opacity-60 text-[#665F55] font-bold py-3 rounded-xl"
             >
               Annuler
             </button>
@@ -3171,17 +3198,21 @@ export default function Home() {
                        >
                          {tmpl.name}
                        </button>
-                       {activeTemplateId === tmpl.id && (
-                         <span className="flex-shrink-0 bg-green-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full">EN COURS</span>
-                       )}
                      </div>
                      <span className="text-[#7B856F] cursor-grab px-1">⣿</span>
                    </div>
 
-                   {/* GÉNÉRATEUR DE MINIATURE (Aperçu visuel de la grille) */}
-                   <div className="h-32 bg-gray-50 w-full relative flex border-b border-gray-200 p-1 pointer-events-none">
+                   {/* La miniature EST l'aperçu : un toucher l'ouvre en grand. */}
+                   <button
+                     type="button"
+                     draggable={false}
+                     onPointerDown={(e) => e.stopPropagation()}
+                     onClick={(e) => { e.stopPropagation(); setPreviewTemplate(tmpl); }}
+                     className="h-32 bg-gray-50 w-full relative flex border-b border-gray-200 p-1 cursor-pointer hover:bg-[#F7F4ED] transition-colors text-left"
+                     aria-label={`Ouvrir l'aperçu de ${tmpl.name}`}
+                   >
                      {WEEK_DAYS.map((dayName, dIdx) => (
-                       <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full">
+                       <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full pointer-events-none">
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                            const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
                            const colorClass = ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500';
@@ -3198,26 +3229,21 @@ export default function Home() {
 
                            const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                            return (
-                             <div 
-                               key={ev.id} 
+                             <div
+                               key={ev.id}
                                className={`absolute left-0.5 right-0.5 rounded-[2px] opacity-80 ${colorClass}`}
                                style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}
                              />
-                           )
+                           );
                          })}
                        </div>
                      ))}
-                   </div>
+                   </button>
 
-                   {/* Boutons d'action */}
-                   <div
-                     className="p-2 flex items-center gap-1.5 bg-[#F4F0E9] overflow-x-auto overscroll-x-contain [&::-webkit-scrollbar]:hidden"
-                     style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}
-                   >
-                     <button onClick={() => setPreviewTemplate(tmpl)} className="flex-shrink-0 px-2.5 py-1.5 bg-white hover:bg-[#ECE7DE] text-[#665F55] border border-[#DDD5C9] font-bold text-[10px] rounded-lg transition-colors">Aperçu</button>
-                     <button onClick={() => loadTemplate(tmpl)} className="flex-shrink-0 bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black text-[10px] py-1.5 px-3 rounded-lg transition-colors">Charger</button>
-                     <button onClick={() => duplicateSavedTemplate(tmpl)} className="flex-shrink-0 px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer">⧉</button>
-                     <button onClick={() => deleteSavedTemplate(tmpl.id)} className="flex-shrink-0 px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer">🗑</button>
+                   {/* Actions secondaires : l'ouverture et l'édition passent par la miniature. */}
+                   <div className="p-2 flex items-center justify-end gap-1.5 bg-[#F4F0E9]">
+                     <button onClick={() => duplicateSavedTemplate(tmpl)} className="px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer" title="Dupliquer">⧉</button>
+                     <button onClick={() => deleteSavedTemplate(tmpl.id)} className="px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer" title="Supprimer">🗑</button>
                    </div>
                  </div>
                ))}
@@ -3230,12 +3256,12 @@ export default function Home() {
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="grid grid-cols-[1fr_auto_1fr] items-start mb-1 gap-2">
-             <button onClick={requestClosePlanning} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-colors pt-1.5">✕ Fermer</button>
+             <button onClick={() => requestPlanningExit('home')} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-colors pt-1.5">✕ Fermer</button>
              <div className="text-center min-w-0">
                <h1 className="text-xl font-black text-[#4B5843]">Ma semaine</h1>
                {activeTemplateId && (
                  <p className={`text-[10px] font-bold truncate ${isPlanningDirty ? 'text-[#A4764F]' : 'text-[#718064]'}`}>
-                   {activeTemplateName} · {isPlanningDirty ? 'modifié' : 'à jour'}
+                   {activeTemplateName}{isPlanningDirty ? ' · modifié' : ''}
                  </p>
                )}
              </div>
@@ -3258,11 +3284,11 @@ export default function Home() {
                      : 'bg-[#C8D2BC] text-[#35412F] hover:bg-[#BAC7AD]'
                  }`}
                >
-                 {activeTemplateId && !isPlanningDirty ? '✓ Planning à jour' : 'Sauvegarder le planning'}
+                 Sauvegarder le planning
                </button>
 
                <button
-                 onClick={() => navigatePlanningChild('#planning-gallery')}
+                 onClick={() => requestPlanningExit('gallery')}
                  className="flex-1 min-w-0 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black py-2.5 px-2 rounded-xl text-[11px] sm:text-xs transition-colors"
                >
                  Plannings sauvegardés
