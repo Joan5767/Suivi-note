@@ -4207,7 +4207,6 @@ export default function Home() {
                 </div>
 
                 <input
-                  autoFocus
                   type="text"
                   value={memoDraftTitle}
                   onChange={(e) => setMemoDraftTitle(e.target.value)}
