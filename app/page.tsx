@@ -349,6 +349,82 @@ export default function Home() {
         .sort((a, b) => a.id.localeCompare(b.id))
     );
 
+
+  // Répartit les tâches qui se chevauchent en colonnes côte à côte,
+  // comme dans Google Calendar. Les repères horaires restent sur toute la largeur.
+  const getTaskOverlapLayoutMap = (blocks: WeeklyBlock[]) => {
+    const layouts = new Map<string, { columnIndex: number; columnCount: number }>();
+    const tasksByDay = new Map<string, WeeklyBlock[]>();
+
+    blocks
+      .filter(block => block.kind !== 'marker')
+      .forEach(block => {
+        const dayTasks = tasksByDay.get(block.day) || [];
+        dayTasks.push(block);
+        tasksByDay.set(block.day, dayTasks);
+      });
+
+    const getStartMinutes = (block: WeeklyBlock) => block.startHour * 60 + (block.startMinute || 0);
+    const getEndMinutes = (block: WeeklyBlock) => getStartMinutes(block) + Math.max(1, block.duration || 60);
+
+    tasksByDay.forEach(dayTasks => {
+      const sortedTasks = [...dayTasks].sort((a, b) => {
+        const startDiff = getStartMinutes(a) - getStartMinutes(b);
+        if (startDiff !== 0) return startDiff;
+        return getEndMinutes(b) - getEndMinutes(a);
+      });
+
+      let currentGroup: WeeklyBlock[] = [];
+      let currentGroupEnd = -Infinity;
+
+      const assignCurrentGroup = () => {
+        if (currentGroup.length === 0) return;
+
+        const columnEnds: number[] = [];
+        const assignments: Array<{ id: string; columnIndex: number }> = [];
+
+        currentGroup.forEach(task => {
+          const taskStart = getStartMinutes(task);
+          const taskEnd = getEndMinutes(task);
+          let columnIndex = columnEnds.findIndex(columnEnd => columnEnd <= taskStart);
+
+          if (columnIndex === -1) {
+            columnIndex = columnEnds.length;
+            columnEnds.push(taskEnd);
+          } else {
+            columnEnds[columnIndex] = taskEnd;
+          }
+
+          assignments.push({ id: task.id, columnIndex });
+        });
+
+        const columnCount = Math.max(1, columnEnds.length);
+        assignments.forEach(({ id, columnIndex }) => {
+          layouts.set(id, { columnIndex, columnCount });
+        });
+      };
+
+      sortedTasks.forEach(task => {
+        const taskStart = getStartMinutes(task);
+        const taskEnd = getEndMinutes(task);
+
+        // Strictement inférieur : 10h-11h et 11h-12h ne se chevauchent pas.
+        if (currentGroup.length === 0 || taskStart < currentGroupEnd) {
+          currentGroup.push(task);
+          currentGroupEnd = Math.max(currentGroupEnd, taskEnd);
+        } else {
+          assignCurrentGroup();
+          currentGroup = [task];
+          currentGroupEnd = taskEnd;
+        }
+      });
+
+      assignCurrentGroup();
+    });
+
+    return layouts;
+  };
+
   const currentPlanningSnapshot = getPlanningSnapshot(weeklyBlocks);
   const isPlanningDirty = activeTemplateId
     ? planningSavedSnapshot !== currentPlanningSnapshot
@@ -3171,6 +3247,14 @@ export default function Home() {
     </li>
   );
 
+  const planningTaskOverlapLayouts = getTaskOverlapLayoutMap(weeklyBlocks);
+  const previewTaskOverlapLayouts = previewTemplate
+    ? getTaskOverlapLayoutMap(previewTemplate.blocks || [])
+    : new Map<string, { columnIndex: number; columnCount: number }>();
+  const savedTemplateOverlapLayouts = new Map(
+    savedTemplates.map(template => [template.id, getTaskOverlapLayoutMap(template.blocks || [])])
+  );
+
   return (
     <main className="max-w-7xl mx-auto p-4 pb-20 relative">
 
@@ -3448,6 +3532,8 @@ export default function Home() {
                       <div className="absolute left-0 right-0 bottom-0" style={{ top: '24px' }}>
                         {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                           const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
+                          const overlapLayout = previewTaskOverlapLayouts.get(ev.id) || { columnIndex: 0, columnCount: 1 };
+                          const columnWidth = 100 / overlapLayout.columnCount;
 
                           if (ev.kind === 'marker') {
                             return (
@@ -3464,7 +3550,16 @@ export default function Home() {
 
                           const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                           return (
-                            <div key={ev.id} className="absolute left-0 right-0 p-0.5" style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}>
+                            <div
+                              key={ev.id}
+                              className="absolute p-0.5"
+                              style={{
+                                top: `${topPercent}%`,
+                                height: `${heightPercent}%`,
+                                left: `calc(${overlapLayout.columnIndex * columnWidth}% + 1px)`,
+                                width: `calc(${columnWidth}% - 2px)`,
+                              }}
+                            >
                               <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
                                 <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
                               </div>
@@ -3779,6 +3874,8 @@ export default function Home() {
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                            const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
                            const colorClass = ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500';
+                           const overlapLayout = savedTemplateOverlapLayouts.get(tmpl.id)?.get(ev.id) || { columnIndex: 0, columnCount: 1 };
+                           const columnWidth = 100 / overlapLayout.columnCount;
 
                            if (ev.kind === 'marker') {
                              return (
@@ -3794,8 +3891,13 @@ export default function Home() {
                            return (
                              <div
                                key={ev.id}
-                               className={`absolute left-0.5 right-0.5 rounded-[2px] opacity-80 ${colorClass}`}
-                               style={{ top: `${topPercent}%`, height: `${heightPercent}%` }}
+                               className={`absolute rounded-[2px] opacity-80 ${colorClass}`}
+                               style={{
+                                 top: `${topPercent}%`,
+                                 height: `${heightPercent}%`,
+                                 left: `calc(${overlapLayout.columnIndex * columnWidth}% + 1px)`,
+                                 width: `calc(${columnWidth}% - 2px)`,
+                               }}
                              />
                            );
                          })}
@@ -3961,6 +4063,8 @@ export default function Home() {
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
                      const isDragging = draggingBlockId === ev.id;
+                     const overlapLayout = planningTaskOverlapLayouts.get(ev.id) || { columnIndex: 0, columnCount: 1 };
+                     const taskColumnWidth = 100 / overlapLayout.columnCount;
                      // Évite que la bulle soit rognée sous la colonne des heures ou hors du bord droit.
                      const popoverHorizontalClass =
                        dayName === 'Lundi' || dayName === 'Mardi'
@@ -4052,8 +4156,13 @@ export default function Home() {
                      return (
                        <div 
                          key={ev.id} 
-                         className={`absolute left-1 right-1 p-0.5 ${isDragging ? 'z-[850]' : isSelected ? 'z-[400]' : 'z-10'}`}
-                         style={{ top: `${topPx + PLANNING_HEADER_HEIGHT}px`, height: `${heightPx}px` }} 
+                         className={`absolute p-0.5 ${isDragging ? 'z-[850]' : isSelected ? 'z-[400]' : 'z-10'}`}
+                         style={{
+                           top: `${topPx + PLANNING_HEADER_HEIGHT}px`,
+                           height: `${heightPx}px`,
+                           left: `calc(${overlapLayout.columnIndex * taskColumnWidth}% + 2px)`,
+                           width: `calc(${taskColumnWidth}% - 4px)`,
+                         }} 
                        >
                          <div 
                            onTouchStart={(e) => startTouchBlockDrag(e, ev)}
@@ -4221,6 +4330,8 @@ export default function Home() {
                          max={16}
                          inputMode="numeric"
                          value={blockDurationHours}
+                         onFocus={(e) => e.currentTarget.select()}
+                         onClick={(e) => e.currentTarget.select()}
                          onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
                          className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
                          aria-label="Durée en heures"
@@ -4232,6 +4343,8 @@ export default function Home() {
                          max={59}
                          inputMode="numeric"
                          value={blockDurationMinutes}
+                         onFocus={(e) => e.currentTarget.select()}
+                         onClick={(e) => e.currentTarget.select()}
                          onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
                          className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
                          aria-label="Durée en minutes"
