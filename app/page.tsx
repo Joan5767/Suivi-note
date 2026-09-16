@@ -130,8 +130,11 @@ export default function Home() {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
+  const [popupScheduleMode, setPopupScheduleMode] = useState<'relative' | 'datetime'>('relative');
   const [popupHours, setPopupHours] = useState('');
   const [popupMinutes, setPopupMinutes] = useState('');
+  const [popupDateTime, setPopupDateTime] = useState('');
+  const [showNotesHelp, setShowNotesHelp] = useState(false);
   const [showDailyConfig, setShowDailyConfig] = useState(false);
   const [activateReminder, setActivateReminder] = useState(false); 
   const [reminderPopupActive, setReminderPopupActive] = useState(false); 
@@ -157,7 +160,11 @@ export default function Home() {
   const [editingContent, setEditingContent] = useState('');
   const [editingTargetDate, setEditingTargetDate] = useState('');
   const [editingPopupActive, setEditingPopupActive] = useState(false);
+  const [showEditingAdvancedSettings, setShowEditingAdvancedSettings] = useState(false);
+  const [editingSendImmediateEmail, setEditingSendImmediateEmail] = useState(false);
   const [showEditingPopupConfig, setShowEditingPopupConfig] = useState(false);
+  const [editingPopupScheduleMode, setEditingPopupScheduleMode] = useState<'relative' | 'datetime'>('relative');
+  const [editingPopupDateTime, setEditingPopupDateTime] = useState('');
   const [showEditingExactDateConfig, setShowEditingExactDateConfig] = useState(false);
   const [editingPopupHours, setEditingPopupHours] = useState('');
   const [editingPopupMinutes, setEditingPopupMinutes] = useState('');
@@ -175,6 +182,7 @@ export default function Home() {
   const [aiProposal, setAiProposal] = useState<AiProposal | null>(null);
   const recognitionRef = useRef<any>(null);
   const [triggeredAlarm, setTriggeredAlarm] = useState<Note | null>(null);
+  const [highlightedNoteId, setHighlightedNoteId] = useState<string | null>(null);
   const locallyTriggeredAlarmIdsRef = useRef<Set<string>>(new Set());
 
   const [showCleanupModal, setShowCleanupModal] = useState(false);
@@ -366,8 +374,10 @@ export default function Home() {
         if (typeof draft.showAdvancedSettings === 'boolean') setShowAdvancedSettings(draft.showAdvancedSettings);
         if (typeof draft.sendImmediateEmail === 'boolean') setSendImmediateEmail(draft.sendImmediateEmail);
         if (typeof draft.showPopupConfig === 'boolean') setShowPopupConfig(draft.showPopupConfig);
+        if (draft.popupScheduleMode === 'relative' || draft.popupScheduleMode === 'datetime') setPopupScheduleMode(draft.popupScheduleMode);
         if (typeof draft.popupHours === 'string') setPopupHours(draft.popupHours);
         if (typeof draft.popupMinutes === 'string') setPopupMinutes(draft.popupMinutes);
+        if (typeof draft.popupDateTime === 'string') setPopupDateTime(draft.popupDateTime);
         if (typeof draft.showDailyConfig === 'boolean') setShowDailyConfig(draft.showDailyConfig);
         if (typeof draft.activateReminder === 'boolean') setActivateReminder(draft.activateReminder);
         if (typeof draft.reminderPopupActive === 'boolean') setReminderPopupActive(draft.reminderPopupActive);
@@ -419,8 +429,10 @@ export default function Home() {
           showAdvancedSettings,
           sendImmediateEmail,
           showPopupConfig,
+          popupScheduleMode,
           popupHours,
           popupMinutes,
+          popupDateTime,
           showDailyConfig,
           activateReminder,
           reminderPopupActive,
@@ -447,8 +459,10 @@ export default function Home() {
     showAdvancedSettings,
     sendImmediateEmail,
     showPopupConfig,
+    popupScheduleMode,
     popupHours,
     popupMinutes,
+    popupDateTime,
     showDailyConfig,
     activateReminder,
     reminderPopupActive,
@@ -774,6 +788,18 @@ export default function Home() {
       setShowPlanningGestures(false);
       setShowExportModal(false);
       setShowExportHelp(false);
+      setShowNotesHelp(false);
+
+      const directNoteMatch = /^#note-(.+)$/.exec(hash);
+      if (directNoteMatch) {
+        const noteId = decodeURIComponent(directNoteMatch[1]);
+        setHighlightedNoteId(noteId);
+        setShowArchived(false);
+        setMainMode('notes');
+        setActiveTab('notes');
+        setIsFocusMode(false);
+        return;
+      }
 
       switch(hash) {
         case '#notes-create':
@@ -804,6 +830,34 @@ export default function Home() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  // Quand une notification ouvre #note-<id>, on ouvre la bonne priorité,
+  // on fait défiler jusqu'à la note et on la met brièvement en évidence.
+  useEffect(() => {
+    if (!highlightedNoteId || mainMode !== 'notes' || activeTab !== 'notes') return;
+
+    const note = notes.find(item => item.id === highlightedNoteId);
+    if (!note) return;
+
+    setCollapsedPriorities({
+      rouge: note.importance !== 'rouge',
+      orange: note.importance !== 'orange',
+      vert: note.importance !== 'vert',
+    });
+
+    const scrollTimer = window.setTimeout(() => {
+      document.getElementById(`note-${highlightedNoteId}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 180);
+
+    const clearTimer = window.setTimeout(() => setHighlightedNoteId(null), 6000);
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [highlightedNoteId, mainMode, activeTab, notes]);
 
   // Navigation propre de la partie Planning : on garde une seule entrée enfant
   // (éditeur OU galerie) dans l'historique. Passer plusieurs fois de l'un à l'autre
@@ -1844,7 +1898,7 @@ export default function Home() {
       let finalTargetDate = '';
       let finalPopupActive = false;
 
-      if (showPopupConfig && (popupHours || popupMinutes)) {
+      if (showPopupConfig && popupScheduleMode === 'relative' && (popupHours || popupMinutes)) {
         const hours = Math.max(0, Number.parseInt(popupHours || '0', 10) || 0);
         const minutes = Math.max(0, Number.parseInt(popupMinutes || '0', 10) || 0);
         const totalMinutes = hours * 60 + minutes;
@@ -1853,6 +1907,18 @@ export default function Home() {
           finalTargetDate = new Date(Date.now() + totalMinutes * 60 * 1000).toISOString();
           finalPopupActive = true;
         }
+      } else if (showPopupConfig && popupScheduleMode === 'datetime' && popupDateTime) {
+        const popupTime = getSafeTime(popupDateTime);
+        if (!popupTime) {
+          alert("La date et l'heure du pop-up ne sont pas valides.");
+          return;
+        }
+        if (popupTime <= Date.now()) {
+          alert("La date et l'heure du pop-up doivent être dans le futur.");
+          return;
+        }
+        finalTargetDate = new Date(popupTime).toISOString();
+        finalPopupActive = true;
       } else if (showCalendarConfig && targetDate) {
         const calendarTime = getSafeTime(targetDate);
         if (!calendarTime) {
@@ -1927,8 +1993,10 @@ export default function Home() {
       setNewDurationMinutes('');
       setSendImmediateEmail(false);
       setShowPopupConfig(false);
+      setPopupScheduleMode('relative');
       setPopupHours('');
       setPopupMinutes('');
+      setPopupDateTime('');
       setShowDailyConfig(false);
       setActivateReminder(false);
       setReminderPopupActive(false);
@@ -2395,7 +2463,7 @@ export default function Home() {
     let finalTargetDate = editingTargetDate;
     let finalPopupActive = editingPopupActive;
 
-    if (showEditingPopupConfig && (editingPopupHours || editingPopupMinutes)) {
+    if (showEditingPopupConfig && editingPopupScheduleMode === 'relative' && (editingPopupHours || editingPopupMinutes)) {
       const hours = Math.max(0, Number.parseInt(editingPopupHours || '0', 10) || 0);
       const minutes = Math.max(0, Number.parseInt(editingPopupMinutes || '0', 10) || 0);
       const totalMinutes = hours * 60 + minutes;
@@ -2404,6 +2472,18 @@ export default function Home() {
         finalTargetDate = new Date(Date.now() + totalMinutes * 60 * 1000).toISOString();
         finalPopupActive = true;
       }
+    } else if (showEditingPopupConfig && editingPopupScheduleMode === 'datetime' && editingPopupDateTime) {
+      const popupTime = getSafeTime(editingPopupDateTime);
+      if (!popupTime) {
+        alert("La date et l'heure du pop-up ne sont pas valides.");
+        return;
+      }
+      if (popupTime <= Date.now()) {
+        alert("La date et l'heure du pop-up doivent être dans le futur.");
+        return;
+      }
+      finalTargetDate = new Date(popupTime).toISOString();
+      finalPopupActive = true;
     } else if (finalTargetDate) {
       const normalized = toValidIso(finalTargetDate);
       if (!normalized) {
@@ -2458,6 +2538,26 @@ export default function Home() {
       return;
     }
 
+    if (editingSendImmediateEmail) {
+      try {
+        const mailRes = await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: editingTitle.trim() || 'Rappel de note',
+            importance: editingImportance,
+          }),
+        });
+
+        if (!mailRes.ok) {
+          const mailError = await mailRes.json().catch(() => ({}));
+          alert("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || 'erreur inconnue'));
+        }
+      } catch (mailError: any) {
+        alert("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError?.message || 'erreur réseau'));
+      }
+    }
+
     locallyTriggeredAlarmIdsRef.current.delete(id);
     setEditingId(null);
     await fetchNotes();
@@ -2471,8 +2571,23 @@ export default function Home() {
     const noteDuration = typeof note.duration_minutes === 'number' && note.duration_minutes > 0 ? note.duration_minutes : 0;
     setEditingDurationHours(noteDuration > 0 ? Math.floor(noteDuration / 60).toString() : '');
     setEditingDurationMinutes(noteDuration > 0 ? (noteDuration % 60).toString() : '');
+    setShowEditingAdvancedSettings(false);
+    setEditingSendImmediateEmail(false);
     setShowEditingPopupConfig(false); setShowEditingDailyConfig(false); setShowEditingExactDateConfig(false);
     setEditingPopupHours(''); setEditingPopupMinutes('');
+    setEditingPopupScheduleMode(note.popup_active && note.target_date ? 'datetime' : 'relative');
+    if (note.popup_active && note.target_date) {
+      const ts = getSafeTime(note.target_date);
+      if (ts) {
+        const d = new Date(ts);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        setEditingPopupDateTime(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
+      } else {
+        setEditingPopupDateTime('');
+      }
+    } else {
+      setEditingPopupDateTime('');
+    }
   };
 
   const snoozeNote = async (id: string, days: number) => {
@@ -2609,7 +2724,7 @@ export default function Home() {
   ];
 
   const renderNoteItem = (note: Note) => (
-    <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
+    <li id={`note-${note.id}`} key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
       note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
       note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
@@ -2634,11 +2749,11 @@ export default function Home() {
         {editingId === note.id ? (
           <div className="flex flex-col flex-1 gap-2 w-full">
             {note.is_list ? (
-              <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" autoFocus />
+              <input type="text" value={editingTitle} onFocus={() => setShowEditingAdvancedSettings(false)} onChange={(e) => setEditingTitle(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" autoFocus />
             ) : (
               <>
-                <input type="text" value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" />
-                <textarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black resize-y min-h-[60px] text-sm" />
+                <input type="text" value={editingTitle} onFocus={() => setShowEditingAdvancedSettings(false)} onChange={(e) => setEditingTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-gray-400 p-1.5 rounded text-black font-semibold text-sm" />
+                <textarea value={editingContent} onFocus={() => setShowEditingAdvancedSettings(false)} onChange={(e) => setEditingContent(e.target.value)} className="w-full border border-gray-400 p-1.5 rounded text-black resize-y min-h-[60px] text-sm" />
               </>
             )}
             
@@ -2656,57 +2771,149 @@ export default function Home() {
               <span className="text-xs font-bold text-[#6A5949]">min</span>
             </div>
 
-            <div className="flex flex-col">
-              <button type="button" onClick={() => setShowEditingDailyConfig(!showEditingDailyConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingDailyConfig ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-green-50 text-green-800 border-green-200 hover:bg-green-100'}`}>
-                <span>🔄 Configurer les relances</span> <span>{showEditingDailyConfig ? '▲' : '▼'}</span>
+            <div className="flex flex-col mt-1">
+              <button
+                type="button"
+                onClick={() => setShowEditingAdvancedSettings(!showEditingAdvancedSettings)}
+                className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2 px-2.5 rounded-xl text-xs flex justify-between items-center transition-colors border border-[#DED5C8]"
+              >
+                <span>⚙️ Paramétrage de la note</span><span>{showEditingAdvancedSettings ? '▲' : '▼'}</span>
               </button>
-              {showEditingDailyConfig && (
-                <div className="flex flex-col gap-2 bg-green-50 p-2 rounded-b border border-green-200 border-t-0">
-                  <div className="flex flex-wrap items-center gap-3 justify-center">
-                    <input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black text-xs bg-white" />
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900"><input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="cursor-pointer accent-green-600" />E-mail</label>
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-green-900"><input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="cursor-pointer accent-green-600" />Pop-up</label>
+
+              {showEditingAdvancedSettings && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-2.5 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
+                  <button
+                    type="button"
+                    onClick={() => setEditingSendImmediateEmail(!editingSendImmediateEmail)}
+                    className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex items-center justify-between ${editingSendImmediateEmail ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1]' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                  >
+                    <span>📨 E-mail immédiat</span><span>{editingSendImmediateEmail ? 'ON' : 'OFF'}</span>
+                  </button>
+
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showEditingPopupConfig;
+                        setShowEditingPopupConfig(next);
+                        if (next) {
+                          setShowEditingDailyConfig(false);
+                          setShowEditingExactDateConfig(false);
+                          if ('Notification' in window) Notification.requestPermission();
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showEditingPopupConfig || editingPopupActive || editingPopupHours || editingPopupMinutes || editingPopupDateTime) ? 'bg-[#DDDCE8] text-[#514F66] border-[#C9C7D8] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                    >
+                      <span>⏰ Alarme pop-up</span><span>{showEditingPopupConfig ? '▲' : '▼'}</span>
+                    </button>
+                    {showEditingPopupConfig && (
+                      <div className="bg-[#F3F2F8] border border-t-0 border-[#D8D5E3] p-2.5 rounded-b-xl flex flex-col gap-2.5">
+                        <div className="grid grid-cols-2 gap-1.5 bg-white/70 p-1 rounded-xl border border-[#E0DDE8]">
+                          <button
+                            type="button"
+                            onClick={() => setEditingPopupScheduleMode('relative')}
+                            className={`py-1.5 px-2 rounded-lg text-[11px] font-black transition-colors ${editingPopupScheduleMode === 'relative' ? 'bg-[#DDDCE8] text-[#4E4B62]' : 'text-[#746F80] hover:bg-[#F0EEF5]'}`}
+                          >
+                            Dans…
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPopupScheduleMode('datetime')}
+                            className={`py-1.5 px-2 rounded-lg text-[11px] font-black transition-colors ${editingPopupScheduleMode === 'datetime' ? 'bg-[#DDDCE8] text-[#4E4B62]' : 'text-[#746F80] hover:bg-[#F0EEF5]'}`}
+                          >
+                            Date et heure
+                          </button>
+                        </div>
+
+                        {editingPopupScheduleMode === 'relative' ? (
+                          <div className="flex flex-wrap items-center gap-1 justify-center">
+                            <span className="text-xs font-bold text-[#5C5870]">Dans :</span>
+                            <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-12 p-1.5 border border-[#CDC9DB] rounded-lg text-center text-black font-bold text-xs bg-white" />
+                            <span className="text-xs font-bold text-[#5C5870]">h</span>
+                            <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-12 p-1.5 border border-[#CDC9DB] rounded-lg text-center text-black font-bold text-xs bg-white" />
+                            <span className="text-xs font-bold text-[#5C5870]">min</span>
+                          </div>
+                        ) : (
+                          <input
+                            type="datetime-local"
+                            value={editingPopupDateTime}
+                            onChange={(e) => setEditingPopupDateTime(e.target.value)}
+                            className="w-full border border-[#CDC9DB] p-2 rounded-lg text-black bg-white font-bold text-xs"
+                          />
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPopupActive(false);
+                            if (editingTargetDate === note.target_date) setEditingTargetDate('');
+                            setEditingPopupHours('');
+                            setEditingPopupMinutes('');
+                            setEditingPopupDateTime('');
+                            setShowEditingPopupConfig(false);
+                          }}
+                          className="self-center bg-[#F0DDD7] text-[#885C50] px-2.5 py-1 rounded-lg text-[11px] font-bold hover:bg-[#E8CEC6] transition-colors"
+                        >
+                          ✖ Désactiver l'alarme
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showEditingDailyConfig;
+                        setShowEditingDailyConfig(next);
+                        if (next) { setShowEditingPopupConfig(false); setShowEditingExactDateConfig(false); }
+                      }}
+                      className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${(editingReminderActive || editingReminderPopupActive) ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                    >
+                      <span>🔄 Relance quotidienne</span><span>{showEditingDailyConfig ? '▲' : '▼'}</span>
+                    </button>
+                    {showEditingDailyConfig && (
+                      <div className="bg-[#F0F4EC] border border-t-0 border-[#D4DDCB] p-2.5 rounded-b-xl flex flex-col gap-2">
+                        <div className="flex flex-wrap gap-4 justify-center">
+                          <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="accent-[#7E9071]"/> E-mail</label>
+                          <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="accent-[#7E9071]"/> Pop-up</label>
+                        </div>
+                        <div className="flex items-center justify-center gap-2 pt-1 border-t border-[#D4DDCB]"><span className="text-xs font-bold text-[#46513F]">À :</span><input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1.5 border border-[#C8D2BC] rounded-lg text-black bg-white font-bold text-xs" /></div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showEditingExactDateConfig;
+                        setShowEditingExactDateConfig(next);
+                        if (next) { setShowEditingPopupConfig(false); setShowEditingDailyConfig(false); }
+                      }}
+                      className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${editingTargetDate && !editingPopupActive ? 'bg-[#E6DDD2] text-[#5B4C40] border-[#D6C8B8] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                    >
+                      <span>📅 Agenda / .ics</span><span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
+                    </button>
+                    {showEditingExactDateConfig && (
+                      <div className="bg-[#F6F0EA] border border-t-0 border-[#E0D3C5] p-2.5 rounded-b-xl flex flex-col gap-2 items-center">
+                        <input type="datetime-local" value={editingTargetDate ? (() => {
+                          const ts = getSafeTime(editingTargetDate); if (!ts) return '';
+                          const d = new Date(ts); const pad = (n: number) => n.toString().padStart(2, '0');
+                          return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                        })() : ''} onChange={(e) => { setEditingTargetDate(e.target.value ? new Date(e.target.value).toISOString() : ''); }} className="w-full p-2 border border-[#D8C8B6] rounded-lg text-black text-xs bg-white font-bold" />
+                        <div className="flex flex-wrap gap-3 pt-1 justify-center">
+                          <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-[#5B4C40]"><input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-[#9B8068]" /> Google Agenda</label>
+                          <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-[#5B4C40]"><input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-[#9B8068]" /> Fichier .ics</label>
+                        </div>
+                        {editingTargetDate && !editingPopupActive && (
+                          <button type="button" onClick={() => { setEditingTargetDate(''); setShowEditingExactDateConfig(false); }} className="bg-[#F0DDD7] text-[#885C50] px-2.5 py-1 rounded-lg text-[11px] font-bold hover:bg-[#E8CEC6] transition-colors">✖ Annuler la date</button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
-            </div>
-            
-            <div className="flex flex-col gap-1.5">
-              <div className="flex flex-col">
-                <button type="button" onClick={() => setShowEditingExactDateConfig(!showEditingExactDateConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingExactDateConfig ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'}`}>
-                  <span>📅 Ajouter au calendrier (Agenda / .ics)</span> <span>{showEditingExactDateConfig ? '▲' : '▼'}</span>
-                </button>
-                {showEditingExactDateConfig && (
-                  <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col items-center gap-2 justify-center">
-                    <input type="datetime-local" value={editingTargetDate ? (() => {
-                      const ts = getSafeTime(editingTargetDate); if (!ts) return '';
-                      const d = new Date(ts); const pad = (n: number) => n.toString().padStart(2, '0');
-                      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-                    })() : ''} onChange={(e) => { setEditingTargetDate(e.target.value ? new Date(e.target.value).toISOString() : ''); }} className="p-1 border border-purple-300 rounded text-black text-xs bg-white w-full" />
-                    <label className="flex items-center gap-1 cursor-pointer text-xs font-semibold text-purple-900 mt-1"><input type="checkbox" checked={editingPopupActive} onChange={(e) => setEditingPopupActive(e.target.checked)} className="cursor-pointer accent-purple-600" />Activer l'alarme pop-up à cette date</label>
-                  </div>
-                )}
-              </div>
-              <div className="flex flex-col">
-                <button type="button" onClick={() => setShowEditingPopupConfig(!showEditingPopupConfig)} className={`p-1.5 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${showEditingPopupConfig ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'}`}>
-                  <span>⏰ Alarme pop-up rapide (Dans...)</span> <span>{showEditingPopupConfig ? '▲' : '▼'}</span>
-                </button>
-                {showEditingPopupConfig && (
-                  <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-1.5 justify-center">
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs font-bold text-indigo-900">Dans:</span>
-                      <input type="number" placeholder="0" min="0" value={editingPopupHours} onChange={(e) => setEditingPopupHours(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
-                      <span className="text-xs font-bold text-indigo-900">h</span>
-                      <input type="number" placeholder="0" min="0" value={editingPopupMinutes} onChange={(e) => setEditingPopupMinutes(e.target.value)} className="w-10 p-1 border border-indigo-300 rounded text-center text-black text-xs" />
-                      <span className="text-xs font-bold text-indigo-900">min</span>
-                    </div>
-                    {(editingPopupHours || editingPopupMinutes) && (
-                      <button type="button" onClick={() => { setEditingPopupHours(''); setEditingPopupMinutes(''); setShowEditingPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold hover:bg-red-200 transition-colors">✖ Annuler</button>
-                    )}
-                  </div>
-                )}
-              </div>
-              <button type="button" onClick={() => triggerImmediateEmail(note)} className="p-1.5 rounded font-bold border transition-colors text-left text-xs bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100 flex items-center gap-2"><span>📨</span> E-mail immédiat</button>
             </div>
             <div className="flex gap-2 mt-1">
               <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
@@ -2838,6 +3045,40 @@ export default function Home() {
             <span className="text-6xl">⏰</span><h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
             {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
             <button onClick={acknowledgeTriggeredAlarm} className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full">J'AI COMPRIS (STOP)</button>
+          </div>
+        </div>
+      )}
+
+      {/* AIDE : OPTIONS NOTES & RAPPELS */}
+      {showNotesHelp && (
+        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowNotesHelp(false)}>
+          <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h2 className="text-lg font-black text-[#46513F]">Options de Notes &amp; Rappels</h2>
+              <button onClick={() => setShowNotesHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+            </div>
+
+            <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
+              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                <strong className="text-[#4E5847]">📨 E-mail immédiat</strong>
+                <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la note directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
+              </div>
+              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                <strong className="text-[#55516A]">⏰ Alarme pop-up</strong>
+                <p className="mt-1">Programme une notification sur ton smartphone. Tu peux choisir un délai « Dans… » ou définir précisément une date et une heure.</p>
+              </div>
+              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                <strong className="text-[#4E5847]">🔄 Relance quotidienne</strong>
+                <p className="mt-1">Répète le rappel tous les jours à l'heure choisie jusqu'à ce que tu le désactives. La relance peut être envoyée par e-mail, par pop-up, ou par les deux.</p>
+              </div>
+              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                <strong className="text-[#67574A]">📅 Agenda / .ics</strong>
+                <p className="mt-1">Associe une date et une heure à la note pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli ; le fichier .ics est un format universel importable dans la plupart des calendriers.</p>
+              </div>
+              <div className="rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-3 text-xs">
+                <strong>Durée :</strong> si tu renseignes une durée, elle est utilisée pour définir la longueur de l'événement dans le calendrier.
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -3725,17 +3966,27 @@ export default function Home() {
                 <span className="text-xs font-bold text-[#756E63] mt-1">Une seule tâche à la fois.</span>
               </div>
             )}
-            <button
-              onClick={() => {
-                setSkippedFocusIds([]);
-                setShowArchived(false);
-                setFocusPhase('rouge');
-                window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
-              }}
-              className="absolute right-0 top-0 px-3 py-1.5 rounded-full text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8]"
-            >
-              {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
-            </button>
+            <div className="absolute right-0 top-0 flex items-center gap-2">
+              {!isFocusMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowNotesHelp(true)}
+                  className="w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
+                  aria-label="Aide sur Notes & Rappels"
+                >?</button>
+              )}
+              <button
+                onClick={() => {
+                  setSkippedFocusIds([]);
+                  setShowArchived(false);
+                  setFocusPhase('rouge');
+                  window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
+                }}
+                className="px-3 py-1.5 rounded-full text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8]"
+              >
+                {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
+              </button>
+            </div>
           </div>
 
           {!isFocusMode && (
@@ -3762,18 +4013,18 @@ export default function Home() {
               {noteMode === 'text' ? (
                 <div className="flex flex-col gap-2">
                   <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                    <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                   <div className="relative w-full">
-                    <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                    <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
                   <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                    <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                   
@@ -3791,7 +4042,7 @@ export default function Home() {
                     )}
                     <div className="flex gap-2">
                       <div className="relative flex-1 flex items-center">
-                        <input type="text" value={currentNewListItem} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                        <input type="text" value={currentNewListItem} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                         <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-2 text-xl rounded-full shadow-md transition-all ${listeningMode === 'list_item' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                       </div>
                       <button type="button" onClick={() => { if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } }} className="bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8] px-3 py-1.5 rounded-xl text-xs font-black hover:bg-[#CCD5BC] transition-colors" disabled={loading || isAiProcessing || !currentNewListItem.trim()}>+ Ajouter</button>
@@ -3829,41 +4080,132 @@ export default function Home() {
                 </button>
                 {showAdvancedSettings && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
-                    <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>📨 E-mail immédiat</span><span>{sendImmediateEmail ? 'ON' : 'OFF'}</span></button>
+                    <button
+                      type="button"
+                      onClick={() => setSendImmediateEmail(!sendImmediateEmail)}
+                      disabled={isAiProcessing}
+                      className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1]' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                    >
+                      <span>📨 E-mail immédiat</span><span>{sendImmediateEmail ? 'ON' : 'OFF'}</span>
+                    </button>
+
                     <div className="flex flex-col">
-                      <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>⏰ Alarme pop-up (Dans...)</span><span>{showPopupConfig ? '▲' : '▼'}</span></button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !showPopupConfig;
+                          setShowPopupConfig(next);
+                          if (next) {
+                            setShowDailyConfig(false);
+                            setShowCalendarConfig(false);
+                            if ('Notification' in window) Notification.requestPermission();
+                          }
+                        }}
+                        disabled={isAiProcessing}
+                        className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes || popupDateTime) ? 'bg-[#DDDCE8] text-[#514F66] border-[#C9C7D8] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                      >
+                        <span>⏰ Alarme pop-up</span><span>{showPopupConfig ? '▲' : '▼'}</span>
+                      </button>
                       {showPopupConfig && (
-                        <div className="bg-indigo-50 border border-t-0 border-indigo-200 p-2 rounded-b flex flex-col items-center gap-2">
-                          <div className="flex flex-wrap items-center gap-1 justify-center">
-                            <span className="text-xs font-bold text-indigo-900">Dans:</span><input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" /><span className="text-xs font-bold text-indigo-900">h</span><input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1 border border-indigo-300 rounded text-center text-black font-bold text-xs" /><span className="text-xs font-bold text-indigo-900">min</span>
+                        <div className="bg-[#F3F2F8] border border-t-0 border-[#D8D5E3] p-2.5 rounded-b-xl flex flex-col gap-2.5">
+                          <div className="grid grid-cols-2 gap-1.5 bg-white/70 p-1 rounded-xl border border-[#E0DDE8]">
+                            <button
+                              type="button"
+                              onClick={() => setPopupScheduleMode('relative')}
+                              className={`py-1.5 px-2 rounded-lg text-[11px] font-black transition-colors ${popupScheduleMode === 'relative' ? 'bg-[#DDDCE8] text-[#4E4B62]' : 'text-[#746F80] hover:bg-[#F0EEF5]'}`}
+                            >
+                              Dans…
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPopupScheduleMode('datetime')}
+                              className={`py-1.5 px-2 rounded-lg text-[11px] font-black transition-colors ${popupScheduleMode === 'datetime' ? 'bg-[#DDDCE8] text-[#4E4B62]' : 'text-[#746F80] hover:bg-[#F0EEF5]'}`}
+                            >
+                              Date et heure
+                            </button>
                           </div>
-                          {(popupHours || popupMinutes) && (<button type="button" onClick={() => { setPopupHours(''); setPopupMinutes(''); setShowPopupConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">✖ Annuler</button>)}
+
+                          {popupScheduleMode === 'relative' ? (
+                            <div className="flex flex-wrap items-center gap-1 justify-center">
+                              <span className="text-xs font-bold text-[#5C5870]">Dans :</span>
+                              <input type="number" placeholder="0" min="0" value={popupHours} onChange={(e) => setPopupHours(e.target.value)} className="w-12 p-1.5 border border-[#CDC9DB] rounded-lg text-center text-black font-bold text-xs bg-white" />
+                              <span className="text-xs font-bold text-[#5C5870]">h</span>
+                              <input type="number" placeholder="0" min="0" value={popupMinutes} onChange={(e) => setPopupMinutes(e.target.value)} className="w-12 p-1.5 border border-[#CDC9DB] rounded-lg text-center text-black font-bold text-xs bg-white" />
+                              <span className="text-xs font-bold text-[#5C5870]">min</span>
+                            </div>
+                          ) : (
+                            <input
+                              type="datetime-local"
+                              value={popupDateTime}
+                              onChange={(e) => setPopupDateTime(e.target.value)}
+                              className="w-full border border-[#CDC9DB] p-2 rounded-lg text-black bg-white font-bold text-xs"
+                            />
+                          )}
+
+                          {(popupHours || popupMinutes || popupDateTime) && (
+                            <button
+                              type="button"
+                              onClick={() => { setPopupHours(''); setPopupMinutes(''); setPopupDateTime(''); setShowPopupConfig(false); }}
+                              className="self-center bg-[#F0DDD7] text-[#885C50] px-2.5 py-1 rounded-lg text-[11px] font-bold hover:bg-[#E8CEC6] transition-colors"
+                            >
+                              ✖ Annuler l'alarme
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
+
                     <div className="flex flex-col">
-                      <button type="button" onClick={() => setShowDailyConfig(!showDailyConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-green-600 text-white border-green-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>🔄 Relance quotidienne</span><span>{showDailyConfig ? '▲' : '▼'}</span></button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !showDailyConfig;
+                          setShowDailyConfig(next);
+                          if (next) { setShowPopupConfig(false); setShowCalendarConfig(false); }
+                        }}
+                        disabled={isAiProcessing}
+                        className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${(activateReminder || reminderPopupActive) ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                      >
+                        <span>🔄 Relance quotidienne</span><span>{showDailyConfig ? '▲' : '▼'}</span>
+                      </button>
                       {showDailyConfig && (
-                        <div className="bg-green-50 border border-t-0 border-green-200 p-2 rounded-b flex flex-col gap-2">
-                          <div className="flex flex-wrap gap-4 justify-center"><label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs"><input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-green-600"/> E-mail</label><label className="flex items-center gap-1 cursor-pointer font-bold text-green-900 text-xs"><input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-green-600"/> Pop-up</label></div>
-                          <div className="flex items-center justify-center gap-2 pt-1 border-t border-green-200"><span className="text-xs font-bold text-green-900">À :</span><input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1 border border-green-300 rounded text-black bg-white font-bold text-xs" /></div>
+                        <div className="bg-[#F0F4EC] border border-t-0 border-[#D4DDCB] p-2.5 rounded-b-xl flex flex-col gap-2">
+                          <div className="flex flex-wrap gap-4 justify-center">
+                            <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-[#7E9071]"/> E-mail</label>
+                            <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-[#7E9071]"/> Pop-up</label>
+                          </div>
+                          <div className="flex items-center justify-center gap-2 pt-1 border-t border-[#D4DDCB]"><span className="text-xs font-bold text-[#46513F]">À :</span><input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1.5 border border-[#C8D2BC] rounded-lg text-black bg-white font-bold text-xs" /></div>
                         </div>
                       )}
                     </div>
+
                     <div className="flex flex-col">
-                      <button type="button" onClick={() => setShowCalendarConfig(!showCalendarConfig)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-purple-600 text-white border-purple-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>📅 Agenda / .ics</span><span>{showCalendarConfig ? '▲' : '▼'}</span></button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !showCalendarConfig;
+                          setShowCalendarConfig(next);
+                          if (next) { setShowPopupConfig(false); setShowDailyConfig(false); }
+                        }}
+                        disabled={isAiProcessing}
+                        className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex justify-between items-center ${targetDate ? 'bg-[#E6DDD2] text-[#5B4C40] border-[#D6C8B8] rounded-b-none' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
+                      >
+                        <span>📅 Agenda / .ics</span><span>{showCalendarConfig ? '▲' : '▼'}</span>
+                      </button>
                       {showCalendarConfig && (
-                        <div className="bg-purple-50 border border-t-0 border-purple-200 p-2 rounded-b flex flex-col gap-2 items-center">
-                          <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="border border-purple-300 p-1 rounded text-black bg-white font-bold text-xs" />
-                          <div className="flex flex-wrap gap-2 pt-1 justify-center"><label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900"><input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-purple-600" /> Google Agenda</label><label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-purple-900"><input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-purple-600" /> Fichier .ics</label></div>
-                          {targetDate && (<button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors">✖ Annuler date</button>)}
+                        <div className="bg-[#F6F0EA] border border-t-0 border-[#E0D3C5] p-2.5 rounded-b-xl flex flex-col gap-2 items-center">
+                          <input type="datetime-local" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="w-full border border-[#D8C8B6] p-2 rounded-lg text-black bg-white font-bold text-xs" />
+                          <div className="flex flex-wrap gap-3 pt-1 justify-center">
+                            <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-[#5B4C40]"><input type="checkbox" checked={enableGoogleCal} onChange={(e) => setEnableGoogleCal(e.target.checked)} className="accent-[#9B8068]" /> Google Agenda</label>
+                            <label className="flex items-center gap-1 cursor-pointer text-xs font-bold text-[#5B4C40]"><input type="checkbox" checked={enableICal} onChange={(e) => setEnableICal(e.target.checked)} className="accent-[#9B8068]" /> Fichier .ics</label>
+                          </div>
+                          {targetDate && (<button type="button" onClick={() => { setTargetDate(''); setShowCalendarConfig(false); }} className="bg-[#F0DDD7] text-[#885C50] px-2.5 py-1 rounded-lg text-[11px] font-bold hover:bg-[#E8CEC6] transition-colors">✖ Annuler la date</button>)}
                         </div>
                       )}
                     </div>
                   </div>
                 )}
               </div>
-
               {successMessage && (
                 <div className="mt-2 p-2 bg-green-100 border border-green-300 text-green-800 text-center font-bold text-xs rounded-lg transition-all">
                   {successMessage}
@@ -3953,7 +4295,12 @@ export default function Home() {
                 <div className={`grid items-start gap-4 grid-cols-1 lg:grid-cols-3`}>
                   {columns.map((col) => (
                     <div key={col.id} className="flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border border-[#E1D9CE]">
-                      <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}><span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span></button>
+                      <button type="button" onClick={() => setCollapsedPriorities(prev => ({
+                        rouge: true,
+                        orange: true,
+                        vert: true,
+                        [col.id]: !(prev[col.id] ?? false),
+                      }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}><span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span></button>
                       {!(collapsedPriorities[col.id] ?? false) && (
                       <ul className="space-y-3">
                         {col.notes.length === 0 && <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">Dossier vide</p>}
