@@ -65,6 +65,24 @@ interface AiProposal {
   daily_reminder_popup: boolean;
 }
 
+interface AppConfirmDialog {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: 'danger' | 'sage';
+  onConfirm: () => void | Promise<void>;
+}
+
+interface AppPromptDialog {
+  title: string;
+  message?: string;
+  confirmLabel?: string;
+  placeholder?: string;
+  defaultValue?: string;
+  inputMode?: 'text' | 'numeric';
+}
+
 const getSafeTime = (dateStr?: string | null) => {
   if (!dateStr) return 0;
   const s = dateStr.trim().replace(' ', 'T');
@@ -123,8 +141,6 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
-  const [newDurationHours, setNewDurationHours] = useState('');
-  const [newDurationMinutes, setNewDurationMinutes] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -135,6 +151,12 @@ export default function Home() {
   const [popupMinutes, setPopupMinutes] = useState('');
   const [popupDateTime, setPopupDateTime] = useState('');
   const [showNotesHelp, setShowNotesHelp] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<AppConfirmDialog | null>(null);
+  const [confirmDialogLoading, setConfirmDialogLoading] = useState(false);
+  const [appMessage, setAppMessage] = useState<string | null>(null);
+  const [promptDialog, setPromptDialog] = useState<AppPromptDialog | null>(null);
+  const [promptValue, setPromptValue] = useState('');
+  const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
   const [showDailyConfig, setShowDailyConfig] = useState(false);
   const [activateReminder, setActivateReminder] = useState(false); 
   const [reminderPopupActive, setReminderPopupActive] = useState(false); 
@@ -173,8 +195,6 @@ export default function Home() {
   const [editingReminderActive, setEditingReminderActive] = useState(false);
   const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
-  const [editingDurationHours, setEditingDurationHours] = useState('');
-  const [editingDurationMinutes, setEditingDurationMinutes] = useState('');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
   const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
@@ -368,8 +388,6 @@ export default function Home() {
           setNewListItems(draft.newListItems.filter((item: unknown): item is string => typeof item === 'string'));
         }
         if (typeof draft.currentNewListItem === 'string') setCurrentNewListItem(draft.currentNewListItem);
-        if (typeof draft.newDurationHours === 'string') setNewDurationHours(draft.newDurationHours);
-        if (typeof draft.newDurationMinutes === 'string') setNewDurationMinutes(draft.newDurationMinutes);
 
         if (typeof draft.showAdvancedSettings === 'boolean') setShowAdvancedSettings(draft.showAdvancedSettings);
         if (typeof draft.sendImmediateEmail === 'boolean') setSendImmediateEmail(draft.sendImmediateEmail);
@@ -424,8 +442,6 @@ export default function Home() {
           noteMode,
           newListItems,
           currentNewListItem,
-          newDurationHours,
-          newDurationMinutes,
           showAdvancedSettings,
           sendImmediateEmail,
           showPopupConfig,
@@ -454,8 +470,6 @@ export default function Home() {
     noteMode,
     newListItems,
     currentNewListItem,
-    newDurationHours,
-    newDurationMinutes,
     showAdvancedSettings,
     sendImmediateEmail,
     showPopupConfig,
@@ -866,6 +880,93 @@ export default function Home() {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   };
 
+  const showAppMessage = (message: string) => {
+    setAppMessage(message);
+  };
+
+  const askAppPrompt = (dialog: AppPromptDialog): Promise<string | null> =>
+    new Promise((resolve) => {
+      promptResolveRef.current = resolve;
+      setPromptValue(dialog.defaultValue || '');
+      setPromptDialog(dialog);
+    });
+
+  const cancelAppPrompt = () => {
+    promptResolveRef.current?.(null);
+    promptResolveRef.current = null;
+    setPromptDialog(null);
+  };
+
+  const confirmAppPrompt = () => {
+    promptResolveRef.current?.(promptValue);
+    promptResolveRef.current = null;
+    setPromptDialog(null);
+  };
+
+  const requestAppConfirmation = (dialog: AppConfirmDialog) => {
+    setConfirmDialog(dialog);
+  };
+
+  const confirmAppDialog = async () => {
+    if (!confirmDialog || confirmDialogLoading) return;
+    setConfirmDialogLoading(true);
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } finally {
+      setConfirmDialogLoading(false);
+    }
+  };
+
+  // Navigation de Notes & Rappels sans empiler chaque clic dans l'historique.
+  const isNotesChildHash = (hash: string) =>
+    hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' || hash.startsWith('#note-');
+
+  const navigateNotesChild = (targetHash: '#notes-list' | '#notes-focus' | '#notes-history') => {
+    const currentHash = window.location.hash;
+    const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
+
+    if (isNotesChildHash(currentHash)) {
+      window.history.replaceState({ ...(window.history.state || {}), notesChild: true }, '', targetUrl);
+      refreshRouteFromCurrentHash();
+      return;
+    }
+
+    window.history.pushState({ ...(window.history.state || {}), notesChild: true }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+  };
+
+  const navigateNotesCreate = () => {
+    const currentHash = window.location.hash;
+
+    if (isNotesChildHash(currentHash) && window.history.state?.notesChild) {
+      window.history.back();
+      return;
+    }
+
+    const targetUrl = `${window.location.pathname}${window.location.search}#notes-create`;
+    window.history.replaceState({ ...(window.history.state || {}), notesChild: false }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+  };
+
+  const navigateNotesHub = () => {
+    const currentHash = window.location.hash;
+
+    if (isNotesChildHash(currentHash) && window.history.state?.notesChild) {
+      window.history.go(-2);
+      return;
+    }
+
+    if (currentHash === '#notes-create') {
+      window.history.back();
+      return;
+    }
+
+    const targetUrl = `${window.location.pathname}${window.location.search}#hub`;
+    window.history.replaceState({ ...(window.history.state || {}), notesChild: false }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+  };
+
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
     const currentHash = window.location.hash;
     const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
@@ -978,7 +1079,7 @@ export default function Home() {
     try {
       const registration = await navigator.serviceWorker.ready;
       const publicVapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!publicVapidKey) return alert("Erreur : La clé VAPID publique manque dans Vercel.");
+      if (!publicVapidKey) return showAppMessage("Erreur : La clé VAPID publique manque dans Vercel.");
 
       const convertedVapidKey = urlBase64ToUint8Array(publicVapidKey);
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: convertedVapidKey });
@@ -986,13 +1087,13 @@ export default function Home() {
 
       if (res.ok) {
         setIsPushEnabled(true);
-        alert("✅ Téléphone connecté avec succès ! Tu recevras les alertes en arrière-plan.");
+        showAppMessage("✅ Téléphone connecté avec succès ! Tu recevras les alertes en arrière-plan.");
       } else {
         const err = await res.json();
-        alert("Erreur de sauvegarde : " + err.error);
+        showAppMessage("Erreur de sauvegarde : " + err.error);
       }
     } catch (error: any) {
-      alert(Notification.permission === 'denied' ? "❌ Tu as bloqué les notifications." : "❌ Erreur d'abonnement : " + error.message);
+      showAppMessage(Notification.permission === 'denied' ? "❌ Tu as bloqué les notifications." : "❌ Erreur d'abonnement : " + error.message);
     }
   };
 
@@ -1109,7 +1210,7 @@ export default function Home() {
     const parsedMinute = parseInt(mStr, 10);
 
     if (!Number.isFinite(parsedHour) || !Number.isFinite(parsedMinute)) {
-      alert("Heure invalide.");
+      showAppMessage("Heure invalide.");
       return;
     }
 
@@ -1130,7 +1231,7 @@ export default function Home() {
       Math.max(0, Math.floor(Number(blockDurationMinutes) || 0));
 
     if (blockKind === 'task' && requestedDuration <= 0) {
-      alert("Indique une durée supérieure à 0 minute.");
+      showAppMessage("Indique une durée supérieure à 0 minute.");
       return;
     }
 
@@ -1174,10 +1275,16 @@ export default function Home() {
   };
 
   const deleteBlock = (id: string) => {
-    if (window.confirm("Es-tu sûr de vouloir supprimer cet élément de ton planning ?")) {
-      setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
-      setSelectedBlockId(null);
-    }
+    requestAppConfirmation({
+      title: 'Supprimer cet élément ?',
+      message: 'La tâche ou le repère sera retiré du planning.',
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: () => {
+        setWeeklyBlocks(prev => prev.filter(b => b.id !== id));
+        setSelectedBlockId(null);
+      },
+    });
   };
 
   const suppressNextBlockClick = (id: string) => {
@@ -1462,7 +1569,7 @@ export default function Home() {
 
   const saveTemplateToDB = async (): Promise<boolean> => {
     if (weeklyBlocks.length === 0) {
-      alert("Ton planning est vide ! Ajoute des tâches ou des repères avant de sauvegarder.");
+      showAppMessage("Ton planning est vide ! Ajoute des tâches ou des repères avant de sauvegarder.");
       return false;
     }
 
@@ -1471,7 +1578,7 @@ export default function Home() {
     // Un planning déjà chargé doit être MIS À JOUR, jamais dupliqué silencieusement.
     if (activeTemplateId) {
       if (!isPlanningDirty) {
-        alert("✓ Ce planning est déjà à jour.");
+        showAppMessage("✓ Ce planning est déjà à jour.");
         return true;
       }
 
@@ -1490,10 +1597,10 @@ export default function Home() {
         setWeeklyBlocks(normalizedBlocks);
         setPlanningSavedSnapshot(getPlanningSnapshot(normalizedBlocks));
         await fetchTemplates();
-        alert(`✅ « ${activeTemplateName || 'Planning'} » a été mis à jour.`);
+        showAppMessage(`✅ « ${activeTemplateName || 'Planning'} » a été mis à jour.`);
         return true;
       } catch (error: any) {
-        alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+        showAppMessage("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
         return false;
       } finally {
         setLoading(false);
@@ -1502,7 +1609,12 @@ export default function Home() {
 
     // Aucun modèle chargé : on crée un nouveau planning une seule fois,
     // puis il devient le planning actif pour les sauvegardes suivantes.
-    const name = window.prompt("Donne un nom à ce planning (ex: 'Semaine d'école' ou 'Vacances') :");
+    const name = await askAppPrompt({
+      title: 'Nom du planning',
+      message: "Donne un nom à ce planning (ex. : Semaine d'école ou Vacances).",
+      placeholder: 'Nom du planning',
+      confirmLabel: 'Enregistrer',
+    });
     const cleanName = name?.trim();
     if (!cleanName) return false;
 
@@ -1525,10 +1637,10 @@ export default function Home() {
       setActiveTemplateName(typeof data.name === 'string' ? data.name : cleanName);
       setPlanningSavedSnapshot(getPlanningSnapshot(createdBlocks));
       await fetchTemplates();
-      alert("✅ Planning sauvegardé ! Les prochaines modifications mettront à jour ce même planning.");
+      showAppMessage("✅ Planning sauvegardé ! Les prochaines modifications mettront à jour ce même planning.");
       return true;
     } catch (error: any) {
-      alert("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
+      showAppMessage("Erreur de sauvegarde : " + (error?.message || "erreur inconnue"));
       return false;
     } finally {
       setLoading(false);
@@ -1585,18 +1697,7 @@ export default function Home() {
     navigatePlanningChild('#planning-editor');
   };
 
-  const startNewPlanning = () => {
-    if (
-      weeklyBlocks.length > 0 &&
-      !window.confirm(
-        activeTemplateId && isPlanningDirty
-          ? `Commencer un nouveau planning ? Les modifications non enregistrées de « ${activeTemplateName || 'ton planning'} » seront abandonnées.`
-          : 'Commencer un nouveau planning vide ? Le planning sauvegardé actuel restera intact.'
-      )
-    ) {
-      return;
-    }
-
+  const openBlankPlanning = () => {
     setWeeklyBlocks([]);
     setActiveTemplateId(null);
     setActiveTemplateName('');
@@ -1607,9 +1708,32 @@ export default function Home() {
     navigatePlanningChild('#planning-editor');
   };
 
+  const startNewPlanning = () => {
+    if (weeklyBlocks.length === 0) {
+      openBlankPlanning();
+      return;
+    }
+
+    requestAppConfirmation({
+      title: 'Commencer un nouveau planning ?',
+      message:
+        activeTemplateId && isPlanningDirty
+          ? `Les modifications non enregistrées de « ${activeTemplateName || 'ton planning'} » seront abandonnées.`
+          : 'Le planning sauvegardé actuel restera intact.',
+      confirmLabel: 'Nouveau planning',
+      tone: 'sage',
+      onConfirm: openBlankPlanning,
+    });
+  };
+
   const duplicateSavedTemplate = async (template: PlanningTemplate) => {
     const proposedName = `${template.name} - copie`;
-    const name = window.prompt("Nom du planning dupliqué :", proposedName);
+    const name = await askAppPrompt({
+      title: 'Dupliquer le planning',
+      message: 'Choisis le nom de la copie.',
+      defaultValue: proposedName,
+      confirmLabel: 'Dupliquer',
+    });
     const cleanName = name?.trim();
     if (!cleanName) return;
 
@@ -1644,14 +1768,18 @@ export default function Home() {
       setPreviewTemplate(null);
       navigatePlanningChild('#planning-editor');
     } catch (error: any) {
-      alert("Erreur lors de la duplication : " + (error?.message || "erreur inconnue"));
+      showAppMessage("Erreur lors de la duplication : " + (error?.message || "erreur inconnue"));
     } finally {
       setLoading(false);
     }
   };
 
   const renameSavedTemplate = async (template: PlanningTemplate) => {
-    const nextName = window.prompt("Nouveau nom du planning :", template.name);
+    const nextName = await askAppPrompt({
+      title: 'Renommer le planning',
+      defaultValue: template.name,
+      confirmLabel: 'Renommer',
+    });
     const cleanName = nextName?.trim();
     if (!cleanName || cleanName === template.name) return;
 
@@ -1673,33 +1801,35 @@ export default function Home() {
 
       await fetchTemplates();
     } catch (error: any) {
-      alert("Erreur lors du renommage : " + (error?.message || "erreur inconnue"));
+      showAppMessage("Erreur lors du renommage : " + (error?.message || "erreur inconnue"));
     } finally {
       setLoading(false);
     }
   };
 
-  const deleteSavedTemplate = async (id: string) => {
-    if (!window.confirm("Es-tu sûr de vouloir supprimer définitivement ce modèle de ta base de données ?")) {
-      return;
-    }
+  const deleteSavedTemplate = (id: string) => {
+    requestAppConfirmation({
+      title: 'Supprimer ce planning ?',
+      message: 'Ce planning sauvegardé sera supprimé définitivement.',
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('planning_templates').delete().eq('id', id);
 
-    const { error } = await supabase.from('planning_templates').delete().eq('id', id);
+        if (error) {
+          showAppMessage("Erreur lors de la suppression du planning : " + error.message);
+          return;
+        }
 
-    if (error) {
-      alert("Erreur lors de la suppression du planning : " + error.message);
-      return;
-    }
-
-    if (previewTemplate?.id === id) setPreviewTemplate(null);
-    if (activeTemplateId === id) {
-      // Le contenu reste dans l'éditeur comme brouillon indépendant, mais il n'est plus lié
-      // à un planning supprimé.
-      setActiveTemplateId(null);
-      setActiveTemplateName('');
-      setPlanningSavedSnapshot(null);
-    }
-    await fetchTemplates();
+        if (previewTemplate?.id === id) setPreviewTemplate(null);
+        if (activeTemplateId === id) {
+          setActiveTemplateId(null);
+          setActiveTemplateName('');
+          setPlanningSavedSnapshot(null);
+        }
+        await fetchTemplates();
+      },
+    });
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -1781,7 +1911,7 @@ export default function Home() {
   const exportWeeklyICS = () => {
     const icsContent = buildWeeklyICSContent();
     if (!icsContent) {
-      alert("Le planning ne contient aucune tâche à exporter. Les repères horaires seuls ne sont pas exportés.");
+      showAppMessage("Le planning ne contient aucune tâche à exporter. Les repères horaires seuls ne sont pas exportés.");
       return;
     }
 
@@ -1800,7 +1930,7 @@ export default function Home() {
   const addWeeklyDirectlyToCalendar = async () => {
     const icsContent = buildWeeklyICSContent();
     if (!icsContent) {
-      alert("Le planning ne contient aucune tâche à ajouter au calendrier.");
+      showAppMessage("Le planning ne contient aucune tâche à ajouter au calendrier.");
       return;
     }
 
@@ -1825,7 +1955,7 @@ export default function Home() {
     // Sur les navigateurs qui ne savent pas transmettre directement le fichier à une
     // application calendrier, on revient au format universel .ics.
     exportWeeklyICS();
-    alert("L'ajout direct n'est pas pris en charge par ce navigateur : le fichier .ics a été préparé à la place.");
+    showAppMessage("L'ajout direct n'est pas pris en charge par ce navigateur : le fichier .ics a été préparé à la place.");
   };
 
   // Le référentiel horaire du planning est défini plus haut dans le composant
@@ -1867,25 +1997,29 @@ export default function Home() {
       if (action !== 'keep') await fetchNotes();
       setCurrentCleanupIndex(prev => prev + 1);
     } catch (error: any) {
-      alert("Erreur pendant le nettoyage : " + (error?.message || "erreur inconnue"));
+      showAppMessage("Erreur pendant le nettoyage : " + (error?.message || "erreur inconnue"));
     }
   };
 
-  const deleteAllHistory = async () => {
-    if (!window.confirm('Es-tu sûr de vouloir supprimer définitivement TOUT l\'historique ?')) {
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const { error } = await supabase.from('notes').delete().eq('completed', true);
-      if (error) throw error;
-      await fetchNotes();
-    } catch (error: any) {
-      alert("Erreur lors de la suppression : " + (error?.message || "erreur inconnue"));
-    } finally {
-      setLoading(false);
-    }
+  const deleteAllHistory = () => {
+    requestAppConfirmation({
+      title: 'Supprimer tout l’historique ?',
+      message: 'Toutes les notes terminées seront supprimées définitivement.',
+      confirmLabel: 'Tout supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        setLoading(true);
+        try {
+          const { error } = await supabase.from('notes').delete().eq('completed', true);
+          if (error) throw error;
+          await fetchNotes();
+        } catch (error: any) {
+          showAppMessage("Erreur lors de la suppression : " + (error?.message || "erreur inconnue"));
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
   };
 
   const addNote = async (e?: React.FormEvent) => {
@@ -1910,11 +2044,11 @@ export default function Home() {
       } else if (showPopupConfig && popupScheduleMode === 'datetime' && popupDateTime) {
         const popupTime = getSafeTime(popupDateTime);
         if (!popupTime) {
-          alert("La date et l'heure du pop-up ne sont pas valides.");
+          showAppMessage("La date et l'heure du pop-up ne sont pas valides.");
           return;
         }
         if (popupTime <= Date.now()) {
-          alert("La date et l'heure du pop-up doivent être dans le futur.");
+          showAppMessage("La date et l'heure du pop-up doivent être dans le futur.");
           return;
         }
         finalTargetDate = new Date(popupTime).toISOString();
@@ -1922,7 +2056,7 @@ export default function Home() {
       } else if (showCalendarConfig && targetDate) {
         const calendarTime = getSafeTime(targetDate);
         if (!calendarTime) {
-          alert("La date choisie n'est pas valide.");
+          showAppMessage("La date choisie n'est pas valide.");
           return;
         }
         finalTargetDate = new Date(calendarTime).toISOString();
@@ -1935,10 +2069,6 @@ export default function Home() {
               .filter(Boolean)
               .map(item => ({ id: crypto.randomUUID(), text: item, completed: false }))
           : [];
-
-      const durationHours = Math.max(0, Number.parseInt(newDurationHours || '0', 10) || 0);
-      const durationMinutesPart = Math.max(0, Number.parseInt(newDurationMinutes || '0', 10) || 0);
-      const totalDurationMinutes = Math.min(7 * 24 * 60, durationHours * 60 + durationMinutesPart);
 
       const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
 
@@ -1953,7 +2083,6 @@ export default function Home() {
         daily_reminder_time: safeDailyTime,
         target_date: finalTargetDate,
         popup_active: finalPopupActive,
-        duration_minutes: totalDurationMinutes > 0 ? totalDurationMinutes : null,
       }]);
 
       if (error) throw error;
@@ -1971,13 +2100,13 @@ export default function Home() {
 
           if (!mailRes.ok) {
             const mailError = await mailRes.json().catch(() => ({}));
-            alert(
+            showAppMessage(
               "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
               (mailError.error || "erreur inconnue")
             );
           }
         } catch (mailError: any) {
-          alert(
+          showAppMessage(
             "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
             (mailError?.message || "erreur réseau")
           );
@@ -1989,8 +2118,6 @@ export default function Home() {
       setImportance('vert');
       setNewListItems([]);
       setCurrentNewListItem('');
-      setNewDurationHours('');
-      setNewDurationMinutes('');
       setSendImmediateEmail(false);
       setShowPopupConfig(false);
       setPopupScheduleMode('relative');
@@ -2006,48 +2133,60 @@ export default function Home() {
       setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
 
       await fetchNotes();
-      window.location.hash = 'notes-list';
+      navigateNotesChild('#notes-list');
       setSuccessMessage('✅ Note créée avec succès !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
-      alert("Erreur Supabase : " + (error?.message || "erreur inconnue"));
+      showAppMessage("Erreur Supabase : " + (error?.message || "erreur inconnue"));
     } finally {
       setLoading(false);
     }
   };
 
-  const deleteNote = async (id: string) => {
-    if (!window.confirm('Es-tu sûr de vouloir supprimer cette note définitivement ?')) return;
+  const deleteNote = (id: string) => {
+    requestAppConfirmation({
+      title: 'Supprimer cette note ?',
+      message: 'La note sera supprimée définitivement.',
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('notes').delete().eq('id', id);
 
-    const { error } = await supabase.from('notes').delete().eq('id', id);
+        if (error) {
+          showAppMessage("Erreur lors de la suppression : " + error.message);
+          return;
+        }
 
-    if (error) {
-      alert("Erreur lors de la suppression : " + error.message);
-      return;
-    }
-
-    await fetchNotes();
+        await fetchNotes();
+      },
+    });
   };
 
-  const triggerImmediateEmail = async (note: Note) => {
-    if (!window.confirm('Es-tu sûr de vouloir envoyer un e-mail immédiat pour cette note ?')) return;
+  const triggerImmediateEmail = (note: Note) => {
+    requestAppConfirmation({
+      title: 'Envoyer le rappel par e-mail ?',
+      message: 'L’e-mail sera envoyé immédiatement à ton adresse de rappel.',
+      confirmLabel: 'Envoyer',
+      tone: 'sage',
+      onConfirm: async () => {
+        try {
+          const res = await fetch('/api/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance })
+          });
 
-    try {
-      const res = await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance })
-      });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || "Erreur inconnue");
+          }
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Erreur inconnue");
-      }
-
-      alert('E-mail envoyé avec succès !');
-    } catch (e: any) {
-      alert("Échec de l'envoi de l'e-mail : " + e.message);
-    }
+          showAppMessage('E-mail envoyé avec succès !');
+        } catch (e: any) {
+          showAppMessage("Échec de l'envoi de l'e-mail : " + e.message);
+        }
+      },
+    });
   };
 
   const updateNote = async (id: string, field: string, value: any) => {
@@ -2070,7 +2209,7 @@ export default function Home() {
       .eq('id', id);
 
     if (error) {
-      alert("Erreur de mise à jour : " + error.message);
+      showAppMessage("Erreur de mise à jour : " + error.message);
       return false;
     }
 
@@ -2085,7 +2224,7 @@ export default function Home() {
       .eq('id', id);
 
     if (error) {
-      alert("Erreur lors de l'annulation de la date : " + error.message);
+      showAppMessage("Erreur lors de l'annulation de la date : " + error.message);
       return;
     }
 
@@ -2095,7 +2234,7 @@ export default function Home() {
 
   const processAiNote = async (finalTranscript: string) => {
     if (!finalTranscript.trim()) {
-      alert("❌ Le micro n'a rien enregistré.");
+      showAppMessage("❌ Le micro n'a rien enregistré.");
       return;
     }
 
@@ -2120,7 +2259,7 @@ export default function Home() {
       const proposal = await res.json();
       setAiProposal(proposal as AiProposal);
     } catch (e: any) {
-      alert("❌ Erreur IA/réseau : " + (e?.message || "erreur inconnue"));
+      showAppMessage("❌ Erreur IA/réseau : " + (e?.message || "erreur inconnue"));
     } finally {
       setIsAiProcessing(false);
     }
@@ -2145,7 +2284,7 @@ export default function Home() {
     }
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return alert("Ton navigateur ne supporte pas la dictée vocale.");
+    if (!SpeechRecognition) return showAppMessage("Ton navigateur ne supporte pas la dictée vocale.");
     
     const recognition = new SpeechRecognition();
     recognition.lang = 'fr-FR'; 
@@ -2232,12 +2371,12 @@ export default function Home() {
       const calendarIso = toValidIso(data?.calendar_time);
 
       if (data?.popup_time && !popupIso) {
-        alert("L'IA a proposé une heure de rappel invalide. Modifie la proposition manuellement.");
+        showAppMessage("L'IA a proposé une heure de rappel invalide. Modifie la proposition manuellement.");
         return;
       }
 
       if (!data?.popup_time && data?.calendar_time && !calendarIso) {
-        alert("L'IA a proposé une date de calendrier invalide. Modifie la proposition manuellement.");
+        showAppMessage("L'IA a proposé une date de calendrier invalide. Modifie la proposition manuellement.");
         return;
       }
 
@@ -2290,13 +2429,13 @@ export default function Home() {
 
           if (!mailRes.ok) {
             const mailError = await mailRes.json().catch(() => ({}));
-            alert(
+            showAppMessage(
               "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
               (mailError.error || "erreur inconnue")
             );
           }
         } catch (mailError: any) {
-          alert(
+          showAppMessage(
             "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
             (mailError?.message || "erreur réseau")
           );
@@ -2309,11 +2448,11 @@ export default function Home() {
       setNewListItems([]);
       setCurrentNewListItem('');
       await fetchNotes();
-      window.location.hash = 'notes-list';
+      navigateNotesChild('#notes-list');
       setSuccessMessage('✅ Note créée avec succès par IA !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
-      alert("Erreur lors de la création IA : " + (e?.message || "erreur inconnue"));
+      showAppMessage("Erreur lors de la création IA : " + (e?.message || "erreur inconnue"));
     } finally {
       setLoading(false);
     }
@@ -2390,7 +2529,7 @@ export default function Home() {
     }
 
     setAiProposal(null);
-    window.location.hash = 'notes-create';
+    navigateNotesCreate();
   };
 
   const formatDatesForCalendar = (dateString: string, durationMinutes?: number | null) => {
@@ -2415,7 +2554,7 @@ export default function Home() {
   };
 
   const getGoogleCalendarLink = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
+    const dates = formatDatesForCalendar(note.target_date || '');
     if (!dates) return '#';
 
     const title = encodeURIComponent(note.title || 'Note');
@@ -2428,7 +2567,7 @@ export default function Home() {
   };
 
   const downloadICS = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
+    const dates = formatDatesForCalendar(note.target_date || '');
     if (!dates) return;
 
     const uid = `${note.id}@suivi-note`;
@@ -2475,11 +2614,11 @@ export default function Home() {
     } else if (showEditingPopupConfig && editingPopupScheduleMode === 'datetime' && editingPopupDateTime) {
       const popupTime = getSafeTime(editingPopupDateTime);
       if (!popupTime) {
-        alert("La date et l'heure du pop-up ne sont pas valides.");
+        showAppMessage("La date et l'heure du pop-up ne sont pas valides.");
         return;
       }
       if (popupTime <= Date.now()) {
-        alert("La date et l'heure du pop-up doivent être dans le futur.");
+        showAppMessage("La date et l'heure du pop-up doivent être dans le futur.");
         return;
       }
       finalTargetDate = new Date(popupTime).toISOString();
@@ -2487,7 +2626,7 @@ export default function Home() {
     } else if (finalTargetDate) {
       const normalized = toValidIso(finalTargetDate);
       if (!normalized) {
-        alert("La date choisie n'est pas valide.");
+        showAppMessage("La date choisie n'est pas valide.");
         return;
       }
       finalTargetDate = normalized;
@@ -2509,10 +2648,6 @@ export default function Home() {
       (!previousNote?.reminder_popup_active || previousNote?.daily_reminder_time !== safeDailyTime)
     );
 
-    const editDurationHours = Math.max(0, Number.parseInt(editingDurationHours || '0', 10) || 0);
-    const editDurationMinutesPart = Math.max(0, Number.parseInt(editingDurationMinutes || '0', 10) || 0);
-    const editTotalDurationMinutes = Math.min(7 * 24 * 60, editDurationHours * 60 + editDurationMinutesPart);
-
     const updatePayload: Record<string, any> = {
       title: editingTitle.trim(),
       content: editingContent.trim(),
@@ -2522,7 +2657,6 @@ export default function Home() {
       reminder_active: editingReminderActive,
       reminder_popup_active: editingReminderPopupActive,
       daily_reminder_time: safeDailyTime,
-      duration_minutes: editTotalDurationMinutes > 0 ? editTotalDurationMinutes : null,
     };
 
     // Si l'utilisateur active un canal ou change l'heure de relance, on remet
@@ -2534,7 +2668,7 @@ export default function Home() {
     const { error } = await supabase.from('notes').update(updatePayload).eq('id', id);
 
     if (error) {
-      alert("Erreur lors de l'enregistrement : " + error.message);
+      showAppMessage("Erreur lors de l'enregistrement : " + error.message);
       return;
     }
 
@@ -2551,10 +2685,10 @@ export default function Home() {
 
         if (!mailRes.ok) {
           const mailError = await mailRes.json().catch(() => ({}));
-          alert("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || 'erreur inconnue'));
+          showAppMessage("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError.error || 'erreur inconnue'));
         }
       } catch (mailError: any) {
-        alert("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError?.message || 'erreur réseau'));
+        showAppMessage("La note a été enregistrée, mais l'e-mail n'a pas pu être envoyé : " + (mailError?.message || 'erreur réseau'));
       }
     }
 
@@ -2568,9 +2702,6 @@ export default function Home() {
     setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
     setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
     setEditingReminderPopupActive(note.reminder_popup_active || false); setEditingDailyTime(note.daily_reminder_time || '09:00');
-    const noteDuration = typeof note.duration_minutes === 'number' && note.duration_minutes > 0 ? note.duration_minutes : 0;
-    setEditingDurationHours(noteDuration > 0 ? Math.floor(noteDuration / 60).toString() : '');
-    setEditingDurationMinutes(noteDuration > 0 ? (noteDuration % 60).toString() : '');
     setShowEditingAdvancedSettings(false);
     setEditingSendImmediateEmail(false);
     setShowEditingPopupConfig(false); setShowEditingDailyConfig(false); setShowEditingExactDateConfig(false);
@@ -2600,19 +2731,26 @@ export default function Home() {
       .eq('id', id);
 
     if (error) {
-      alert("Erreur lors du masquage : " + error.message);
+      showAppMessage("Erreur lors du masquage : " + error.message);
       return;
     }
 
     await fetchNotes();
   };
 
-  const handleSnoozeClick = (id: string) => {
-    const result = window.prompt("Pendant combien de jours veux-tu masquer cette note ?", "3");
+  const handleSnoozeClick = async (id: string) => {
+    const result = await askAppPrompt({
+      title: 'Masquer la note',
+      message: 'Pendant combien de jours veux-tu masquer cette note ?',
+      defaultValue: '3',
+      inputMode: 'numeric',
+      confirmLabel: 'Masquer',
+    });
+
     if (result !== null) {
       const days = parseInt(result, 10);
-      if (!isNaN(days) && days > 0) snoozeNote(id, days);
-      else alert("Veuillez entrer un nombre de jours valide.");
+      if (!isNaN(days) && days > 0) await snoozeNote(id, days);
+      else showAppMessage("Veuillez entrer un nombre de jours valide.");
     }
   };
 
@@ -2630,7 +2768,7 @@ export default function Home() {
     }).eq('id', note.id);
 
     if (error) {
-      alert("Erreur lors de la mise à jour de la liste : " + error.message);
+      showAppMessage("Erreur lors de la mise à jour de la liste : " + error.message);
       return;
     }
 
@@ -2654,7 +2792,7 @@ export default function Home() {
     }).eq('id', note.id);
 
     if (error) {
-      alert("Erreur lors de l'ajout : " + error.message);
+      showAppMessage("Erreur lors de l'ajout : " + error.message);
       return;
     }
 
@@ -2674,7 +2812,7 @@ export default function Home() {
     }).eq('id', note.id);
 
     if (error) {
-      alert("Erreur lors de la suppression : " + error.message);
+      showAppMessage("Erreur lors de la suppression : " + error.message);
       return;
     }
 
@@ -2762,14 +2900,6 @@ export default function Home() {
               <option value="orange">🟠 Priorité Importante</option>
               <option value="rouge">🔴 Priorité Urgente</option>
             </select>
-
-            <div className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 p-2">
-              <span className="text-xs font-bold text-[#6A5949] whitespace-nowrap">⏱ Durée :</span>
-              <input type="number" min="0" max="168" placeholder="0" value={editingDurationHours} onChange={(e) => setEditingDurationHours(e.target.value)} className="w-14 p-1 border border-[#D8C8B6] rounded text-center text-black text-xs bg-white" />
-              <span className="text-xs font-bold text-[#6A5949]">h</span>
-              <input type="number" min="0" max="59" placeholder="0" value={editingDurationMinutes} onChange={(e) => setEditingDurationMinutes(e.target.value)} className="w-14 p-1 border border-[#D8C8B6] rounded text-center text-black text-xs bg-white" />
-              <span className="text-xs font-bold text-[#6A5949]">min</span>
-            </div>
 
             <div className="flex flex-col mt-1">
               <button
@@ -2931,11 +3061,6 @@ export default function Home() {
              )}
              <div className={`font-bold text-base ${showArchived === true ? 'text-gray-500' : 'text-gray-900'}`}>{note.title}</div>
              <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{note.content}</div>
-             {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
-               <div className={`mt-1 text-[11px] font-bold ${showArchived === true ? 'text-gray-400' : 'text-[#826F5E]'}`}>
-                 ⏱ Durée : {formatDuration(note.duration_minutes)}
-               </div>
-             )}
           </div>
         )}
       </div>
@@ -3073,11 +3198,156 @@ export default function Home() {
               </div>
               <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                 <strong className="text-[#67574A]">📅 Agenda / .ics</strong>
-                <p className="mt-1">Associe une date et une heure à la note pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli ; le fichier .ics est un format universel importable dans la plupart des calendriers.</p>
+                <p className="mt-1">Associe une date et une heure à la note pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli. Le fichier .ics est téléchargé sur ton appareil : tu peux ensuite le conserver ou l'envoyer à quelqu'un pour qu'il l'importe dans son propre calendrier.</p>
               </div>
-              <div className="rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-3 text-xs">
-                <strong>Durée :</strong> si tu renseignes une durée, elle est utilisée pour définir la longueur de l'événement dans le calendrier.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SAISIE INTERNE DE L'APPLICATION — remplace les prompts du navigateur */}
+      {promptDialog && (
+        <div
+          className="fixed inset-0 bg-black/35 z-[13200] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          onClick={cancelAppPrompt}
+        >
+          <div
+            className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black text-[#46513F]">{promptDialog.title}</h2>
+                {promptDialog.message && (
+                  <p className="text-sm leading-relaxed text-[#6A6258] mt-1">{promptDialog.message}</p>
+                )}
               </div>
+              <button
+                type="button"
+                onClick={cancelAppPrompt}
+                className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black flex-shrink-0"
+                aria-label="Fermer"
+              >
+                ×
+              </button>
+            </div>
+
+            <input
+              autoFocus
+              type={promptDialog.inputMode === 'numeric' ? 'number' : 'text'}
+              inputMode={promptDialog.inputMode === 'numeric' ? 'numeric' : 'text'}
+              value={promptValue}
+              onChange={(e) => setPromptValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  confirmAppPrompt();
+                }
+              }}
+              placeholder={promptDialog.placeholder || ''}
+              className="w-full mt-4 rounded-xl border border-[#D8D0C4] bg-white p-3 text-[#4A463F] font-semibold focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+            />
+
+            <div className="flex gap-2 mt-4">
+              <button
+                type="button"
+                onClick={cancelAppPrompt}
+                className="flex-1 rounded-xl bg-[#EEE8DD] hover:bg-[#E5DED2] text-[#62594E] font-black py-3 px-3 text-sm"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={confirmAppPrompt}
+                className="flex-1 rounded-xl bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 px-3 text-sm"
+              >
+                {promptDialog.confirmLabel || 'Valider'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MESSAGE INTERNE DE L'APPLICATION — remplace les alertes natives du navigateur */}
+      {appMessage && (
+        <div
+          className="fixed inset-0 bg-black/35 z-[13100] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          onClick={() => setAppMessage(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-black text-[#46513F]">Information</h2>
+                <p className="text-sm leading-relaxed text-[#6A6258] mt-2 whitespace-pre-wrap">{appMessage}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAppMessage(null)}
+                className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black flex-shrink-0"
+                aria-label="Fermer"
+              >
+                ×
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAppMessage(null)}
+              className="w-full mt-5 rounded-xl bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 px-3 text-sm"
+            >
+              D'accord
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE DE CONFIRMATION GÉNÉRIQUE */}
+      {confirmDialog && (
+        <div
+          className="fixed inset-0 bg-black/35 z-[13000] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          onClick={() => !confirmDialogLoading && setConfirmDialog(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <h2 className="text-lg font-black text-[#46513F]">{confirmDialog.title}</h2>
+                <p className="text-sm leading-relaxed text-[#6A6258] mt-1">{confirmDialog.message}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !confirmDialogLoading && setConfirmDialog(null)}
+                className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black flex-shrink-0"
+                aria-label="Fermer"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button
+                type="button"
+                disabled={confirmDialogLoading}
+                onClick={() => setConfirmDialog(null)}
+                className="flex-1 rounded-xl bg-[#EEE8DD] hover:bg-[#E5DED2] text-[#62594E] font-black py-3 px-3 text-sm disabled:opacity-60"
+              >
+                {confirmDialog.cancelLabel || 'Annuler'}
+              </button>
+              <button
+                type="button"
+                disabled={confirmDialogLoading}
+                onClick={() => void confirmAppDialog()}
+                className={`flex-1 rounded-xl font-black py-3 px-3 text-sm disabled:opacity-60 ${
+                  confirmDialog.tone === 'danger'
+                    ? 'bg-[#E6C9C1] hover:bg-[#DDB9AE] text-[#7B4E43]'
+                    : 'bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F]'
+                }`}
+              >
+                {confirmDialogLoading ? 'Patiente…' : (confirmDialog.confirmLabel || 'Confirmer')}
+              </button>
             </div>
           </div>
         </div>
@@ -3949,12 +4219,12 @@ export default function Home() {
       {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
         <div className="animate-fade-in text-[#4A463F]">
-          <div className="relative mb-5 min-h-[72px]">
+          <div className="relative mb-5">
             {!isFocusMode ? (
               <>
-                <button onClick={() => window.location.hash = 'hub'} className="absolute left-0 top-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
+                <button onClick={navigateNotesHub} className="absolute left-0 top-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
                 <h1
-                  className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold px-20"
+                  className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold px-14"
                   style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
                 >
                   Notes &amp; Rappels
@@ -3966,23 +4236,17 @@ export default function Home() {
                 <span className="text-xs font-bold text-[#756E63] mt-1">Une seule tâche à la fois.</span>
               </div>
             )}
-            <div className="absolute right-0 top-0 flex items-center gap-2">
-              {!isFocusMode && (
-                <button
-                  type="button"
-                  onClick={() => setShowNotesHelp(true)}
-                  className="w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
-                  aria-label="Aide sur Notes & Rappels"
-                >?</button>
-              )}
+
+            <div className="flex justify-end mt-3">
               <button
                 onClick={() => {
                   setSkippedFocusIds([]);
                   setShowArchived(false);
                   setFocusPhase('rouge');
-                  window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
+                  if (isFocusMode) navigateNotesChild('#notes-list');
+                  else navigateNotesChild('#notes-focus');
                 }}
-                className="px-3 py-1.5 rounded-full text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8]"
+                className="min-w-[104px] h-11 px-4 rounded-xl text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] flex items-center justify-center"
               >
                 {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
               </button>
@@ -3991,8 +4255,8 @@ export default function Home() {
 
           {!isFocusMode && (
             <div className="flex bg-[#EEE8DD] rounded-2xl p-1 mb-6 w-full max-w-md mx-auto border border-[#DED5C8]">
-              <button type="button" onClick={() => window.location.hash = 'notes-create'} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'create' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>✍️ Créer</button>
-              <button type="button" onClick={() => window.location.hash = 'notes-list'} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Notes</button>
+              <button type="button" onClick={navigateNotesCreate} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'create' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>✍️ Créer</button>
+              <button type="button" onClick={() => navigateNotesChild('#notes-list')} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Notes</button>
             </div>
           )}
 
@@ -4057,15 +4321,6 @@ export default function Home() {
                   <option value="orange">🟠 Priorité Importante</option>
                   <option value="rouge">🔴 Priorité Urgente</option>
                 </select>
-              </div>
-
-              <div className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-[#E2D6C7] bg-[#F4EEE6]">
-                <span className="text-xs font-bold text-[#6A5949] whitespace-nowrap">⏱ Durée :</span>
-                <input type="number" min="0" max="168" placeholder="0" value={newDurationHours} onChange={(e) => setNewDurationHours(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-[#D8C8B6] rounded text-center text-black font-bold text-xs bg-white" />
-                <span className="text-xs font-bold text-[#6A5949]">h</span>
-                <input type="number" min="0" max="59" placeholder="0" value={newDurationMinutes} onChange={(e) => setNewDurationMinutes(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-[#D8C8B6] rounded text-center text-black font-bold text-xs bg-white" />
-                <span className="text-xs font-bold text-[#6A5949]">min</span>
-                <span className="ml-auto text-[10px] text-[#826F5E]">optionnel</span>
               </div>
 
               <div className="border-b border-gray-200 pb-3 mt-1">
@@ -4232,8 +4487,8 @@ export default function Home() {
                   <h2 className="text-2xl font-black text-gray-800">Urgences terminées !</h2>
                   <p className="text-gray-600 font-medium">As-tu l'énergie de continuer sur les tâches importantes ?</p>
                   <div className="flex w-full gap-3 mt-4">
+                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('orange')} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on continue</button>
-                    <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                   </div>
                 </div>
               ) : focusPhase === 'ask_vert' ? (
@@ -4242,8 +4497,8 @@ export default function Home() {
                   <h2 className="text-2xl font-black text-gray-800">Tâches importantes finies !</h2>
                   <p className="text-gray-600 font-medium">Veux-tu terminer avec les tâches normales ?</p>
                   <div className="flex w-full gap-3 mt-4">
+                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('vert')} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on termine</button>
-                    <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                   </div>
                 </div>
               ) : currentFocusNote ? (
@@ -4268,7 +4523,7 @@ export default function Home() {
                 // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
                   <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
-                  <button onClick={() => { setSkippedFocusIds([]); window.location.hash = 'notes-list'; }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
+                  <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
                 </div>
               )}
             </div>
@@ -4313,7 +4568,7 @@ export default function Home() {
               )}
 
               <div className="mt-12 mb-8 text-center">
-                <button onClick={() => window.location.hash = 'notes-history'} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
+                <button onClick={() => navigateNotesChild('#notes-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
               </div>
             </>
           )}
@@ -4321,7 +4576,7 @@ export default function Home() {
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => window.location.hash = 'notes-list'} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
+                 <button onClick={() => navigateNotesChild('#notes-list')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
               <div className="bg-[#FBFAF7] p-3 rounded-2xl border border-[#DED7CC] flex items-center gap-2">
@@ -4335,9 +4590,6 @@ export default function Home() {
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-2xl bg-[#F2EEE7] border border-[#D9D1C5] opacity-85">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
                     <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
-                    {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
-                      <div className="text-[10px] font-bold text-gray-500">⏱ Durée : {formatDuration(note.duration_minutes)}</div>
-                    )}
                     <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                       {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
@@ -4349,6 +4601,20 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {!isFocusMode && (
+            <div className="flex justify-center mt-10 mb-3">
+              <button
+                type="button"
+                onClick={() => setShowNotesHelp(true)}
+                className="w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
+                aria-label="Aide sur Notes & Rappels"
+                title="Aide sur les options de Notes & Rappels"
+              >
+                ?
+              </button>
             </div>
           )}
         </div>
