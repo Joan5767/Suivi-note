@@ -65,6 +65,27 @@ interface AiProposal {
   daily_reminder_popup: boolean;
 }
 
+interface MemoListItem {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+type MemoColor = 'sage' | 'sand' | 'rose' | 'blue' | 'lavender' | 'white';
+
+interface MemoEntry {
+  id: string;
+  title: string;
+  content: string;
+  memo_type: 'text' | 'list';
+  items: MemoListItem[];
+  color: MemoColor;
+  pinned: boolean;
+  archived: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 interface AppConfirmDialog {
   title: string;
   message: string;
@@ -128,7 +149,7 @@ const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
 const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
 export default function Home() {
-  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
+  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
@@ -142,6 +163,20 @@ export default function Home() {
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Notes, Mémos & Listes : espace de conservation façon Google Keep.
+  const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
+  const [memoSearch, setMemoSearch] = useState('');
+  const [showMemoArchived, setShowMemoArchived] = useState(false);
+  const [memoEditorOpen, setMemoEditorOpen] = useState(false);
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
+  const [memoDraftType, setMemoDraftType] = useState<'text' | 'list'>('text');
+  const [memoDraftTitle, setMemoDraftTitle] = useState('');
+  const [memoDraftContent, setMemoDraftContent] = useState('');
+  const [memoDraftItems, setMemoDraftItems] = useState<MemoListItem[]>([]);
+  const [memoNewItem, setMemoNewItem] = useState('');
+  const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
+  const [memoDraftPinned, setMemoDraftPinned] = useState(false);
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
@@ -884,6 +919,7 @@ export default function Home() {
       setShowExportModal(false);
       setShowExportHelp(false);
       setShowNotesHelp(false);
+      setMemoEditorOpen(false);
 
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
       if (directNoteMatch) {
@@ -905,6 +941,8 @@ export default function Home() {
           setMainMode('notes'); setActiveTab('history'); setIsFocusMode(false); break;
         case '#notes-focus':
           setMainMode('notes'); setIsFocusMode(true); break;
+        case '#memos':
+          setMainMode('memos'); setIsFocusMode(false); break;
         case '#planning':
           setMainMode('planning_home'); break;
         case '#planning-editor':
@@ -999,7 +1037,7 @@ export default function Home() {
     }
   };
 
-  // Navigation de Notes & Rappels sans empiler chaque clic dans l'historique.
+  // Navigation de Tâches & Rappels sans empiler chaque clic dans l'historique.
   const isNotesChildHash = (hash: string) =>
     hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' || hash.startsWith('#note-');
 
@@ -1166,9 +1204,53 @@ export default function Home() {
     return true;
   };
 
+  const normalizeMemoItems = (value: unknown): MemoListItem[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item: any) => {
+      if (!item || typeof item !== 'object') return [];
+      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      if (!text) return [];
+      return [{
+        id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
+        text,
+        completed: Boolean(item.completed),
+      }];
+    });
+  };
+
+  const normalizeMemoEntry = (row: any): MemoEntry => ({
+    id: String(row?.id || ''),
+    title: typeof row?.title === 'string' ? row.title : '',
+    content: typeof row?.content === 'string' ? row.content : '',
+    memo_type: row?.memo_type === 'list' ? 'list' : 'text',
+    items: normalizeMemoItems(row?.items),
+    color: ['sage', 'sand', 'rose', 'blue', 'lavender', 'white'].includes(row?.color) ? row.color : 'sage',
+    pinned: Boolean(row?.pinned),
+    archived: Boolean(row?.archived),
+    created_at: typeof row?.created_at === 'string' ? row.created_at : null,
+    updated_at: typeof row?.updated_at === 'string' ? row.updated_at : null,
+  });
+
+  const fetchMemos = async () => {
+    const { data, error } = await supabase
+      .from('memo_notes')
+      .select('*')
+      .order('pinned', { ascending: false })
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      console.error('Erreur chargement mémos :', error);
+      return false;
+    }
+
+    setMemoEntries((data || []).map(normalizeMemoEntry));
+    return true;
+  };
+
   useEffect(() => { 
     fetchNotes(); 
     fetchTemplates();
+    fetchMemos();
   }, []);
 
   // Resynchronise les données quand l'utilisateur revient dans l'application.
@@ -1179,6 +1261,7 @@ export default function Home() {
       if (document.visibilityState !== 'visible') return;
       void fetchNotes();
       void fetchTemplates();
+      void fetchMemos();
     };
 
     window.addEventListener('focus', syncWhenVisible);
@@ -1223,6 +1306,153 @@ export default function Home() {
     } catch (error: any) {
       showAppMessage(Notification.permission === 'denied' ? "❌ Tu as bloqué les notifications." : "❌ Erreur d'abonnement : " + error.message);
     }
+  };
+
+
+  const resetMemoDraft = (type: 'text' | 'list' = 'text') => {
+    setEditingMemoId(null);
+    setMemoDraftType(type);
+    setMemoDraftTitle('');
+    setMemoDraftContent('');
+    setMemoDraftItems([]);
+    setMemoNewItem('');
+    setMemoDraftColor('sage');
+    setMemoDraftPinned(false);
+  };
+
+  const openNewMemo = (type: 'text' | 'list') => {
+    resetMemoDraft(type);
+    setMemoEditorOpen(true);
+  };
+
+  const openMemoEditor = (memo: MemoEntry) => {
+    setEditingMemoId(memo.id);
+    setMemoDraftType(memo.memo_type);
+    setMemoDraftTitle(memo.title);
+    setMemoDraftContent(memo.content);
+    setMemoDraftItems(normalizeMemoItems(memo.items));
+    setMemoNewItem('');
+    setMemoDraftColor(memo.color);
+    setMemoDraftPinned(memo.pinned);
+    setMemoEditorOpen(true);
+  };
+
+  const addMemoDraftItem = () => {
+    const text = memoNewItem.trim();
+    if (!text) return;
+    setMemoDraftItems(prev => [...prev, { id: crypto.randomUUID(), text, completed: false }]);
+    setMemoNewItem('');
+  };
+
+  const saveMemo = async () => {
+    const title = memoDraftTitle.trim();
+    const content = memoDraftContent.trim();
+    const items = memoDraftType === 'list'
+      ? memoDraftItems.map(item => ({ ...item, text: item.text.trim() })).filter(item => item.text)
+      : [];
+
+    if (!title && !content && items.length === 0) {
+      showAppMessage('Ajoute un titre, du texte ou au moins un élément avant de sauvegarder.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload = {
+        title,
+        content,
+        memo_type: memoDraftType,
+        items,
+        color: memoDraftColor,
+        pinned: memoDraftPinned,
+        updated_at: new Date().toISOString(),
+      };
+
+      const query = editingMemoId
+        ? supabase.from('memo_notes').update(payload).eq('id', editingMemoId)
+        : supabase.from('memo_notes').insert([{ ...payload, archived: false }]);
+
+      const { error } = await query;
+      if (error) throw error;
+
+      setMemoEditorOpen(false);
+      resetMemoDraft();
+      await fetchMemos();
+    } catch (error: any) {
+      showAppMessage('Erreur lors de la sauvegarde du mémo : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items'>>) => {
+    const { error } = await supabase
+      .from('memo_notes')
+      .update({ ...payload, updated_at: new Date().toISOString() })
+      .eq('id', id);
+
+    if (error) {
+      showAppMessage('Erreur de mise à jour du mémo : ' + error.message);
+      return false;
+    }
+
+    await fetchMemos();
+    return true;
+  };
+
+  const deleteMemo = (memo: MemoEntry) => {
+    requestAppConfirmation({
+      title: 'Supprimer ce mémo ?',
+      message: `« ${memo.title || 'Sans titre'} » sera supprimé définitivement.`,
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('memo_notes').delete().eq('id', memo.id);
+        if (error) {
+          showAppMessage('Erreur lors de la suppression du mémo : ' + error.message);
+          return;
+        }
+        await fetchMemos();
+      },
+    });
+  };
+
+  const toggleMemoListItem = async (memo: MemoEntry, itemId: string) => {
+    const items = memo.items.map(item => item.id === itemId ? { ...item, completed: !item.completed } : item);
+    await updateMemo(memo.id, { items });
+  };
+
+  const transferMemoToTasks = (memo: MemoEntry) => {
+    const listItems = memo.memo_type === 'list'
+      ? (memo.items.some(item => !item.completed) ? memo.items.filter(item => !item.completed) : memo.items)
+      : [];
+    const listText = listItems.map(item => `☐ ${item.text}`).join('\n');
+    const content = [memo.content.trim(), listText].filter(Boolean).join('\n\n');
+
+    setNoteMode('text');
+    setNewTitle(memo.title);
+    setNewContent(content);
+    setNewListItems([]);
+    setCurrentNewListItem('');
+    setImportance('vert');
+    setSendImmediateEmail(false);
+    setShowPopupConfig(false);
+    setPopupScheduleMode('relative');
+    setPopupHours('');
+    setPopupMinutes('');
+    setPopupDateTime('');
+    setShowDailyConfig(false);
+    setActivateReminder(false);
+    setReminderPopupActive(false);
+    setShowCalendarConfig(false);
+    setTargetDate('');
+    setShowAdvancedSettings(false);
+
+    const targetUrl = `${window.location.pathname}${window.location.search}#notes-create`;
+    window.history.pushState({ fromMemo: memo.id }, '', targetUrl);
+    refreshRouteFromCurrentHash();
+    setSuccessMessage('Mémo copié dans Tâches & Rappels. Ajoute maintenant le rappel si nécessaire.');
+    window.setTimeout(() => setSuccessMessage(null), 4500);
   };
 
   useEffect(() => {
@@ -2132,7 +2362,7 @@ export default function Home() {
   const deleteAllHistory = () => {
     requestAppConfirmation({
       title: 'Supprimer tout l’historique ?',
-      message: 'Toutes les notes terminées seront supprimées définitivement.',
+      message: 'Toutes les tâches terminées seront supprimées définitivement.',
       confirmLabel: 'Tout supprimer',
       tone: 'danger',
       onConfirm: async () => {
@@ -2152,7 +2382,7 @@ export default function Home() {
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!newTitle.trim() && !newContent.trim() && newListItems.length === 0) return;
+    if (!newTitle.trim() && !newContent.trim()) return;
 
     setLoading(true);
 
@@ -2190,22 +2420,14 @@ export default function Home() {
         finalTargetDate = new Date(calendarTime).toISOString();
       }
 
-      const finalSubtasks =
-        noteMode === 'list'
-          ? newListItems
-              .map(item => item.trim())
-              .filter(Boolean)
-              .map(item => ({ id: crypto.randomUUID(), text: item, completed: false }))
-          : [];
-
       const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
 
       const { error } = await supabase.from('notes').insert([{
         title: newTitle.trim(),
         content: newContent.trim(),
         importance,
-        subtasks: finalSubtasks,
-        is_list: noteMode === 'list',
+        subtasks: [],
+        is_list: false,
         reminder_active: activateReminder,
         reminder_popup_active: reminderPopupActive,
         daily_reminder_time: safeDailyTime,
@@ -2221,7 +2443,7 @@ export default function Home() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              title: newTitle.trim() ? newTitle.trim() : "Nouvelle note",
+              title: newTitle.trim() ? newTitle.trim() : "Nouvelle tâche",
               importance,
             }),
           });
@@ -2229,13 +2451,13 @@ export default function Home() {
           if (!mailRes.ok) {
             const mailError = await mailRes.json().catch(() => ({}));
             showAppMessage(
-              "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+              "La tâche a été créée, mais l'e-mail n'a pas pu être envoyé : " +
               (mailError.error || "erreur inconnue")
             );
           }
         } catch (mailError: any) {
           showAppMessage(
-            "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+            "La tâche a été créée, mais l'e-mail n'a pas pu être envoyé : " +
             (mailError?.message || "erreur réseau")
           );
         }
@@ -2262,7 +2484,7 @@ export default function Home() {
 
       await fetchNotes();
       navigateNotesChild('#notes-list');
-      setSuccessMessage('✅ Note créée avec succès !');
+      setSuccessMessage('✅ Tâche créée avec succès !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
       showAppMessage("Erreur Supabase : " + (error?.message || "erreur inconnue"));
@@ -2273,8 +2495,8 @@ export default function Home() {
 
   const deleteNote = (id: string) => {
     requestAppConfirmation({
-      title: 'Supprimer cette note ?',
-      message: 'La note sera supprimée définitivement.',
+      title: 'Supprimer cette tâche ?',
+      message: 'La tâche sera supprimée définitivement.',
       confirmLabel: 'Supprimer',
       tone: 'danger',
       onConfirm: async () => {
@@ -2525,16 +2747,18 @@ export default function Home() {
           ? data.importance
           : 'vert';
 
-      const subtasks = isList
-        ? listItems.map(text => ({ id: crypto.randomUUID(), text, completed: false }))
-        : [];
+      const aiListText = isList ? listItems.map(text => `☐ ${text}`).join('\n') : '';
+      const aiContent = [
+        typeof data?.content === 'string' ? data.content.trim() : '',
+        aiListText,
+      ].filter(Boolean).join('\n\n');
 
       const { error } = await supabase.from('notes').insert([{
         title: typeof data?.title === 'string' ? data.title.trim() : '',
-        content: typeof data?.content === 'string' ? data.content.trim() : '',
+        content: aiContent,
         importance: safeImportance,
-        subtasks,
-        is_list: isList,
+        subtasks: [],
+        is_list: false,
         reminder_active: dailyReminderActive && reminderChannels.email,
         reminder_popup_active: dailyReminderActive && reminderChannels.popup,
         daily_reminder_time: dailyReminderTime,
@@ -2558,13 +2782,13 @@ export default function Home() {
           if (!mailRes.ok) {
             const mailError = await mailRes.json().catch(() => ({}));
             showAppMessage(
-              "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+              "La tâche a été créée, mais l'e-mail n'a pas pu être envoyé : " +
               (mailError.error || "erreur inconnue")
             );
           }
         } catch (mailError: any) {
           showAppMessage(
-            "La note a été créée, mais l'e-mail n'a pas pu être envoyé : " +
+            "La tâche a été créée, mais l'e-mail n'a pas pu être envoyé : " +
             (mailError?.message || "erreur réseau")
           );
         }
@@ -2577,7 +2801,7 @@ export default function Home() {
       setCurrentNewListItem('');
       await fetchNotes();
       navigateNotesChild('#notes-list');
-      setSuccessMessage('✅ Note créée avec succès par IA !');
+      setSuccessMessage('✅ Tâche créée avec succès par IA !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
       showAppMessage("Erreur lors de la création IA : " + (e?.message || "erreur inconnue"));
@@ -2601,16 +2825,16 @@ export default function Home() {
     setTargetDate('');
 
     if (typeof data?.title === 'string') setNewTitle(data.title);
-    if (typeof data?.content === 'string') setNewContent(data.content);
+    const listItems = normalizeAiListItems(data?.list_items);
+    const listText = listItems.length > 0 ? listItems.map(item => `☐ ${item}`).join('\n') : '';
+    const proposalContent = [typeof data?.content === 'string' ? data.content : '', listText].filter(Boolean).join('\n\n');
+    setNewContent(proposalContent);
+    setNoteMode('text');
+    setNewListItems([]);
 
     if (data?.importance === 'vert' || data?.importance === 'orange' || data?.importance === 'rouge') {
       setImportance(data.importance);
     }
-
-    const listItems = normalizeAiListItems(data?.list_items);
-    const isList = Boolean(data?.is_list || listItems.length > 0);
-    setNoteMode(isList ? 'list' : 'text');
-    setNewListItems(isList ? listItems : []);
 
     if (data?.send_email) {
       setSendImmediateEmail(true);
@@ -2989,6 +3213,91 @@ export default function Home() {
     { id: 'vert', title: '🟢 Priorité Normale', notes: displayedNotes.filter(n => n.importance === 'vert') },
   ];
 
+  const memoColorClasses = (color: MemoColor) => ({
+    sage: 'bg-[#E6ECDD] border-[#CAD5BE] text-[#43503C]',
+    sand: 'bg-[#F1E4D2] border-[#DEC9AD] text-[#64523F]',
+    rose: 'bg-[#F2DEDA] border-[#DEC0B9] text-[#6C4E49]',
+    blue: 'bg-[#DFE8EC] border-[#C2D3DA] text-[#435B64]',
+    lavender: 'bg-[#E9E2EF] border-[#D3C6DE] text-[#5E5167]',
+    white: 'bg-[#FBFAF7] border-[#DED7CC] text-[#4A463F]',
+  }[color]);
+
+  const normalizedMemoSearch = memoSearch.trim().toLocaleLowerCase('fr-FR');
+  const visibleMemos = memoEntries.filter(memo => {
+    if (memo.archived !== showMemoArchived) return false;
+    if (!normalizedMemoSearch) return true;
+    const searchable = [memo.title, memo.content, ...memo.items.map(item => item.text)]
+      .join(' ')
+      .toLocaleLowerCase('fr-FR');
+    return searchable.includes(normalizedMemoSearch);
+  });
+  const pinnedMemos = visibleMemos.filter(memo => memo.pinned);
+  const otherMemos = visibleMemos.filter(memo => !memo.pinned);
+
+  const renderMemoCard = (memo: MemoEntry) => (
+    <article
+      key={memo.id}
+      onClick={() => openMemoEditor(memo)}
+      className={`rounded-[22px] border p-3.5 shadow-sm transition-all hover:shadow-md active:scale-[0.99] cursor-pointer break-inside-avoid ${memoColorClasses(memo.color)}`}
+    >
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          {memo.title && <h3 className="font-black text-base leading-tight whitespace-pre-wrap">{memo.title}</h3>}
+          {memo.content && <p className="text-sm mt-1.5 whitespace-pre-wrap leading-relaxed opacity-90">{memo.content}</p>}
+        </div>
+        {memo.pinned && <span className="text-sm flex-shrink-0" title="Épinglé">📌</span>}
+      </div>
+
+      {memo.memo_type === 'list' && memo.items.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          {memo.items.slice(0, 7).map(item => (
+            <label
+              key={item.id}
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-start gap-2 text-xs font-semibold cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={item.completed}
+                onChange={() => void toggleMemoListItem(memo, item.id)}
+                className="mt-0.5 accent-[#829076]"
+              />
+              <span className={item.completed ? 'line-through opacity-50' : ''}>{item.text}</span>
+            </label>
+          ))}
+          {memo.items.length > 7 && <span className="text-[10px] font-bold opacity-55">+ {memo.items.length - 7} autre{memo.items.length - 7 > 1 ? 's' : ''}</span>}
+        </div>
+      )}
+
+      <div className="mt-3 pt-2.5 border-t border-black/10 flex items-center gap-1 overflow-x-auto [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); void updateMemo(memo.id, { pinned: !memo.pinned }); }}
+          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-white/80 flex items-center justify-center text-sm"
+          title={memo.pinned ? 'Désépingler' : 'Épingler'}
+        >{memo.pinned ? '📍' : '📌'}</button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); transferMemoToTasks(memo); }}
+          className="flex-shrink-0 px-2.5 h-8 rounded-full bg-white/55 hover:bg-white/80 text-[10px] font-black"
+          title="Créer une tâche à partir de ce mémo"
+        >→ Tâche</button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); void updateMemo(memo.id, { archived: !memo.archived }); }}
+          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-white/80 flex items-center justify-center text-sm"
+          title={memo.archived ? 'Désarchiver' : 'Archiver'}
+        >{memo.archived ? '↩' : '📦'}</button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); deleteMemo(memo); }}
+          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-[#F0DDD7] flex items-center justify-center text-sm"
+          title="Supprimer"
+        >🗑</button>
+      </div>
+    </article>
+  );
+
   const renderNoteItem = (note: Note) => (
     <li id={`note-${note.id}`} key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
@@ -3035,7 +3344,7 @@ export default function Home() {
                 onClick={() => setShowEditingAdvancedSettings(!showEditingAdvancedSettings)}
                 className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2 px-2.5 rounded-xl text-xs flex justify-between items-center transition-colors border border-[#DED5C8]"
               >
-                <span>⚙️ Paramétrage de la note</span><span>{showEditingAdvancedSettings ? '▲' : '▼'}</span>
+                <span>⚙️ Paramétrage de la tâche</span><span>{showEditingAdvancedSettings ? '▲' : '▼'}</span>
               </button>
 
               {showEditingAdvancedSettings && (
@@ -3277,7 +3586,7 @@ export default function Home() {
             </div>
             {currentCleanupIndex < cleanupNotes.length ? (
               <div className="flex flex-col gap-4 mt-2">
-                <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">Note {currentCleanupIndex + 1} sur {cleanupNotes.length}</div>
+                <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">Tâche {currentCleanupIndex + 1} sur {cleanupNotes.length}</div>
                 <div className="bg-white border border-gray-300 p-4 rounded-xl shadow-sm min-h-[150px] max-h-[300px] overflow-y-auto flex flex-col">
                   <h3 className="font-bold text-lg text-black">{cleanupNotes[currentCleanupIndex].title || '(Sans titre)'}</h3>
                   <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
@@ -3292,7 +3601,7 @@ export default function Home() {
             ) : (
               <div className="text-center py-8 flex flex-col items-center gap-3">
                 <span className="text-5xl">✨</span><p className="font-bold text-lg text-gray-800">Tout est propre !</p>
-                <p className="text-sm text-gray-500">Il n'y a plus aucune note à trier pour cette durée.</p>
+                <p className="text-sm text-gray-500">Il n'y a plus aucune tâche à trier pour cette durée.</p>
                 <button onClick={() => setShowCleanupModal(false)} className="mt-4 bg-gray-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-colors">Fermer</button>
               </div>
             )}
@@ -3315,14 +3624,14 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowNotesHelp(false)}>
           <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 mb-4">
-              <h2 className="text-lg font-black text-[#46513F]">Options de Notes &amp; Rappels</h2>
+              <h2 className="text-lg font-black text-[#46513F]">Options de Tâches &amp; Rappels</h2>
               <button onClick={() => setShowNotesHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
             </div>
 
             <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
               <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                 <strong className="text-[#4E5847]">📨 E-mail immédiat</strong>
-                <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la note directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
+                <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la tâche directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
               </div>
               <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                 <strong className="text-[#55516A]">⏰ Alarme pop-up</strong>
@@ -3334,7 +3643,7 @@ export default function Home() {
               </div>
               <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                 <strong className="text-[#67574A]">📅 Agenda / .ics</strong>
-                <p className="mt-1">Associe une date et une heure à la note pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli. Le fichier .ics est téléchargé sur ton appareil : tu peux ensuite le conserver ou l'envoyer à quelqu'un pour qu'il l'importe dans son propre calendrier.</p>
+                <p className="mt-1">Associe une date et une heure à la tâche pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli. Le fichier .ics est téléchargé sur ton appareil : tu peux ensuite le conserver ou l'envoyer à quelqu'un pour qu'il l'importe dans son propre calendrier.</p>
               </div>
             </div>
           </div>
@@ -3589,13 +3898,13 @@ export default function Home() {
             <div className="flex flex-col gap-3 text-base text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-200">
               <p><strong className="text-purple-700">Titre :</strong> {aiProposal.title || '(Vide)'}</p>
               {aiProposal.content && <p><strong className="text-purple-700">Contenu :</strong> {aiProposal.content}</p>}
-              <p><strong className="text-purple-700">Format :</strong> {aiProposal.is_list ? 'Liste de tâches ✅' : 'Note texte 📝'}</p>
-              {aiProposal.is_list && aiProposal.list_items?.length > 0 && (
+              {aiProposal.list_items?.length > 0 && (
                 <div className="bg-white border border-purple-200 rounded-lg p-3">
-                  <strong className="text-purple-700">Éléments :</strong>
+                  <strong className="text-purple-700">Éléments détectés :</strong>
                   <ul className="list-disc pl-5 mt-1 space-y-1 text-sm">
                     {aiProposal.list_items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
                   </ul>
+                  <p className="text-[11px] text-purple-500 mt-2">Ils seront ajoutés au texte de la tâche.</p>
                 </div>
               )}
               <p><strong className="text-purple-700">Priorité :</strong> {aiProposal.importance === 'rouge' ? '🔴 Urgente' : aiProposal.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'}</p>
@@ -3749,8 +4058,8 @@ export default function Home() {
             >
               <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📝</span>
               <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Notes &amp; Rappels</span>
-                <span className="text-xs font-semibold text-[#687260] mt-0.5">Capturer, organiser et ne rien oublier</span>
+                <span className="text-base font-black">Tâches &amp; Rappels</span>
+                <span className="text-xs font-semibold text-[#687260] mt-0.5">Planifier une action et recevoir le bon rappel</span>
               </span>
             </button>
 
@@ -3764,7 +4073,244 @@ export default function Home() {
                 <span className="text-xs font-semibold text-[#786858] mt-0.5">Créer et réutiliser tes semaines types</span>
               </span>
             </button>
+
+            <button
+              onClick={() => window.location.hash = 'memos'}
+              className="w-full bg-[#DFE8E3] hover:bg-[#D2E0D9] text-[#40574E] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(67,91,81,0.08)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C9D8D1]"
+            >
+              <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📌</span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-base font-black">Notes, Mémos &amp; Listes</span>
+                <span className="text-xs font-semibold text-[#687B73] mt-0.5">Conserver tes idées, mémos et listes réutilisables</span>
+              </span>
+            </button>
           </div>
+        </div>
+      )}
+
+      {/* ================= VUE : NOTES, MÉMOS & LISTES ================= */}
+      {mainMode === 'memos' && (
+        <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 mb-5">
+            <button
+              type="button"
+              onClick={() => window.location.hash = 'hub'}
+              className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm"
+            >
+              ← Menu
+            </button>
+            <h1
+              className="text-[31px] sm:text-[38px] leading-none text-[#4B5843] text-center font-semibold"
+              style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+            >
+              Notes, Mémos &amp; Listes
+            </h1>
+            <div />
+          </div>
+
+          <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
+                <input
+                  type="text"
+                  value={memoSearch}
+                  onChange={(e) => setMemoSearch(e.target.value)}
+                  placeholder="Rechercher dans tes notes et listes..."
+                  className="w-full bg-white border border-[#DED5C8] rounded-xl pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMemoArchived(prev => !prev)}
+                className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
+              >
+                {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
+              </button>
+            </div>
+          </div>
+
+          {!showMemoArchived && (
+            <div className="flex items-center justify-center gap-2 mb-5">
+              <button
+                type="button"
+                onClick={() => openNewMemo('text')}
+                className="bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] rounded-2xl px-4 py-2.5 text-sm font-black shadow-sm active:scale-[0.98]"
+              >
+                ＋ Note / mémo
+              </button>
+              <button
+                type="button"
+                onClick={() => openNewMemo('list')}
+                className="bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] border border-[#DAC9B5] rounded-2xl px-4 py-2.5 text-sm font-black shadow-sm active:scale-[0.98]"
+              >
+                ☑ Liste
+              </button>
+            </div>
+          )}
+
+          {visibleMemos.length === 0 ? (
+            <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
+              <div className="text-4xl mb-3">{showMemoArchived ? '📦' : '🗒️'}</div>
+              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? 'Aucune note archivée' : 'Aucun mémo pour le moment'}</p>
+              {!memoSearch && !showMemoArchived && <p className="text-xs font-semibold mt-1">Crée une note, un mémo ou une liste que tu pourras garder et réutiliser.</p>}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-7">
+              {pinnedMemos.length > 0 && (
+                <section>
+                  <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Épinglés</div>
+                  <div className="columns-1 sm:columns-2 lg:columns-3 gap-3 space-y-3">
+                    {pinnedMemos.map(renderMemoCard)}
+                  </div>
+                </section>
+              )}
+
+              {otherMemos.length > 0 && (
+                <section>
+                  {pinnedMemos.length > 0 && <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Autres</div>}
+                  <div className="columns-1 sm:columns-2 lg:columns-3 gap-3 space-y-3">
+                    {otherMemos.map(renderMemoCard)}
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+
+          {memoEditorOpen && (
+            <div
+              className="fixed inset-0 z-[12600] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4"
+              onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+            >
+              <div
+                className={`w-full max-w-lg rounded-[28px] border shadow-2xl p-5 max-h-[90vh] overflow-y-auto ${memoColorClasses(memoDraftColor)}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMemoDraftType('text')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black border ${memoDraftType === 'text' ? 'bg-white/75 border-black/10' : 'bg-white/30 border-transparent'}`}
+                    >📝 Note</button>
+                    <button
+                      type="button"
+                      onClick={() => setMemoDraftType('list')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black border ${memoDraftType === 'list' ? 'bg-white/75 border-black/10' : 'bg-white/30 border-transparent'}`}
+                    >☑ Liste</button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+                    className="w-8 h-8 rounded-full bg-white/60 hover:bg-white/85 font-black"
+                  >×</button>
+                </div>
+
+                <input
+                  autoFocus
+                  type="text"
+                  value={memoDraftTitle}
+                  onChange={(e) => setMemoDraftTitle(e.target.value)}
+                  placeholder="Titre"
+                  className="w-full bg-white/70 border border-black/10 rounded-xl px-3 py-2.5 text-lg font-black text-inherit placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
+                />
+
+                {memoDraftType === 'text' ? (
+                  <textarea
+                    value={memoDraftContent}
+                    onChange={(e) => setMemoDraftContent(e.target.value)}
+                    placeholder="Écris ton mémo ici..."
+                    className="w-full mt-2 min-h-[190px] bg-white/55 border border-black/10 rounded-xl p-3 text-sm font-semibold text-inherit resize-y placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
+                  />
+                ) : (
+                  <div className="mt-3 flex flex-col gap-2">
+                    {memoDraftItems.map((item, index) => (
+                      <div key={item.id} className="flex items-center gap-2 bg-white/50 rounded-xl p-2 border border-black/5">
+                        <input
+                          type="checkbox"
+                          checked={item.completed}
+                          onChange={() => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, completed: !current.completed } : current))}
+                          className="accent-[#829076]"
+                        />
+                        <input
+                          type="text"
+                          value={item.text}
+                          onChange={(e) => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, text: e.target.value } : current))}
+                          className={`flex-1 bg-transparent border-none outline-none text-sm font-semibold ${item.completed ? 'line-through opacity-55' : ''}`}
+                        />
+                        <button type="button" onClick={() => setMemoDraftItems(prev => prev.filter((_, i) => i !== index))} className="w-7 h-7 rounded-full hover:bg-white/70 text-[#875E55] font-black">×</button>
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={memoNewItem}
+                        onChange={(e) => setMemoNewItem(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addMemoDraftItem(); } }}
+                        placeholder="Ajouter un élément..."
+                        className="flex-1 bg-white/65 border border-black/10 rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-black/10"
+                      />
+                      <button type="button" onClick={addMemoDraftItem} className="w-10 h-10 rounded-xl bg-white/70 hover:bg-white text-lg font-black">＋</button>
+                    </div>
+                    <textarea
+                      value={memoDraftContent}
+                      onChange={(e) => setMemoDraftContent(e.target.value)}
+                      placeholder="Note complémentaire (optionnel)"
+                      className="w-full min-h-[80px] bg-white/45 border border-black/10 rounded-xl p-3 text-xs font-semibold resize-y placeholder:text-black/30 focus:outline-none"
+                    />
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMemoDraftPinned(prev => !prev)}
+                    className={`px-3 py-2 rounded-xl text-xs font-black border ${memoDraftPinned ? 'bg-white/80 border-black/10' : 'bg-white/35 border-black/5'}`}
+                  >{memoDraftPinned ? '📌 Épinglé' : '📌 Épingler'}</button>
+
+                  <div className="flex items-center gap-1.5">
+                    {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setMemoDraftColor(color)}
+                        aria-label={`Couleur ${color}`}
+                        className={`w-7 h-7 rounded-full border-2 transition-transform ${memoColorClasses(color).split(' ').slice(0,2).join(' ')} ${memoDraftColor === color ? 'scale-110 ring-2 ring-black/20 ring-offset-1' : 'opacity-80'}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {editingMemoId && (() => {
+                  const originalMemo = memoEntries.find(memo => memo.id === editingMemoId);
+                  if (!originalMemo) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); transferMemoToTasks(originalMemo); }}
+                      className="w-full mt-4 py-2.5 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-xs font-black"
+                    >
+                      → Envoyer vers Tâches &amp; Rappels
+                    </button>
+                  );
+                })()}
+
+                <div className="flex gap-2 mt-5">
+                  <button
+                    type="button"
+                    onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+                    className="flex-1 py-3 rounded-xl bg-white/45 hover:bg-white/70 border border-black/10 text-xs font-black"
+                  >Annuler</button>
+                  <button
+                    type="button"
+                    onClick={() => void saveMemo()}
+                    disabled={loading}
+                    className="flex-1 py-3 rounded-xl bg-[#819076] hover:bg-[#74836A] text-white text-xs font-black shadow-sm disabled:opacity-50"
+                  >{loading ? 'Enregistrement…' : editingMemoId ? 'Enregistrer' : 'Créer'}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -4381,7 +4927,7 @@ export default function Home() {
          </div>
       )}
 
-      {/* ================= VUE : NOTES ET RAPPELS ================= */}
+      {/* ================= VUE : TÂCHES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
         <div
           className="animate-fade-in text-[#4A463F]"
@@ -4396,7 +4942,7 @@ export default function Home() {
                   className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold px-14"
                   style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
                 >
-                  Notes &amp; Rappels
+                  Tâches &amp; Rappels
                 </h1>
               </>
             ) : (
@@ -4425,7 +4971,7 @@ export default function Home() {
           {!isFocusMode && (
             <div className="flex bg-[#EEE8DD] rounded-2xl p-1 mb-6 w-full max-w-md mx-auto border border-[#DED5C8]">
               <button type="button" onClick={navigateNotesCreate} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'create' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>✍️ Créer</button>
-              <button type="button" onClick={() => navigateNotesChild('#notes-list')} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Notes</button>
+              <button type="button" onClick={() => navigateNotesChild('#notes-list')} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Tâches</button>
             </div>
           )}
 
@@ -4438,51 +4984,16 @@ export default function Home() {
 
           {activeTab === 'create' && !isFocusMode && (
             <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2] border border-transparent'}`}>📝 Format Texte</button>
-                <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2] border border-transparent'}`}>✅ Format Liste</button>
+              <div className="flex flex-col gap-2">
+                <div className="relative flex items-center w-full">
+                  <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
+                </div>
+                <div className="relative w-full">
+                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Décris ta tâche ou ton rappel ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
+                </div>
               </div>
-
-              {noteMode === 'text' ? (
-                <div className="flex flex-col gap-2">
-                  <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
-                    <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
-                  </div>
-                  <div className="relative w-full">
-                    <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
-                    <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
-                    <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
-                  </div>
-                  
-                  <div className="bg-[#F8F5EF] border border-[#DED5C8] rounded-2xl p-3 flex flex-col gap-2">
-                    <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
-                    {newListItems.length > 0 && (
-                      <ul className="flex flex-col gap-1 mb-1">
-                        {newListItems.map((item, idx) => (
-                          <li key={idx} className="flex justify-between items-center bg-gray-50 p-1.5 rounded border border-gray-200 text-xs text-black">
-                            <span className="flex-1 mr-2">• {item}</span>
-                            <button type="button" onClick={() => setNewListItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-base font-bold leading-none px-2">×</button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="flex gap-2">
-                      <div className="relative flex-1 flex items-center">
-                        <input type="text" value={currentNewListItem} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
-                        <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-2 text-xl rounded-full shadow-md transition-all ${listeningMode === 'list_item' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
-                      </div>
-                      <button type="button" onClick={() => { if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } }} className="bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8] px-3 py-1.5 rounded-xl text-xs font-black hover:bg-[#CCD5BC] transition-colors" disabled={loading || isAiProcessing || !currentNewListItem.trim()}>+ Ajouter</button>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div className="flex items-center w-full mt-1">
                 <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
@@ -4500,7 +5011,7 @@ export default function Home() {
 
               <div className="flex flex-col mt-2">
                 <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2.5 px-3 rounded-xl text-sm flex justify-between items-center transition-colors border border-[#DED5C8]">
-                  <span>⚙️ Paramétrage de la note</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
+                  <span>⚙️ Paramétrage de la tâche</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
                 </button>
                 {showAdvancedSettings && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
@@ -4636,7 +5147,7 @@ export default function Home() {
                 </div>
               )}
 
-              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}</button>
+              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la tâche'}</button>
             </form>
           )}
 
@@ -4691,7 +5202,7 @@ export default function Home() {
               ) : (
                 // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
-                  <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune note à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
+                  <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune tâche à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
                   <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
                 </div>
               )}
@@ -4737,7 +5248,7 @@ export default function Home() {
               )}
 
               <div className="mt-12 mb-8 text-center">
-                <button onClick={() => navigateNotesChild('#notes-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des notes terminées</button>
+                <button onClick={() => navigateNotesChild('#notes-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des tâches terminées</button>
               </div>
             </>
           )}
@@ -4745,7 +5256,7 @@ export default function Home() {
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => navigateNotesChild('#notes-list')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
+                 <button onClick={() => navigateNotesChild('#notes-list')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux tâches actives</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
               <div className="bg-[#FBFAF7] p-3 rounded-2xl border border-[#DED7CC] flex items-center gap-2">
@@ -4754,7 +5265,7 @@ export default function Home() {
                 {historySearch && <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune note dans l'historique.</p>}
+                {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune tâche dans l'historique.</p>}
                 {historyNotes.map(note => (
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-2xl bg-[#F2EEE7] border border-[#D9D1C5] opacity-85">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
@@ -4779,8 +5290,8 @@ export default function Home() {
                 type="button"
                 onClick={() => setShowNotesHelp(true)}
                 className="w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
-                aria-label="Aide sur Notes & Rappels"
-                title="Aide sur les options de Notes & Rappels"
+                aria-label="Aide sur Tâches & Rappels"
+                title="Aide sur les options de Tâches & Rappels"
               >
                 ?
               </button>
