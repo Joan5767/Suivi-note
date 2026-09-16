@@ -202,6 +202,10 @@ export default function Home() {
   const [activeTemplateName, setActiveTemplateName] = useState('');
   const [planningSavedSnapshot, setPlanningSavedSnapshot] = useState<string | null>(null);
   const [showClosePlanningModal, setShowClosePlanningModal] = useState(false);
+  const [showPlanningAbout, setShowPlanningAbout] = useState(false);
+  const [showPlanningGestures, setShowPlanningGestures] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showExportHelp, setShowExportHelp] = useState(false);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -211,6 +215,8 @@ export default function Home() {
   const [blockTitle, setBlockTitle] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
+  const [blockDurationHours, setBlockDurationHours] = useState(1);
+  const [blockDurationMinutes, setBlockDurationMinutes] = useState(0);
 
   // Déplacement par appui long : un appui simple ouvre la bulle, un appui maintenu
   // permet de faire glisser le bloc vers un autre jour ou une autre heure.
@@ -266,12 +272,11 @@ export default function Home() {
       const kind: 'task' | 'marker' = raw.kind === 'marker' ? 'marker' : 'task';
 
       const rawDuration = Number(raw.duration ?? 60);
-      const snappedDuration =
-        Math.round((Number.isFinite(rawDuration) ? rawDuration : 60) / 15) * 15;
+      const normalizedDuration = Math.round(Number.isFinite(rawDuration) ? rawDuration : 60);
       const duration =
         kind === 'marker'
           ? 0
-          : Math.min(maxDuration, Math.max(15, snappedDuration));
+          : Math.min(maxDuration, Math.max(1, normalizedDuration));
 
       return [{
         id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
@@ -719,6 +724,10 @@ export default function Home() {
       setEditingBlockId(null);
       setSelectedBlockId(null);
       setPreviewTemplate(null);
+      setShowPlanningAbout(false);
+      setShowPlanningGestures(false);
+      setShowExportModal(false);
+      setShowExportHelp(false);
 
       switch(hash) {
         case '#notes-create':
@@ -972,6 +981,8 @@ export default function Home() {
     setBlockTitle('');
     setBlockColor('blue');
     setBlockKind('task');
+    setBlockDurationHours(1);
+    setBlockDurationMinutes(0);
     setShowBlockModal(true);
   };
 
@@ -984,6 +995,9 @@ export default function Home() {
     setBlockTitle(block.title);
     setBlockColor(block.color);
     setBlockKind(block.kind === 'marker' ? 'marker' : 'task');
+    const existingDuration = block.kind === 'marker' ? 0 : Math.max(1, Math.round(block.duration || 60));
+    setBlockDurationHours(Math.floor(existingDuration / 60));
+    setBlockDurationMinutes(existingDuration % 60);
     setShowBlockModal(true);
   };
 
@@ -1009,15 +1023,26 @@ export default function Home() {
 
     const startHour = Math.floor(safeStartMinutes / 60);
     const startMinute = safeStartMinutes % 60;
-    const maxDuration = Math.max(15, planningEndMinutes - safeStartMinutes);
+    const maxDuration = Math.max(1, planningEndMinutes - safeStartMinutes);
+
+    const requestedDuration =
+      Math.max(0, Math.floor(Number(blockDurationHours) || 0)) * 60 +
+      Math.max(0, Math.floor(Number(blockDurationMinutes) || 0));
+
+    if (blockKind === 'task' && requestedDuration <= 0) {
+      alert("Indique une durée supérieure à 0 minute.");
+      return;
+    }
+
+    const chosenDuration =
+      blockKind === 'marker'
+        ? 0
+        : Math.min(maxDuration, Math.max(1, requestedDuration));
 
     if (editingBlockId) {
       setWeeklyBlocks(prev => prev.map(b => {
         if (b.id !== editingBlockId) return b;
-        const safeDuration =
-          blockKind === 'marker'
-            ? 0
-            : Math.min(maxDuration, Math.max(15, b.duration || 60));
+        const safeDuration = chosenDuration;
         return {
           ...b,
           title: blockTitle.trim(),
@@ -1036,7 +1061,7 @@ export default function Home() {
         day: blockDay,
         startHour,
         startMinute,
-        duration: blockKind === 'marker' ? 0 : Math.min(60, maxDuration),
+        duration: chosenDuration,
         color: blockColor,
         kind: blockKind,
       };
@@ -1463,6 +1488,22 @@ export default function Home() {
     navigatePlanningChild('#planning-editor');
   };
 
+  const replacePlanningFromPreview = (template: PlanningTemplate) => {
+    if (!window.confirm("Le brouillon actuel ne sera pas enregistré. Voulez-vous continuer ?")) {
+      return;
+    }
+
+    const loadedBlocks = normalizeWeeklyBlocks(template.blocks);
+    setWeeklyBlocks(loadedBlocks);
+    setActiveTemplateId(template.id);
+    setActiveTemplateName(template.name);
+    setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
+    setSelectedBlockId(null);
+    setEditingBlockId(null);
+    setPreviewTemplate(null);
+    navigatePlanningChild('#planning-editor');
+  };
+
   const startNewPlanning = () => {
     if (
       weeklyBlocks.length > 0 &&
@@ -1528,6 +1569,35 @@ export default function Home() {
     }
   };
 
+  const renameSavedTemplate = async (template: PlanningTemplate) => {
+    const nextName = window.prompt("Nouveau nom du planning :", template.name);
+    const cleanName = nextName?.trim();
+    if (!cleanName || cleanName === template.name) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('planning_templates')
+        .update({ name: cleanName })
+        .eq('id', template.id);
+
+      if (error) throw error;
+
+      if (activeTemplateId === template.id) {
+        setActiveTemplateName(cleanName);
+      }
+      if (previewTemplate?.id === template.id) {
+        setPreviewTemplate({ ...previewTemplate, name: cleanName });
+      }
+
+      await fetchTemplates();
+    } catch (error: any) {
+      alert("Erreur lors du renommage : " + (error?.message || "erreur inconnue"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const deleteSavedTemplate = async (id: string) => {
     if (!window.confirm("Es-tu sûr de vouloir supprimer définitivement ce modèle de ta base de données ?")) {
       return;
@@ -1579,36 +1649,102 @@ export default function Home() {
     // lors de la migration multi-utilisateur afin de le rendre persistant proprement.
   };
 
-  const exportWeeklyICS = () => {
-    if (weeklyBlocks.length === 0) return alert("Le planning est vide !");
-    
-    let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\n";
-    const daysMap: Record<string, number> = { 'Dimanche': 0, 'Lundi': 1, 'Mardi': 2, 'Mercredi': 3, 'Jeudi': 4, 'Vendredi': 5, 'Samedi': 6 };
-    
-    weeklyBlocks.filter(block => block.kind !== 'marker').forEach(block => {
+  const buildWeeklyICSContent = () => {
+    const exportableBlocks = weeklyBlocks.filter(block => block.kind !== 'marker');
+    if (exportableBlocks.length === 0) return null;
+
+    const daysMap: Record<string, number> = {
+      'Dimanche': 0,
+      'Lundi': 1,
+      'Mardi': 2,
+      'Mercredi': 3,
+      'Jeudi': 4,
+      'Vendredi': 5,
+      'Samedi': 6,
+    };
+
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const formatICSDate = (d: Date) =>
+      `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+
+    let icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'CALSCALE:GREGORIAN',
+      'PRODID:-//Planning semaines types//FR',
+    ].join('\n') + '\n';
+
+    exportableBlocks.forEach(block => {
       const today = new Date();
       const targetDay = daysMap[block.day];
       const date = new Date(today);
       date.setDate(date.getDate() + ((targetDay + 7 - date.getDay()) % 7 || 7));
       date.setHours(block.startHour, block.startMinute || 0, 0, 0);
-      
+
       const end = new Date(date);
       end.setMinutes(date.getMinutes() + (block.duration || 60));
-      
-      const pad = (n: number) => (n < 10 ? '0' + n : n);
-      const formatICSDate = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
-      
-      icsContent += `BEGIN:VEVENT\nSUMMARY:${block.title}\nDTSTART:${formatICSDate(date)}\nDTEND:${formatICSDate(end)}\nEND:VEVENT\n`;
+
+      icsContent += [
+        'BEGIN:VEVENT',
+        `SUMMARY:${escapeICS(block.title)}`,
+        `DTSTART:${formatICSDate(date)}`,
+        `DTEND:${formatICSDate(end)}`,
+        'END:VEVENT',
+      ].join('\n') + '\n';
     });
-    
-    icsContent += "END:VCALENDAR";
-    
-    const blob = new Blob([icsContent.replace(/\n/g, '\r\n')], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob); 
-    const link = document.createElement('a'); 
-    link.href = url; link.download = 'ma_semaine_type.ics'; 
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+
+    icsContent += 'END:VCALENDAR';
+    return icsContent.replace(/\n/g, '\r\n');
+  };
+
+  const exportWeeklyICS = () => {
+    const icsContent = buildWeeklyICSContent();
+    if (!icsContent) {
+      alert("Le planning ne contient aucune tâche à exporter. Les repères horaires seuls ne sont pas exportés.");
+      return;
+    }
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'ma_semaine_type.ics';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
     URL.revokeObjectURL(url);
+    setShowExportModal(false);
+  };
+
+  const addWeeklyDirectlyToCalendar = async () => {
+    const icsContent = buildWeeklyICSContent();
+    if (!icsContent) {
+      alert("Le planning ne contient aucune tâche à ajouter au calendrier.");
+      return;
+    }
+
+    const file = new File([icsContent], 'ma_semaine_type.ics', { type: 'text/calendar' });
+
+    try {
+      if (typeof navigator.share === 'function' && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({
+          title: activeTemplateName || 'Mon planning de semaine',
+          text: 'Ajouter ce planning à mon calendrier',
+          files: [file],
+        });
+        setShowExportModal(false);
+        return;
+      }
+    } catch (error: any) {
+      // Annulation volontaire du partage : on ne force pas le téléchargement.
+      if (error?.name === 'AbortError') return;
+      console.warn('Partage calendrier indisponible :', error);
+    }
+
+    // Sur les navigateurs qui ne savent pas transmettre directement le fichier à une
+    // application calendrier, on revient au format universel .ics.
+    exportWeeklyICS();
+    alert("L'ajout direct n'est pas pris en charge par ce navigateur : le fichier .ics a été préparé à la place.");
   };
 
   // Le référentiel horaire du planning est défini plus haut dans le composant
@@ -2447,9 +2583,9 @@ export default function Home() {
 
   const renderNoteItem = (note: Note) => (
     <li key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all ${
-      showArchived === true ? 'border-gray-300 bg-gray-50' : 
-      note.importance === 'rouge' ? 'border-red-500 bg-white' : 
-      note.importance === 'orange' ? 'border-orange-500 bg-white' : 'border-green-500 bg-white'
+      showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
+      note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
+      note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
     }`}>
       {note.popup_active && note.target_date && editingId !== note.id && (
         <div className={`p-1.5 rounded flex items-center justify-between shadow-sm border-2 ${showArchived === true ? 'bg-gray-100 border-gray-300' : 'bg-red-50 border-red-400'}`}>
@@ -2486,11 +2622,11 @@ export default function Home() {
             </select>
 
             <div className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 p-2">
-              <span className="text-xs font-bold text-amber-900 whitespace-nowrap">⏱ Durée :</span>
-              <input type="number" min="0" max="168" placeholder="0" value={editingDurationHours} onChange={(e) => setEditingDurationHours(e.target.value)} className="w-14 p-1 border border-amber-300 rounded text-center text-black text-xs bg-white" />
-              <span className="text-xs font-bold text-amber-900">h</span>
-              <input type="number" min="0" max="59" placeholder="0" value={editingDurationMinutes} onChange={(e) => setEditingDurationMinutes(e.target.value)} className="w-14 p-1 border border-amber-300 rounded text-center text-black text-xs bg-white" />
-              <span className="text-xs font-bold text-amber-900">min</span>
+              <span className="text-xs font-bold text-[#6A5949] whitespace-nowrap">⏱ Durée :</span>
+              <input type="number" min="0" max="168" placeholder="0" value={editingDurationHours} onChange={(e) => setEditingDurationHours(e.target.value)} className="w-14 p-1 border border-[#D8C8B6] rounded text-center text-black text-xs bg-white" />
+              <span className="text-xs font-bold text-[#6A5949]">h</span>
+              <input type="number" min="0" max="59" placeholder="0" value={editingDurationMinutes} onChange={(e) => setEditingDurationMinutes(e.target.value)} className="w-14 p-1 border border-[#D8C8B6] rounded text-center text-black text-xs bg-white" />
+              <span className="text-xs font-bold text-[#6A5949]">min</span>
             </div>
 
             <div className="flex flex-col">
@@ -2562,7 +2698,7 @@ export default function Home() {
              <div className={`font-bold text-base ${showArchived === true ? 'text-gray-500' : 'text-gray-900'}`}>{note.title}</div>
              <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{note.content}</div>
              {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
-               <div className={`mt-1 text-[11px] font-bold ${showArchived === true ? 'text-gray-400' : 'text-amber-700'}`}>
+               <div className={`mt-1 text-[11px] font-bold ${showArchived === true ? 'text-gray-400' : 'text-[#826F5E]'}`}>
                  ⏱ Durée : {formatDuration(note.duration_minutes)}
                </div>
              )}
@@ -2753,8 +2889,8 @@ export default function Home() {
             </div>
 
             <div className="mt-4">
-              <button onClick={() => { loadTemplate(previewTemplate); setPreviewTemplate(null); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition-colors">
-                Écraser mon planning par ce modèle
+              <button onClick={() => replacePlanningFromPreview(previewTemplate)} className="w-full bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 rounded-xl transition-colors">
+                Remplacer planning en cours par ce modèle
               </button>
             </div>
           </div>
@@ -2842,66 +2978,168 @@ export default function Home() {
         </div>
       )}
 
+
+      {/* AIDE : À QUOI SERT LE PLANNING */}
+      {showPlanningAbout && (
+        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowPlanningAbout(false)}>
+          <div className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h2 className="text-lg font-black text-[#46513F]">À quoi sert Planning ?</h2>
+              <button onClick={() => setShowPlanningAbout(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+            </div>
+            <p className="text-sm leading-relaxed text-[#6A6258]">
+              Crée des semaines types, adapte-les rapidement, puis garde-les comme modèles. Tu peux aussi exporter les tâches vers ton calendrier pour transformer un planning type en vraie semaine planifiée.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* AIDE : GESTES DU PLANNING */}
+      {showPlanningGestures && (
+        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowPlanningGestures(false)}>
+          <div className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h2 className="text-lg font-black text-[#46513F]">Gestes du planning</h2>
+              <button onClick={() => setShowPlanningGestures(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+            </div>
+            <div className="space-y-2 text-sm font-semibold text-[#655E54]">
+              <p>☝️ <strong>1 doigt :</strong> faire défiler le planning.</p>
+              <p>✋ <strong>Appui long :</strong> déplacer une tâche ou un repère.</p>
+              <p>↔️ <strong>2 doigts horizontalement :</strong> zoomer sur les jours.</p>
+              <p>↕️ <strong>2 doigts verticalement :</strong> zoomer sur les heures.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE : EXPORT CALENDRIER */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowExportModal(false)}>
+          <div className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-black text-[#46513F]">Exporter le planning</h2>
+                <button
+                  onClick={() => setShowExportHelp(v => !v)}
+                  className="w-6 h-6 rounded-full border border-[#B9B09F] text-[#756C60] text-xs font-black bg-white"
+                  aria-label="Différence entre les deux options"
+                >?</button>
+              </div>
+              <button onClick={() => setShowExportModal(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+            </div>
+
+            {showExportHelp && (
+              <div className="mb-4 rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-3 text-xs leading-relaxed text-[#6D6458]">
+                <p><strong>Fichier .ics :</strong> format universel que tu peux conserver, envoyer ou importer plus tard dans Google Agenda, Apple Calendrier ou Outlook.</p>
+                <p className="mt-2"><strong>Ajouter au calendrier :</strong> le téléphone tente d'ouvrir directement son menu de partage/import vers une application calendrier. Si le navigateur ne le permet pas, l'app revient automatiquement au fichier .ics.</p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2.5">
+              <button onClick={exportWeeklyICS} className="w-full rounded-2xl bg-[#E1D3C3] hover:bg-[#D7C5B1] text-[#59493B] font-black py-3 px-4 transition-colors text-sm">
+                Télécharger le fichier .ics
+              </button>
+              <button onClick={() => void addWeeklyDirectlyToCalendar()} className="w-full rounded-2xl bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 px-4 transition-colors text-sm">
+                Ajouter directement au calendrier
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ================= VUE : HUB PRINCIPAL ================= */}
       {mainMode === 'hub' && (
-        <div className="flex flex-col items-center justify-center min-h-[80vh] gap-6 animate-fade-in">
-           <h1 className="text-3xl font-black text-gray-800 mb-8 text-center">Que veux-tu faire ?</h1>
-           <button onClick={() => window.location.hash = 'notes-create'} className="w-full max-w-sm bg-gray-900 text-white p-8 rounded-3xl shadow-xl hover:bg-black transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4">
-              <span className="text-5xl">📝</span><span className="text-xl font-bold">Notes & Rappels</span>
-           </button>
-           <button onClick={() => window.location.hash = 'planning'} className="w-full max-w-sm bg-blue-600 text-white p-8 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-105 active:scale-95 flex flex-col items-center gap-4 border-4 border-blue-500">
-              <span className="text-5xl">📅</span><span className="text-xl font-bold text-center">Planning &<br/>Semaines types</span>
-           </button>
+        <div className="relative min-h-[80vh] w-full flex flex-col items-center justify-center animate-fade-in py-8">
+          <h1
+            className="text-[40px] sm:text-[48px] leading-none text-[#4B5843] text-center mb-10 font-semibold"
+            style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+          >
+            Mes outils
+          </h1>
+
+          <div className="w-full max-w-sm flex flex-col gap-3">
+            <button
+              onClick={() => window.location.hash = 'notes-create'}
+              className="w-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(78,88,66,0.10)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C8D0B8]"
+            >
+              <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📝</span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-base font-black">Notes &amp; Rappels</span>
+                <span className="text-xs font-semibold text-[#687260] mt-0.5">Capturer, organiser et ne rien oublier</span>
+              </span>
+            </button>
+
+            <button
+              onClick={() => window.location.hash = 'planning'}
+              className="w-full bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(92,74,57,0.09)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#DAC9B5]"
+            >
+              <span className="w-11 h-11 rounded-full bg-white/55 flex items-center justify-center text-xl flex-shrink-0">📅</span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-base font-black">Planning</span>
+                <span className="text-xs font-semibold text-[#786858] mt-0.5">Créer et réutiliser tes semaines types</span>
+              </span>
+            </button>
+          </div>
         </div>
       )}
 
       {/* ================= VUE : ACCUEIL PLANNING ================= */}
       {mainMode === 'planning_home' && (
-        <div className="flex flex-col items-center justify-center min-h-[78vh] gap-6 animate-fade-in">
-          <div className="w-full max-w-xl flex items-center justify-between mb-2">
+        <div className="relative min-h-[78vh] w-full flex flex-col items-center animate-fade-in pt-4 sm:pt-8">
+          <div className="w-full max-w-xl flex items-center justify-between mb-6">
             <button
               onClick={() => window.location.hash = 'hub'}
-              className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors"
+              className="text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors"
             >
               ← Menu Principal
             </button>
-            <h1 className="text-2xl font-black text-gray-800">Planning</h1>
+            <button
+              onClick={() => setShowPlanningAbout(true)}
+              className="w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
+              aria-label="À quoi sert l'application Planning ?"
+            >?</button>
           </div>
 
-          <p className="text-sm text-gray-500 font-semibold text-center max-w-md -mt-2 mb-2">
-            Choisis si tu veux partir d'un planning vide ou ouvrir un planning déjà sauvegardé.
-          </p>
-
-          <button
-            onClick={startNewPlanning}
-            className="w-full max-w-md bg-blue-600 text-white p-7 rounded-3xl shadow-xl hover:bg-blue-700 transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-5 text-left border-4 border-blue-500"
+          <h1
+            className="text-[42px] sm:text-[48px] leading-none text-[#4B5843] text-center mb-10 font-semibold"
+            style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
           >
-            <span className="text-5xl flex-shrink-0">➕</span>
-            <span className="flex flex-col">
-              <span className="text-xl font-black">Nouveau planning</span>
-              <span className="text-sm font-semibold text-blue-100 mt-1">Commencer sur une semaine vide</span>
-            </span>
-          </button>
+            Planning
+          </h1>
 
-          <button
-            onClick={() => navigatePlanningChild('#planning-gallery')}
-            className="w-full max-w-md bg-white text-gray-900 p-7 rounded-3xl shadow-lg hover:shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-5 text-left border-2 border-gray-300"
-          >
-            <span className="text-5xl flex-shrink-0">📂</span>
-            <span className="flex flex-col min-w-0">
-              <span className="text-xl font-black">Plannings sauvegardés</span>
-              <span className="text-sm font-semibold text-gray-500 mt-1">{savedTemplates.length} planning{savedTemplates.length > 1 ? 's' : ''} disponible{savedTemplates.length > 1 ? 's' : ''}</span>
-            </span>
-          </button>
+          <div className="w-full max-w-sm flex flex-col gap-3">
+            <button
+              onClick={startNewPlanning}
+              className="w-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(78,88,66,0.10)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C8D0B8]"
+            >
+              <span className="w-10 h-10 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">＋</span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-base font-black">Nouveau planning</span>
+                <span className="text-xs font-semibold text-[#687260] mt-0.5">Commencer une semaine vide</span>
+              </span>
+            </button>
+
+            <button
+              onClick={() => navigatePlanningChild('#planning-gallery')}
+              className="w-full bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(92,74,57,0.09)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#DAC9B5]"
+            >
+              <span className="w-10 h-10 rounded-full bg-white/55 flex items-center justify-center text-lg flex-shrink-0">▤</span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-base font-black">Plannings sauvegardés</span>
+                <span className="text-xs font-semibold text-[#786858] mt-0.5">{savedTemplates.length} planning{savedTemplates.length > 1 ? 's' : ''}</span>
+              </span>
+            </button>
+          </div>
         </div>
       )}
 
       {/* ================= NOUVELLE VUE : GALERIE DES PLANNINGS ================= */}
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
-           <div className="flex items-center justify-between mb-4">
-             <button onClick={navigatePlanningHome} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">← Accueil Planning</button>
-             <h1 className="text-xl font-black text-gray-800">Mes Plannings</h1>
+           <div className="grid grid-cols-[1fr_auto_1fr] items-center mb-3 gap-2">
+             <button onClick={navigatePlanningHome} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Accueil</button>
+             <h1 className="text-2xl font-black text-[#4B5843] text-center">Mes plannings</h1>
+             <div />
            </div>
 
            {savedTemplates.length === 0 ? (
@@ -2914,21 +3152,30 @@ export default function Home() {
                {savedTemplates.map((tmpl, index) => (
                  <div 
                    key={tmpl.id} 
-                   className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex flex-col transition-transform hover:shadow-md cursor-grab active:cursor-grabbing"
+                   className="bg-[#FBFAF7] rounded-2xl shadow-sm border border-[#DED7CC] overflow-hidden flex flex-col transition-transform hover:shadow-md cursor-grab active:cursor-grabbing"
                    draggable={true}
                    onDragStart={(e) => handleDragStart(e, index)}
                    onDragOver={(e) => e.preventDefault()}
                    onDrop={(e) => handleDrop(e, index)}
                  >
                    {/* En-tête de la carte */}
-                   <div className="bg-gray-900 text-white p-3 flex justify-between items-center gap-2">
+                   <div className="bg-[#D8DEC9] text-[#394433] px-3 py-2.5 flex justify-between items-center gap-2">
                      <div className="min-w-0 flex items-center gap-2">
-                       <h3 className="font-bold text-sm truncate">{tmpl.name}</h3>
+                       <button
+                         type="button"
+                         draggable={false}
+                         onPointerDown={(e) => e.stopPropagation()}
+                         onClick={(e) => { e.stopPropagation(); void renameSavedTemplate(tmpl); }}
+                         className="font-bold text-sm truncate text-left hover:underline decoration-dotted underline-offset-2"
+                         title="Cliquer pour renommer ce planning"
+                       >
+                         {tmpl.name}
+                       </button>
                        {activeTemplateId === tmpl.id && (
                          <span className="flex-shrink-0 bg-green-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full">EN COURS</span>
                        )}
                      </div>
-                     <span className="text-gray-400 cursor-grab px-1">⣿</span>
+                     <span className="text-[#7B856F] cursor-grab px-1">⣿</span>
                    </div>
 
                    {/* GÉNÉRATEUR DE MINIATURE (Aperçu visuel de la grille) */}
@@ -2963,13 +3210,14 @@ export default function Home() {
                    </div>
 
                    {/* Boutons d'action */}
-                   <div className="p-2 flex flex-col gap-1.5 bg-gray-50">
-                     <button onClick={() => setPreviewTemplate(tmpl)} className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold text-xs py-2 rounded-lg transition-colors">🔍 Aperçu</button>
-                     <div className="flex gap-1.5">
-                       <button onClick={() => loadTemplate(tmpl)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] py-2 rounded-lg transition-colors">Charger</button>
-                       <button onClick={() => duplicateSavedTemplate(tmpl)} className="flex-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold text-[11px] py-2 rounded-lg transition-colors">⧉ Dupliquer</button>
-                       <button onClick={() => deleteSavedTemplate(tmpl.id)} className="bg-red-100 hover:bg-red-200 text-red-600 font-bold text-xs px-2.5 py-2 rounded-lg transition-colors">🗑️</button>
-                     </div>
+                   <div
+                     className="p-2 flex items-center gap-1.5 bg-[#F4F0E9] overflow-x-auto overscroll-x-contain [&::-webkit-scrollbar]:hidden"
+                     style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}
+                   >
+                     <button onClick={() => setPreviewTemplate(tmpl)} className="flex-shrink-0 px-2.5 py-1.5 bg-white hover:bg-[#ECE7DE] text-[#665F55] border border-[#DDD5C9] font-bold text-[10px] rounded-lg transition-colors">Aperçu</button>
+                     <button onClick={() => loadTemplate(tmpl)} className="flex-shrink-0 bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black text-[10px] py-1.5 px-3 rounded-lg transition-colors">Charger</button>
+                     <button onClick={() => duplicateSavedTemplate(tmpl)} className="flex-shrink-0 px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer">⧉</button>
+                     <button onClick={() => deleteSavedTemplate(tmpl.id)} className="flex-shrink-0 px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer">🗑</button>
                    </div>
                  </div>
                ))}
@@ -2981,65 +3229,69 @@ export default function Home() {
       {/* ================= VUE : PLANNING (ÉDITEUR) ================= */}
       {mainMode === 'planning' && (
          <div className="flex flex-col gap-4 animate-fade-in w-full">
-           <div className="flex items-center justify-between mb-2 gap-3">
-             <button onClick={requestClosePlanning} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors">✕ Fermer le planning</button>
-             <div className="text-right min-w-0">
-               <h1 className="text-xl font-black text-gray-800">Éditeur de Semaine</h1>
+           <div className="grid grid-cols-[1fr_auto_1fr] items-start mb-1 gap-2">
+             <button onClick={requestClosePlanning} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-colors pt-1.5">✕ Fermer</button>
+             <div className="text-center min-w-0">
+               <h1 className="text-xl font-black text-[#4B5843]">Ma semaine</h1>
                {activeTemplateId && (
-                 <p className={`text-[11px] font-bold truncate ${isPlanningDirty ? 'text-orange-600' : 'text-green-600'}`}>
+                 <p className={`text-[10px] font-bold truncate ${isPlanningDirty ? 'text-[#A4764F]' : 'text-[#718064]'}`}>
                    {activeTemplateName} · {isPlanningDirty ? 'modifié' : 'à jour'}
                  </p>
                )}
              </div>
+             <button
+               onClick={() => setShowPlanningGestures(true)}
+               className="justify-self-end w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm"
+               aria-label="Aide sur les gestes du planning"
+             >?</button>
            </div>
 
-           {/* Contrôles du modèle */}
-           <div className="flex flex-col gap-3 bg-gray-50 p-4 rounded-2xl border border-gray-200">
-              <div className="flex gap-2">
-                <button
-                  onClick={saveTemplateToDB}
-                  disabled={Boolean(activeTemplateId) && !isPlanningDirty}
-                  className={`flex-1 font-bold py-3 rounded-xl text-sm shadow transition-colors ${
-                    activeTemplateId && !isPlanningDirty
-                      ? 'bg-green-100 text-green-700 cursor-default'
-                      : 'bg-gray-900 text-white hover:bg-black'
-                  }`}
-                >
-                  {activeTemplateId
-                    ? (isPlanningDirty ? '💾 Enregistrer les modifications' : '✓ Planning à jour')
-                    : '💾 Sauvegarder comme nouveau planning'}
-                </button>
-                <button onClick={exportWeeklyICS} className="flex-1 bg-purple-600 text-white font-bold py-3 rounded-xl text-sm shadow hover:bg-purple-700 transition-colors">
-                  📅 Exporter (Agenda)
-                </button>
-              </div>
+           {/* Barre d'actions compacte */}
+           <div className="bg-[#F7F4ED] px-2.5 py-2.5 rounded-2xl border border-[#E0D8CB] shadow-sm">
+             <div className="flex items-stretch gap-2">
+               <button
+                 onClick={saveTemplateToDB}
+                 disabled={Boolean(activeTemplateId) && !isPlanningDirty}
+                 className={`flex-1 min-w-0 font-black py-2.5 px-2 rounded-xl text-[11px] sm:text-xs transition-colors ${
+                   activeTemplateId && !isPlanningDirty
+                     ? 'bg-[#E2E7D9] text-[#718064] cursor-default'
+                     : 'bg-[#C8D2BC] text-[#35412F] hover:bg-[#BAC7AD]'
+                 }`}
+               >
+                 {activeTemplateId && !isPlanningDirty ? '✓ Planning à jour' : 'Sauvegarder le planning'}
+               </button>
 
-              {/* NOUVEAU PLANNING + GALERIE */}
-              <div className="flex gap-2">
-                <button
-                  onClick={startNewPlanning}
-                  className="bg-white border-2 border-gray-300 text-gray-800 font-bold px-4 py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors"
-                  title="Commencer un planning vide sans modifier le planning sauvegardé actuel"
-                >
-                  ➕ Nouveau
-                </button>
-                <button 
-                  onClick={() => navigatePlanningChild('#planning-gallery')} 
-                  className="flex-1 bg-white border-2 border-gray-300 text-gray-800 font-bold py-3 rounded-xl text-sm shadow-sm hover:border-gray-800 transition-colors flex items-center justify-center gap-2"
-                >
-                  <span>📂</span> Mes plannings sauvegardés ({savedTemplates.length})
-                </button>
-              </div>
+               <button
+                 onClick={() => navigatePlanningChild('#planning-gallery')}
+                 className="flex-1 min-w-0 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black py-2.5 px-2 rounded-xl text-[11px] sm:text-xs transition-colors"
+               >
+                 Plannings sauvegardés
+               </button>
+
+               <button
+                 onClick={() => { setShowExportHelp(false); setShowExportModal(true); }}
+                 className="flex-shrink-0 bg-[#DCE2D2] hover:bg-[#CFD8C3] text-[#4A5741] font-black py-2.5 px-3 rounded-xl text-[11px] sm:text-xs transition-colors"
+                 aria-label="Exporter vers un calendrier"
+               >
+                 Exporter
+               </button>
+             </div>
            </div>
 
-           <div className="text-center mb-1">
-             <span className="text-xs font-bold text-gray-400">↔️ 1 doigt : déplacer | ↔️ 2 doigts : zoom jours | ↕️ 2 doigts : zoom heures | 📌 Jours figés en haut</span>
+           {/* Nouveau planning, volontairement séparé des actions du planning courant */}
+           <div className="flex justify-center -mt-1 mb-1">
+             <button
+               onClick={startNewPlanning}
+               className="w-10 h-10 rounded-full bg-[#ECE5DA] hover:bg-[#E2D8CA] border border-[#D8CDBE] text-[#64594D] text-xl font-light shadow-sm transition-transform active:scale-95"
+               title="Nouveau planning"
+               aria-label="Créer un nouveau planning"
+             >＋</button>
            </div>
 
            {/* LIGNE DES JOURS FIGÉE : reste visible pendant le scroll vertical, façon Excel */}
-           <div className="sticky top-0 z-[200] h-10 flex w-full bg-white rounded-t-2xl border border-gray-200 shadow-md overflow-hidden">
+           <div className="sticky top-0 z-[200] h-10 flex w-full bg-[#FBFAF7] rounded-t-2xl border border-[#E0D8CB] shadow-sm overflow-hidden">
              {/* Coin au-dessus de la colonne des heures */}
-             <div className="flex-shrink-0 w-12 h-10 bg-gray-50 border-r border-gray-200"></div>
+             <div className="flex-shrink-0 w-12 h-10 bg-[#F4F0E9] border-r border-[#E0D8CB]"></div>
 
              {/* En-têtes des jours : scroll horizontal synchronisé avec le planning */}
              <div
@@ -3051,9 +3303,9 @@ export default function Home() {
                  {WEEK_DAYS.map((dayName) => (
                    <div
                      key={`sticky-${dayName}`}
-                     className="flex-1 min-w-0 h-10 flex items-center justify-center border-r border-gray-200 last:border-r-0 bg-white overflow-hidden"
+                     className="flex-1 min-w-0 h-10 flex items-center justify-center border-r border-[#E0D8CB] last:border-r-0 bg-[#FBFAF7] overflow-hidden"
                    >
-                     <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
+                     <span className="font-black text-[#4B5843] whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
                    </div>
                  ))}
                </div>
@@ -3065,13 +3317,13 @@ export default function Home() {
            {/* Grille du planning avec DÉFILEMENT HORIZONTAL NATIF + ZOOM PERSONNALISÉ */}
            <div 
              ref={gridRef}
-             className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden relative flex w-full" 
+             className="bg-white rounded-2xl shadow-sm border border-[#E0D8CB] overflow-hidden relative flex w-full" 
              style={{ height: `${hoursOfDay.length * hourHeight + PLANNING_HEADER_HEIGHT}px`, touchAction: 'pan-x pan-y' }}
            >
              
              {/* Colonne des heures (Fixée à gauche) */}
-             <div className="flex-shrink-0 z-20 flex flex-col w-12 bg-gray-50 border-r border-gray-200 shadow-[2px_0_5px_rgba(0,0,0,0.05)] pointer-events-none">
-               <div className="h-10 border-b border-gray-200 bg-gray-50 sticky top-0 z-30" style={{ flexShrink: 0 }}></div> {/* Coin vide */}
+             <div className="flex-shrink-0 z-20 flex flex-col w-12 bg-[#F7F4ED] border-r border-[#E0D8CB] shadow-[2px_0_5px_rgba(0,0,0,0.04)] pointer-events-none">
+               <div className="h-10 border-b border-[#E0D8CB] bg-[#F7F4ED] sticky top-0 z-30" style={{ flexShrink: 0 }}></div> {/* Coin vide */}
                {hoursOfDay.map(hour => (
                  <div key={hour} className="flex items-start justify-center pt-1 border-b border-gray-200" style={{ height: `${hourHeight}px`, flexShrink: 0 }}>
                    <span className="text-[10px] font-bold text-gray-400">{hour}h</span>
@@ -3091,9 +3343,8 @@ export default function Home() {
                  {WEEK_DAYS.map((dayName) => (
                    <div key={dayName} data-planning-day={dayName} className="flex-1 min-w-0 flex flex-col border-r border-gray-100 last:border-r-0 relative h-full overflow-visible">
                    
-                   <div className="h-10 flex items-center justify-center border-b border-gray-200 bg-white sticky top-0 z-10" style={{ flexShrink: 0 }}>
-                       <span className="font-black text-gray-800 whitespace-nowrap px-1 leading-none" style={{ fontSize: `${dayHeaderFontSize}px` }}>{dayName}</span>
-                   </div>
+                   {/* Espace d'alignement sous l'en-tête sticky. Le nom du jour n'est affiché qu'une seule fois, dans la barre figée au-dessus. */}
+                   <div className="h-10 border-b border-[#E8E3DA] bg-white" style={{ flexShrink: 0 }} aria-hidden="true" />
 
                    {/* Lignes de fond (cliquables pour ajouter) */}
                    {hoursOfDay.map(hour => (
@@ -3121,6 +3372,13 @@ export default function Home() {
                      const heightPx = ((ev.duration || 60) / 60) * hourHeight;
                      const isSelected = selectedBlockId === ev.id;
                      const isDragging = draggingBlockId === ev.id;
+                     // Évite que la bulle soit rognée sous la colonne des heures ou hors du bord droit.
+                     const popoverHorizontalClass =
+                       dayName === 'Lundi' || dayName === 'Mardi'
+                         ? 'left-0 translate-x-0'
+                         : dayName === 'Samedi' || dayName === 'Dimanche'
+                           ? 'right-0 left-auto translate-x-0'
+                           : 'left-1/2 -translate-x-1/2';
 
                      if (ev.kind === 'marker') {
                        const markerTop = topPx + PLANNING_HEADER_HEIGHT;
@@ -3157,7 +3415,7 @@ export default function Home() {
                            {isSelected && (
                              <div
                                data-block-drag-ignore="true"
-                               className="absolute left-1/2 -translate-x-1/2 w-[190px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
+                               className={`absolute ${popoverHorizontalClass} w-[190px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default`}
                                style={markerPopoverPosition}
                                onClick={(e) => e.stopPropagation()}
                              >
@@ -3278,7 +3536,7 @@ export default function Home() {
                            {isSelected && (
                              <div 
                                data-block-drag-ignore="true"
-                               className="absolute left-1/2 -translate-x-1/2 w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default"
+                               className={`absolute ${popoverHorizontalClass} w-[180px] max-w-[85vw] bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.4)] border-2 border-gray-800 p-3 flex flex-col gap-2 z-[1000] cursor-default`}
                                style={popoverPosition}
                                onClick={(e) => e.stopPropagation()} 
                              >
@@ -3364,6 +3622,36 @@ export default function Home() {
                    />
                  </div>
 
+                 {blockKind === 'task' && (
+                   <div className="rounded-xl border border-[#DDD5C9] bg-[#F8F5EF] p-3">
+                     <div className="text-xs font-black text-[#625A50] mb-2">Durée de la tâche</div>
+                     <div className="flex items-center gap-2">
+                       <input
+                         type="number"
+                         min={0}
+                         max={16}
+                         inputMode="numeric"
+                         value={blockDurationHours}
+                         onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
+                         className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
+                         aria-label="Durée en heures"
+                       />
+                       <span className="text-sm font-bold text-[#756D62]">h</span>
+                       <input
+                         type="number"
+                         min={0}
+                         max={59}
+                         inputMode="numeric"
+                         value={blockDurationMinutes}
+                         onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
+                         className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
+                         aria-label="Durée en minutes"
+                       />
+                       <span className="text-sm font-bold text-[#756D62]">min</span>
+                     </div>
+                   </div>
+                 )}
+
                  <input
                    type="text"
                    value={blockTitle}
@@ -3393,74 +3681,77 @@ export default function Home() {
 
       {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
-        <div className="animate-fade-in">
-          <div className={`flex items-start sm:items-center mb-4 justify-between flex-col sm:flex-row gap-2`}>
+        <div className="animate-fade-in text-[#4A463F]">
+          <div className="relative mb-5 min-h-[72px]">
             {!isFocusMode ? (
-              <div className="flex flex-col gap-1">
-                <button onClick={() => window.location.hash = 'hub'} className="text-gray-500 hover:text-gray-800 font-bold text-sm flex items-center gap-2 transition-colors w-fit">← Menu Principal</button>
-                <h1 className="text-xl font-bold text-gray-800">Mes Notes &amp; Rappels</h1>
-              </div>
+              <>
+                <button onClick={() => window.location.hash = 'hub'} className="absolute left-0 top-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
+                <h1
+                  className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold px-20"
+                  style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+                >
+                  Notes &amp; Rappels
+                </h1>
+              </>
             ) : (
-              <div className="flex flex-col">
-                <h1 className="text-xl font-bold text-gray-800">Mode Focus 🎯</h1>
-                <span className="text-xs font-bold text-gray-500 mt-1">Une seule tâche à la fois. Reste concentré.</span>
+              <div className="flex flex-col items-center">
+                <h1 className="text-2xl font-black text-[#4B5843]">Mode Focus 🎯</h1>
+                <span className="text-xs font-bold text-[#756E63] mt-1">Une seule tâche à la fois.</span>
               </div>
             )}
-            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-              <button 
-                onClick={() => { 
-                  setSkippedFocusIds([]); 
-                  setShowArchived(false); 
-                  setFocusPhase('rouge'); 
-                  window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
-                }} 
-                className={`px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all whitespace-nowrap bg-gray-800 text-white hover:bg-gray-700`}
-              >
-                {isFocusMode ? 'Quitter le Mode Focus' : '🎯 Mode Focus'}
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                setSkippedFocusIds([]);
+                setShowArchived(false);
+                setFocusPhase('rouge');
+                window.location.hash = isFocusMode ? 'notes-list' : 'notes-focus';
+              }}
+              className="absolute right-0 top-0 px-3 py-1.5 rounded-full text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8]"
+            >
+              {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
+            </button>
           </div>
 
           {!isFocusMode && (
-            <div className="flex bg-gray-200 rounded-xl p-1 mb-6 shadow-inner w-full max-w-md mx-auto">
-              <button type="button" onClick={() => window.location.hash = 'notes-create'} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'create' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>✍️ Créer</button>
-              <button type="button" onClick={() => window.location.hash = 'notes-list'} className={`flex-1 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'notes' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}>📑 Notes</button>
+            <div className="flex bg-[#EEE8DD] rounded-2xl p-1 mb-6 w-full max-w-md mx-auto border border-[#DED5C8]">
+              <button type="button" onClick={() => window.location.hash = 'notes-create'} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'create' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>✍️ Créer</button>
+              <button type="button" onClick={() => window.location.hash = 'notes-list'} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Notes</button>
             </div>
           )}
 
           {!isPushEnabled && (
-            <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl mb-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex items-center gap-2"><span className="text-xl">🔔</span><p className="text-blue-900 text-xs font-semibold">Active les alertes en arrière-plan.</p></div>
-              <button onClick={subscribeToPush} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-sm whitespace-nowrap shadow-md transition-colors">Activer</button>
+            <div className="bg-[#EDF1E7] border border-[#CCD5BC] p-3 rounded-2xl mb-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex items-center gap-2"><span className="text-xl">🔔</span><p className="text-[#4B5843] text-xs font-semibold">Active les alertes en arrière-plan.</p></div>
+              <button onClick={subscribeToPush} className="bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-1.5 px-3 rounded-lg text-sm whitespace-nowrap transition-colors">Activer</button>
             </div>
           )}
 
           {activeTab === 'create' && !isFocusMode && (
-            <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-3 rounded-lg shadow-md border bg-gray-50 border-gray-200">
+            <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
               <div className="flex gap-2">
-                <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>📝 Format Texte</button>
-                <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>✅ Format Liste</button>
+                <button type="button" onClick={() => setNoteMode('text')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'text' ? 'bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2] border border-transparent'}`}>📝 Format Texte</button>
+                <button type="button" onClick={() => setNoteMode('list')} className={`px-3 py-1.5 text-sm rounded-md font-semibold transition-colors ${noteMode === 'list' ? 'bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2] border border-transparent'}`}>✅ Format Liste</button>
               </div>
 
               {noteMode === 'text' ? (
                 <div className="flex flex-col gap-2">
                   <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-gray-300 p-3 pr-16 rounded-xl text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (Optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                   <div className="relative w-full">
-                    <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-gray-300 p-3 pr-16 rounded-xl text-black resize-y min-h-[120px] text-base" disabled={loading || isAiProcessing} />
+                    <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Écris le contenu de ta note ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
                   <div className="relative flex items-center w-full">
-                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-gray-300 p-3 pr-16 rounded-xl text-black font-semibold text-lg" disabled={loading || isAiProcessing} />
+                    <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre de ta liste (ex: Courses)..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                     <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                   </div>
                   
-                  <div className="bg-white border border-gray-300 rounded p-2 flex flex-col gap-2 shadow-sm">
+                  <div className="bg-[#F8F5EF] border border-[#DED5C8] rounded-2xl p-3 flex flex-col gap-2">
                     <span className="text-xs font-bold text-gray-700">Éléments de la liste :</span>
                     {newListItems.length > 0 && (
                       <ul className="flex flex-col gap-1 mb-1">
@@ -3474,44 +3765,44 @@ export default function Home() {
                     )}
                     <div className="flex gap-2">
                       <div className="relative flex-1 flex items-center">
-                        <input type="text" value={currentNewListItem} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-gray-300 p-3 pr-16 rounded-xl text-black text-sm" disabled={loading || isAiProcessing} />
+                        <input type="text" value={currentNewListItem} onChange={(e) => setCurrentNewListItem(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } } }} placeholder="Ajouter un élément..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                         <button type="button" onClick={() => toggleDictation('list_item')} className={`absolute right-1 p-2 text-xl rounded-full shadow-md transition-all ${listeningMode === 'list_item' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                       </div>
-                      <button type="button" onClick={() => { if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } }} className="bg-blue-100 text-blue-700 border border-blue-300 px-2 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-200 transition-colors" disabled={loading || isAiProcessing || !currentNewListItem.trim()}>+ Ajouter</button>
+                      <button type="button" onClick={() => { if (currentNewListItem.trim()) { setNewListItems(prev => [...prev, currentNewListItem.trim()]); setCurrentNewListItem(''); } }} className="bg-[#D8DEC9] text-[#394433] border border-[#C8D0B8] px-3 py-1.5 rounded-xl text-xs font-black hover:bg-[#CCD5BC] transition-colors" disabled={loading || isAiProcessing || !currentNewListItem.trim()}>+ Ajouter</button>
                     </div>
                   </div>
                 </div>
               )}
 
               <div className="flex items-center w-full mt-1">
-                <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-gray-300 p-2 rounded text-black bg-white cursor-pointer text-sm font-bold">
+                <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
                   <option value="vert">🟢 Priorité Normale</option>
                   <option value="orange">🟠 Priorité Importante</option>
                   <option value="rouge">🔴 Priorité Urgente</option>
                 </select>
               </div>
 
-              <div className="flex items-center gap-2 w-full p-2 rounded-lg border border-amber-200 bg-amber-50">
-                <span className="text-xs font-bold text-amber-900 whitespace-nowrap">⏱ Durée :</span>
-                <input type="number" min="0" max="168" placeholder="0" value={newDurationHours} onChange={(e) => setNewDurationHours(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-amber-300 rounded text-center text-black font-bold text-xs bg-white" />
-                <span className="text-xs font-bold text-amber-900">h</span>
-                <input type="number" min="0" max="59" placeholder="0" value={newDurationMinutes} onChange={(e) => setNewDurationMinutes(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-amber-300 rounded text-center text-black font-bold text-xs bg-white" />
-                <span className="text-xs font-bold text-amber-900">min</span>
-                <span className="ml-auto text-[10px] text-amber-700">optionnel</span>
+              <div className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-[#E2D6C7] bg-[#F4EEE6]">
+                <span className="text-xs font-bold text-[#6A5949] whitespace-nowrap">⏱ Durée :</span>
+                <input type="number" min="0" max="168" placeholder="0" value={newDurationHours} onChange={(e) => setNewDurationHours(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-[#D8C8B6] rounded text-center text-black font-bold text-xs bg-white" />
+                <span className="text-xs font-bold text-[#6A5949]">h</span>
+                <input type="number" min="0" max="59" placeholder="0" value={newDurationMinutes} onChange={(e) => setNewDurationMinutes(e.target.value)} disabled={isAiProcessing} className="w-14 p-1.5 border border-[#D8C8B6] rounded text-center text-black font-bold text-xs bg-white" />
+                <span className="text-xs font-bold text-[#6A5949]">min</span>
+                <span className="ml-auto text-[10px] text-[#826F5E]">optionnel</span>
               </div>
 
               <div className="border-b border-gray-200 pb-3 mt-1">
-                <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-3 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-md ${isAiProcessing ? 'bg-indigo-600 text-white animate-pulse' : listeningMode === 'ai' ? 'bg-purple-600 text-white animate-pulse scale-[1.02]' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}>
+                <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-3 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-md ${isAiProcessing ? 'bg-[#8E8796] text-white animate-pulse' : listeningMode === 'ai' ? 'bg-[#8E8796] text-white animate-pulse scale-[1.02]' : 'bg-[#ECE8EF] text-[#5F5867] border border-[#D8D1DE] hover:bg-[#E3DDE8]'}`}>
                   <span className="text-xl">🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
                 </button>
               </div>
 
               <div className="flex flex-col mt-2">
-                <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-gray-200 text-gray-700 hover:bg-gray-300 font-bold py-2 px-3 rounded-lg text-sm flex justify-between items-center transition-colors">
+                <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2.5 px-3 rounded-xl text-sm flex justify-between items-center transition-colors border border-[#DED5C8]">
                   <span>⚙️ Paramétrage de la note</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
                 </button>
                 {showAdvancedSettings && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-gray-100 rounded-lg border border-gray-200">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
                     <button type="button" onClick={() => setSendImmediateEmail(!sendImmediateEmail)} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>📨 E-mail immédiat</span><span>{sendImmediateEmail ? 'ON' : 'OFF'}</span></button>
                     <div className="flex flex-col">
                       <button type="button" onClick={() => { setShowPopupConfig(!showPopupConfig); if (!showPopupConfig && 'Notification' in window) Notification.requestPermission(); }} disabled={isAiProcessing} className={`p-2 rounded font-bold border transition-colors text-left text-xs flex justify-between items-center ${(showPopupConfig || popupHours || popupMinutes) ? 'bg-indigo-600 text-white border-indigo-600 rounded-b-none' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}><span>⏰ Alarme pop-up (Dans...)</span><span>{showPopupConfig ? '▲' : '▼'}</span></button>
@@ -3553,7 +3844,7 @@ export default function Home() {
                 </div>
               )}
 
-              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-gray-900 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-gray-800 disabled:opacity-50 transition-colors w-full shadow-lg">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}</button>
+              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0)} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la note'}</button>
             </form>
           )}
 
@@ -3617,15 +3908,15 @@ export default function Home() {
             <>
               <div className="flex items-center justify-between mb-6 w-full gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-                  <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📂 Actif</button>
-                  {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-yellow-500 text-white' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}>💤 Masqué</button>}
-                  <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>📦 Archives</button>
+                  <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-[#C8D2BC] text-[#35412F]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📂 Actif</button>
+                  {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-[#E6D8AE] text-[#66562F]' : 'bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]'}`}>💤 Masqué</button>}
+                  <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-[#E2D6C7] text-[#59493B]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📦 Archives</button>
                 </div>
                 <button onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage {showArchived === true ? 'archive' : ''}</button>
               </div>
 
               {showArchived === true ? (
-                <div className="flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner">
+                <div className="flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border border-[#E1D9CE]">
                   <div className="w-full flex items-center justify-between mb-2 border-b border-gray-200 pb-1 text-gray-800"><span className="text-base font-bold">📦 Toutes les archives ({displayedNotes.length})</span></div>
                   <ul className="space-y-3">
                     {displayedNotes.length === 0 && <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">Dossier vide</p>}
@@ -3635,7 +3926,7 @@ export default function Home() {
               ) : (
                 <div className={`grid items-start gap-4 grid-cols-1 lg:grid-cols-3`}>
                   {columns.map((col) => (
-                    <div key={col.id} className="flex flex-col bg-gray-50 p-3 rounded-xl border border-gray-200 shadow-inner">
+                    <div key={col.id} className="flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border border-[#E1D9CE]">
                       <button type="button" onClick={() => setCollapsedPriorities(prev => ({ ...prev, [col.id]: !prev[col.id] }))} className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-left mb-2 border-b border-gray-200 pb-1 text-gray-800 hover:text-gray-950 transition-colors" aria-expanded={!(collapsedPriorities[col.id] ?? false)}><span className="text-base font-bold">{(collapsedPriorities[col.id] ?? false) ? '▶' : '▼'} {col.title} ({col.notes.length})</span></button>
                       {!(collapsedPriorities[col.id] ?? false) && (
                       <ul className="space-y-3">
@@ -3660,7 +3951,7 @@ export default function Home() {
                  <button onClick={() => window.location.hash = 'notes-list'} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux notes actives</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
-              <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex items-center gap-2">
+              <div className="bg-[#FBFAF7] p-3 rounded-2xl border border-[#DED7CC] flex items-center gap-2">
                 <span className="text-xl">🔍</span>
                 <input type="text" placeholder="Rechercher dans l'historique..." value={historySearch} onChange={(e) => setHistorySearch(e.target.value)} className="flex-1 border-none focus:ring-0 text-sm text-black font-semibold bg-transparent" />
                 {historySearch && <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>}
@@ -3668,7 +3959,7 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune note dans l'historique.</p>}
                 {historyNotes.map(note => (
-                  <div key={note.id} className="flex flex-col gap-2 p-3 rounded-lg shadow-sm bg-gray-100 border border-gray-300 opacity-80 grayscale">
+                  <div key={note.id} className="flex flex-col gap-2 p-3 rounded-2xl bg-[#F2EEE7] border border-[#D9D1C5] opacity-85">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
                     <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
                     {typeof note.duration_minutes === 'number' && note.duration_minutes > 0 && (
