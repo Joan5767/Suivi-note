@@ -168,6 +168,11 @@ export default function Home() {
   
   const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
+
+  // Navigation tactile entre Créer et Notes sauvegardées.
+  // On mémorise seulement le point de départ : le changement de page n'est déclenché
+  // que si le geste est clairement horizontal afin de ne pas gêner le scroll vertical.
+  const notesSwipeStartRef = useRef<{ x: number; y: number; ignore: boolean } | null>(null);
   const [focusPhase, setFocusPhase] = useState<'rouge' | 'ask_orange' | 'orange' | 'ask_vert' | 'vert' | 'done'>('rouge');
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
@@ -965,6 +970,53 @@ export default function Home() {
     const targetUrl = `${window.location.pathname}${window.location.search}#hub`;
     window.history.replaceState({ ...(window.history.state || {}), notesChild: false }, '', targetUrl);
     refreshRouteFromCurrentHash();
+  };
+
+  const isNotesSwipeInteractiveTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        'input, textarea, select, button, a, [contenteditable="true"], [role="button"], [data-no-notes-swipe]'
+      )
+    );
+  };
+
+  const handleNotesSwipeStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (isFocusMode || activeTab === 'history' || e.touches.length !== 1) {
+      notesSwipeStartRef.current = null;
+      return;
+    }
+
+    const touch = e.touches[0];
+    notesSwipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      ignore: isNotesSwipeInteractiveTarget(e.target),
+    };
+  };
+
+  const handleNotesSwipeEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const start = notesSwipeStartRef.current;
+    notesSwipeStartRef.current = null;
+
+    if (!start || start.ignore || isFocusMode || activeTab === 'history' || e.changedTouches.length !== 1) return;
+
+    const touch = e.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+
+    // 70 px minimum et un mouvement nettement plus horizontal que vertical.
+    if (horizontalDistance < 70 || horizontalDistance < verticalDistance * 1.35) return;
+
+    if (deltaX < 0 && activeTab === 'create') {
+      // Glisser vers la gauche : Créer -> Notes sauvegardées.
+      navigateNotesChild('#notes-list');
+    } else if (deltaX > 0 && activeTab === 'notes') {
+      // Glisser vers la droite : Notes sauvegardées -> Créer.
+      navigateNotesCreate();
+    }
   };
 
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
@@ -4218,7 +4270,11 @@ export default function Home() {
 
       {/* ================= VUE : NOTES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
-        <div className="animate-fade-in text-[#4A463F]">
+        <div
+          className="animate-fade-in text-[#4A463F]"
+          onTouchStart={handleNotesSwipeStart}
+          onTouchEnd={handleNotesSwipeEnd}
+        >
           <div className="relative mb-5">
             {!isFocusMode ? (
               <>
