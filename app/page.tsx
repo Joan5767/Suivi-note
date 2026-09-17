@@ -3996,7 +3996,7 @@ export default function Home() {
         onPointerDown={(e) => beginMemoLongPress(e, memo)}
         onPointerMove={moveMemoLongPress}
         onPointerUp={endMemoLongPress}
-        onPointerCancel={cancelMemoLongPress}
+        onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
         className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-[0.08] shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
