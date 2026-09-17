@@ -185,7 +185,9 @@ export default function Home() {
   const [draggingMemoId, setDraggingMemoId] = useState<string | null>(null);
   const [memoDragTargetId, setMemoDragTargetId] = useState<string | null>(null);
   const [memoDragVisual, setMemoDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const [memoGridSpans, setMemoGridSpans] = useState<Record<string, number>>({});
+  const [memoColumnCount, setMemoColumnCount] = useState(2);
+  const [memoCardHeights, setMemoCardHeights] = useState<Record<string, number>>({});
+  const memoGhostRef = useRef<HTMLDivElement | null>(null);
   const memoLongPressTimerRef = useRef<number | null>(null);
   const memoDragLastPreviewRef = useRef('');
   const memoDragRef = useRef<{
@@ -208,6 +210,7 @@ export default function Home() {
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [taskDragVisual, setTaskDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [taskDragHoverPriority, setTaskDragHoverPriority] = useState<'vert' | 'orange' | 'rouge' | null>(null);
+  const taskGhostRef = useRef<HTMLDivElement | null>(null);
   const taskLongPressTimerRef = useRef<number | null>(null);
   const taskDragLastPreviewRef = useRef('');
   const taskDragRef = useRef<{
@@ -1386,37 +1389,96 @@ export default function Home() {
     notesRef.current = notes;
   }, [notes]);
 
-  // Masonry sans dépendance externe : les cartes occupent un nombre de petites
-  // lignes calculé d'après leur hauteur réelle, et grid-auto-flow:dense comble
-  // les espaces comme Google Keep.
+  // Nombre de colonnes proche de Google Keep. Les cartes gardent leur hauteur
+  // naturelle : une note courte reste petite, une note longue grandit jusqu'aux
+  // limites d'affichage définies dans la carte.
   useEffect(() => {
-    if (mainMode !== 'memos') return;
+    if (typeof window === 'undefined') return;
+    const updateColumns = () => {
+      const width = window.innerWidth;
+      setMemoColumnCount(width >= 1024 ? 4 : width >= 768 ? 3 : 2);
+    };
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => window.removeEventListener('resize', updateColumns);
+  }, []);
+
+  // Mesure les hauteurs naturelles. ResizeObserver continue de suivre une carte
+  // si son contenu change, sans forcer une hauteur uniforme.
+  useEffect(() => {
+    if (mainMode !== 'memos' || typeof ResizeObserver === 'undefined') return;
 
     let frame = 0;
-    const calculate = () => {
+    const measure = () => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         const next: Record<string, number> = {};
         document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
           const id = element.dataset.memoCardId;
           if (!id) return;
-          const height = element.getBoundingClientRect().height;
-          // 8 px de ligne + 10 px d'espace vertical.
-          next[id] = Math.max(1, Math.ceil((height + 10) / 18));
+          next[id] = Math.max(1, Math.round(element.getBoundingClientRect().height));
         });
-        setMemoGridSpans(next);
+        setMemoCardHeights(prev => {
+          const prevKeys = Object.keys(prev);
+          const nextKeys = Object.keys(next);
+          if (prevKeys.length === nextKeys.length && nextKeys.every(id => Math.abs((prev[id] || 0) - next[id]) <= 1)) return prev;
+          return next;
+        });
       });
     };
 
-    calculate();
-    const timer = window.setTimeout(calculate, 80);
-    window.addEventListener('resize', calculate);
+    const observer = new ResizeObserver(measure);
+    document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach(element => observer.observe(element));
+    measure();
     return () => {
-      window.clearTimeout(timer);
+      observer.disconnect();
       window.cancelAnimationFrame(frame);
-      window.removeEventListener('resize', calculate);
     };
-  }, [mainMode, memoEntries, memoSearch, showMemoArchived]);
+  }, [mainMode, memoEntries.length, memoSearch, showMemoArchived, memoColumnCount]);
+
+  // Pendant un vrai déplacement, on neutralise la sélection de texte et le
+  // geste natif du navigateur. Cela évite les sélections / menus contextuels
+  // qui rendaient l'appui long instable sur Android.
+  useEffect(() => {
+    if (!draggingMemoId && !draggingTaskId) return;
+    const body = document.body;
+    const previousUserSelect = body.style.userSelect;
+    const previousWebkitUserSelect = (body.style as any).webkitUserSelect || '';
+    const previousOverscroll = body.style.overscrollBehavior;
+    body.style.userSelect = 'none';
+    (body.style as any).webkitUserSelect = 'none';
+    body.style.overscrollBehavior = 'contain';
+    return () => {
+      body.style.userSelect = previousUserSelect;
+      (body.style as any).webkitUserSelect = previousWebkitUserSelect;
+      body.style.overscrollBehavior = previousOverscroll;
+    };
+  }, [draggingMemoId, draggingTaskId]);
+
+  const estimateMemoCardHeight = (memo: MemoEntry) => {
+    let height = 30; // padding + marge de sécurité
+    if (memo.title) height += 18 * Math.min(3, Math.max(1, memo.title.split('\n').length + Math.floor(memo.title.length / 24)));
+    if (memo.content) height += 17 * Math.min(6, Math.max(1, memo.content.split('\n').length + Math.floor(memo.content.length / 28))) + 6;
+    if (memo.memo_type === 'list' && memo.items.length) height += Math.min(6, memo.items.length) * 18 + (memo.items.length > 6 ? 14 : 0) + 8;
+    return Math.max(44, height);
+  };
+
+  const buildMemoMasonryColumns = (entries: MemoEntry[]) => {
+    const count = Math.max(1, memoColumnCount);
+    const columns = Array.from({ length: count }, () => [] as MemoEntry[]);
+    const heights = Array.from({ length: count }, () => 0);
+
+    entries.forEach(memo => {
+      let targetColumn = 0;
+      for (let index = 1; index < count; index += 1) {
+        if (heights[index] < heights[targetColumn]) targetColumn = index;
+      }
+      columns[targetColumn].push(memo);
+      heights[targetColumn] += (memoCardHeights[memo.id] || estimateMemoCardHeight(memo)) + 10;
+    });
+
+    return columns;
+  };
 
   const nextMemoSortOrder = (pinned: boolean, archived: boolean, excludeId?: string) => {
     const orders = memoEntriesRef.current
@@ -1497,6 +1559,113 @@ export default function Home() {
     else if (clientY > window.innerHeight - edge) window.scrollBy({ top: 18, behavior: 'auto' });
   };
 
+  const memoWindowListenersRef = useRef<{
+    move: (event: PointerEvent) => void;
+    up: (event: PointerEvent) => void;
+    cancel: (event: PointerEvent) => void;
+  } | null>(null);
+
+  const detachMemoWindowListeners = () => {
+    const listeners = memoWindowListenersRef.current;
+    if (!listeners) return;
+    window.removeEventListener('pointermove', listeners.move);
+    window.removeEventListener('pointerup', listeners.up);
+    window.removeEventListener('pointercancel', listeners.cancel);
+    memoWindowListenersRef.current = null;
+  };
+
+  const processMemoDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
+    const drag = memoDragRef.current;
+    if (!drag || drag.pointerId !== pointerId || !drag.active) return;
+
+    preventDefault?.();
+    autoScrollDuringDrag(clientY);
+    if (memoGhostRef.current) {
+      memoGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
+      memoGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+    }
+
+    const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    let card = beneath?.closest<HTMLElement>('[data-memo-card-id]') || null;
+
+    // Dans l'espace entre deux cartes, on prend la carte la plus proche au lieu
+    // d'envoyer brutalement la note en fin de liste.
+    if (!card) {
+      let bestDistance = Number.POSITIVE_INFINITY;
+      document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach(candidate => {
+        const id = candidate.dataset.memoCardId;
+        if (!id || id === drag.id) return;
+        const candidateMemo = memoEntriesRef.current.find(memo => memo.id === id);
+        if (!candidateMemo || candidateMemo.pinned !== drag.pinned || candidateMemo.archived !== drag.archived) return;
+        const rect = candidate.getBoundingClientRect();
+        const cx = Math.max(rect.left, Math.min(clientX, rect.right));
+        const cy = Math.max(rect.top, Math.min(clientY, rect.bottom));
+        const distance = Math.hypot(clientX - cx, clientY - cy);
+        if (distance < bestDistance && distance < 44) {
+          bestDistance = distance;
+          card = candidate;
+        }
+      });
+    }
+
+    const targetId = card?.dataset.memoCardId || null;
+    if (targetId && targetId !== drag.id) {
+      const target = memoEntriesRef.current.find(memo => memo.id === targetId);
+      if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
+      const rect = card!.getBoundingClientRect();
+      const insertAfter = clientY > rect.top + rect.height / 2;
+      const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
+      setMemoDragTargetId(prev => prev === targetId ? prev : targetId);
+      if (memoDragLastPreviewRef.current !== token) {
+        memoDragLastPreviewRef.current = token;
+        previewMemoReorder(drag.id, targetId, insertAfter);
+      }
+      return;
+    }
+
+    const zone = beneath?.closest<HTMLElement>('[data-memo-drop-zone]');
+    const expectedZone = `${drag.archived ? 'archived' : 'active'}-${drag.pinned ? 'pinned' : 'other'}`;
+    if (zone?.dataset.memoDropZone === expectedZone) {
+      const token = `${expectedZone}:end`;
+      setMemoDragTargetId(null);
+      if (memoDragLastPreviewRef.current !== token) {
+        memoDragLastPreviewRef.current = token;
+        previewMemoReorder(drag.id, null, true);
+      }
+    }
+  };
+
+  const finishMemoDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
+    clearMemoLongPressTimer();
+    const drag = memoDragRef.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+
+    memoDragRef.current = null;
+    detachMemoWindowListeners();
+    if (drag.active) {
+      preventDefault?.();
+      stopPropagation?.();
+      const sourceId = drag.id;
+      setDraggingMemoId(null);
+      setMemoDragTargetId(null);
+      setMemoDragVisual(null);
+      memoDragLastPreviewRef.current = '';
+      void persistCurrentMemoDragGroup(sourceId);
+      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
+    }
+  };
+
+  const attachMemoWindowListeners = () => {
+    detachMemoWindowListeners();
+    const move = (event: PointerEvent) => processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
+    const up = (event: PointerEvent) => finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
+    const cancel = (event: PointerEvent) => cancelMemoLongPress(event.pointerId);
+    memoWindowListenersRef.current = { move, up, cancel };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+  };
+
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
     if (memoSearch.trim()) return;
     if (e.button !== 0) return;
@@ -1517,6 +1686,10 @@ export default function Home() {
       element: e.currentTarget,
     };
 
+    // Capture pendant l'attente uniquement : cela fiabilise l'appui long sans
+    // conserver une capture sur une carte qui peut changer de colonne ensuite.
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+
     memoLongPressTimerRef.current = window.setTimeout(() => {
       const drag = memoDragRef.current;
       if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
@@ -1526,97 +1699,47 @@ export default function Home() {
       memoDragLastPreviewRef.current = '';
       setDraggingMemoId(memo.id);
       setMemoDragTargetId(null);
-      setMemoDragVisual({
-        x: currentRect.left,
-        y: currentRect.top,
-        width: currentRect.width,
-        height: currentRect.height,
-      });
-      try { drag.element.setPointerCapture(drag.pointerId); } catch (_) {}
-      if ('vibrate' in navigator) navigator.vibrate(25);
-    }, 380);
+      setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      attachMemoWindowListeners();
+      if ('vibrate' in navigator) navigator.vibrate(20);
+    }, 320);
   };
 
   const moveMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
 
+    // Une fois actif, seul le listener window déplace la carte. Cela évite le
+    // double traitement pointermove qui causait des sauts.
+    if (drag.active) return;
+
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (!drag.active) {
-      if (distance > 12) {
-        clearMemoLongPressTimer();
-        memoDragRef.current = null;
-      }
-      return;
-    }
-
-    e.preventDefault();
-    autoScrollDuringDrag(e.clientY);
-    setMemoDragVisual(prev => prev ? { ...prev, x: e.clientX - drag.offsetX, y: e.clientY - drag.offsetY } : prev);
-
-    // Le vrai emplacement reste dans la grille mais devient transparent ; on le
-    // retire temporairement du hit-test pour détecter la carte située dessous.
-    const previousPointerEvents = drag.element.style.pointerEvents;
-    drag.element.style.pointerEvents = 'none';
-    const beneath = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-    drag.element.style.pointerEvents = previousPointerEvents;
-
-    const card = beneath?.closest<HTMLElement>('[data-memo-card-id]');
-    const targetId = card?.dataset.memoCardId || null;
-
-    if (targetId && targetId !== drag.id) {
-      const target = memoEntriesRef.current.find(memo => memo.id === targetId);
-      if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
-      const rect = card!.getBoundingClientRect();
-      const insertAfter = e.clientY > rect.top + rect.height / 2;
-      const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
-      setMemoDragTargetId(targetId);
-      if (memoDragLastPreviewRef.current !== token) {
-        memoDragLastPreviewRef.current = token;
-        previewMemoReorder(drag.id, targetId, insertAfter);
-      }
-      return;
-    }
-
-    const zone = beneath?.closest<HTMLElement>('[data-memo-drop-zone]');
-    const expectedZone = `${drag.archived ? 'archived' : 'active'}-${drag.pinned ? 'pinned' : 'other'}`;
-    if (zone?.dataset.memoDropZone === expectedZone) {
-      const token = `${expectedZone}:end`;
-      setMemoDragTargetId(null);
-      if (memoDragLastPreviewRef.current !== token) {
-        memoDragLastPreviewRef.current = token;
-        previewMemoReorder(drag.id, null, true);
-      }
+    if (distance > 22) {
+      clearMemoLongPressTimer();
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      memoDragRef.current = null;
     }
   };
 
   const endMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
-    clearMemoLongPressTimer();
     const drag = memoDragRef.current;
-    memoDragRef.current = null;
     if (!drag || drag.pointerId !== e.pointerId) return;
-
-    if (drag.active) {
-      e.preventDefault();
-      e.stopPropagation();
-      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
-      const sourceId = drag.id;
-      setDraggingMemoId(null);
-      setMemoDragTargetId(null);
-      setMemoDragVisual(null);
-      memoDragLastPreviewRef.current = '';
-      void persistCurrentMemoDragGroup(sourceId);
-      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 450);
-    }
+    if (drag.active) return; // le listener window termine le drag
+    clearMemoLongPressTimer();
+    try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+    memoDragRef.current = null;
   };
 
-  const cancelMemoLongPress = (e?: React.PointerEvent<HTMLElement>) => {
+  const cancelMemoLongPress = (pointerId?: number) => {
     clearMemoLongPressTimer();
     const drag = memoDragRef.current;
+    if (drag && pointerId !== undefined && drag.pointerId !== pointerId) return;
     memoDragRef.current = null;
-    if (drag?.active) {
+    detachMemoWindowListeners();
+    if (drag) {
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
-      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(drag.id), 450);
+      if (drag.active) window.setTimeout(() => memoSuppressClickIdsRef.current.delete(drag.id), 500);
     }
     setDraggingMemoId(null);
     setMemoDragTargetId(null);
@@ -1733,21 +1856,39 @@ export default function Home() {
 
     preventDefault?.();
     autoScrollDuringDrag(clientY);
-    setTaskDragVisual(prev => prev ? { ...prev, x: clientX - drag.offsetX, y: clientY - drag.offsetY } : prev);
+    if (taskGhostRef.current) {
+      taskGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
+      taskGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+    }
 
-    const previousPointerEvents = drag.element.style.pointerEvents;
-    drag.element.style.pointerEvents = 'none';
     const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    drag.element.style.pointerEvents = previousPointerEvents;
 
-    const card = beneath?.closest<HTMLElement>('[data-task-card-id]');
-    const zone = beneath?.closest<HTMLElement>('[data-task-priority-zone]');
+    let card = beneath?.closest<HTMLElement>('[data-task-card-id]') || null;
+    let zone = beneath?.closest<HTMLElement>('[data-task-priority-zone]') || null;
+
+    // Entre deux tâches, garde la priorité de la zone et accroche la carte la
+    // plus proche. Cela évite que la tâche saute en fin de liste au moindre trou.
+    if (!card && zone) {
+      let bestDistance = Number.POSITIVE_INFINITY;
+      zone.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach(candidate => {
+        const id = candidate.dataset.taskCardId;
+        if (!id || id === drag.id) return;
+        const rect = candidate.getBoundingClientRect();
+        const cy = Math.max(rect.top, Math.min(clientY, rect.bottom));
+        const distance = Math.abs(clientY - cy);
+        if (distance < bestDistance && distance < 50) {
+          bestDistance = distance;
+          card = candidate;
+        }
+      });
+    }
+
     const priorityValue = card?.dataset.taskPriority || zone?.dataset.taskPriorityZone;
     if (priorityValue !== 'vert' && priorityValue !== 'orange' && priorityValue !== 'rouge') return;
     const targetPriority = priorityValue as 'vert' | 'orange' | 'rouge';
 
-    setTaskDragHoverPriority(targetPriority);
-    setCollapsedPriorities(prev => ({ ...prev, [targetPriority]: false }));
+    setTaskDragHoverPriority(prev => prev === targetPriority ? prev : targetPriority);
+    setCollapsedPriorities(prev => (prev[targetPriority] ?? false) ? { ...prev, [targetPriority]: false } : prev);
 
     const targetId = card?.dataset.taskCardId || null;
     let insertAfter = false;
@@ -1829,6 +1970,8 @@ export default function Home() {
       element: e.currentTarget,
     };
 
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+
     taskLongPressTimerRef.current = window.setTimeout(() => {
       const drag = taskDragRef.current;
       if (!drag || drag.id !== note.id || drag.pointerId !== e.pointerId) return;
@@ -1838,39 +1981,33 @@ export default function Home() {
       setDraggingTaskId(note.id);
       setTaskDragHoverPriority(note.importance);
       setTaskDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-      try { drag.element.setPointerCapture(drag.pointerId); } catch (_) {}
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       attachTaskWindowListeners();
-      if ('vibrate' in navigator) navigator.vibrate(25);
-    }, 380);
+      if ('vibrate' in navigator) navigator.vibrate(20);
+    }, 320);
   };
 
   const moveTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = taskDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
 
-    const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (!drag.active) {
-      if (distance > 12) {
-        clearTaskLongPressTimer();
-        taskDragRef.current = null;
-      }
-      return;
-    }
+    if (drag.active) return; // déplacement géré uniquement par window
 
-    processTaskDragMove(e.clientX, e.clientY, e.pointerId, () => e.preventDefault());
+    const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+    if (distance > 22) {
+      clearTaskLongPressTimer();
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      taskDragRef.current = null;
+    }
   };
 
   const endTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = taskDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
-    if (!drag.active) {
-      clearTaskLongPressTimer();
-      taskDragRef.current = null;
-      return;
-    }
-    // Le listener window conclut le déplacement. Si l'élément n'a pas été déplacé
-    // vers un autre parent React, cet appel sert seulement de secours.
-    finishTaskDrag(e.pointerId, () => e.preventDefault(), () => e.stopPropagation());
+    if (drag.active) return; // le listener window conclut le déplacement
+    clearTaskLongPressTimer();
+    try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+    taskDragRef.current = null;
   };
 
   const cancelTaskLongPress = (e?: React.PointerEvent<HTMLElement>) => {
@@ -3844,6 +3981,8 @@ export default function Home() {
   const otherMemos = visibleMemos
     .filter(memo => !memo.pinned)
     .sort((a, b) => a.sort_order - b.sort_order);
+  const pinnedMemoColumns = buildMemoMasonryColumns(pinnedMemos);
+  const otherMemoColumns = buildMemoMasonryColumns(otherMemos);
 
   const renderMemoCard = (memo: MemoEntry) => {
     const isDragging = draggingMemoId === memo.id;
@@ -3858,12 +3997,16 @@ export default function Home() {
         onPointerMove={moveMemoLongPress}
         onPointerUp={endMemoLongPress}
         onPointerCancel={cancelMemoLongPress}
-        onContextMenu={(e) => { if (isDragging) e.preventDefault(); }}
+        onContextMenu={(e) => e.preventDefault()}
+        draggable={false}
         className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-[0.08] shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
-          gridRowEnd: `span ${memoGridSpans[memo.id] || 10}`,
-        }}
+          pointerEvents: isDragging ? 'none' : 'auto',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          WebkitTouchCallout: 'none',
+        } as React.CSSProperties}
       >
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
@@ -3903,8 +4046,15 @@ export default function Home() {
       onPointerMove={moveTaskLongPress}
       onPointerUp={endTaskLongPress}
       onPointerCancel={cancelTaskLongPress}
-      onContextMenu={(e) => { if (draggingTaskId === note.id) e.preventDefault(); }}
-      style={{ touchAction: draggingTaskId === note.id ? 'none' : 'pan-y' }}
+      onContextMenu={(e) => e.preventDefault()}
+      draggable={false}
+      style={{
+        touchAction: draggingTaskId === note.id ? 'none' : 'pan-y',
+        pointerEvents: draggingTaskId === note.id ? 'none' : 'auto',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+      } as React.CSSProperties}
       className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-[0.08]' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
       note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
@@ -4772,10 +4922,13 @@ export default function Home() {
                   <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Épinglés</div>
                   <div
                     data-memo-drop-zone={`${showMemoArchived ? 'archived' : 'active'}-pinned`}
-                    className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
-                    style={{ gridAutoRows: '8px', gridAutoFlow: 'dense', columnGap: '10px', rowGap: '10px' }}
+                    className="flex items-start gap-[10px]"
                   >
-                    {pinnedMemos.map(renderMemoCard)}
+                    {pinnedMemoColumns.map((column, columnIndex) => (
+                      <div key={`pinned-column-${columnIndex}`} className="flex-1 min-w-0 flex flex-col gap-[10px]">
+                        {column.map(renderMemoCard)}
+                      </div>
+                    ))}
                   </div>
                 </section>
               )}
@@ -4785,10 +4938,13 @@ export default function Home() {
                   {pinnedMemos.length > 0 && <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Autres</div>}
                   <div
                     data-memo-drop-zone={`${showMemoArchived ? 'archived' : 'active'}-other`}
-                    className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
-                    style={{ gridAutoRows: '8px', gridAutoFlow: 'dense', columnGap: '10px', rowGap: '10px' }}
+                    className="flex items-start gap-[10px]"
                   >
-                    {otherMemos.map(renderMemoCard)}
+                    {otherMemoColumns.map((column, columnIndex) => (
+                      <div key={`other-column-${columnIndex}`} className="flex-1 min-w-0 flex flex-col gap-[10px]">
+                        {column.map(renderMemoCard)}
+                      </div>
+                    ))}
                   </div>
                 </section>
               )}
@@ -4800,6 +4956,7 @@ export default function Home() {
             if (!memo) return null;
             return (
               <div
+                ref={memoGhostRef}
                 className={`fixed z-[12850] pointer-events-none rounded-[18px] border p-3 shadow-2xl scale-[1.035] ${memoColorClasses(memo.color)}`}
                 style={{
                   left: memoDragVisual.x,
@@ -5960,6 +6117,7 @@ export default function Home() {
                         : 'border-[#AAB99D] bg-[#EDF1E7]';
                     return (
                       <div
+                        ref={taskGhostRef}
                         className={`fixed z-[12860] pointer-events-none rounded-xl border-l-4 border p-3 shadow-2xl scale-[1.025] ${palette}`}
                         style={{ left: taskDragVisual.x, top: taskDragVisual.y, width: taskDragVisual.width }}
                       >
