@@ -205,6 +205,10 @@ export default function Home() {
     originRect: { left: number; top: number; right: number; bottom: number };
     reorderUnlocked: boolean;
     lastReorderAt: number;
+    lastReorderX: number;
+    lastReorderY: number;
+    candidateToken: string;
+    candidateSince: number;
     element: HTMLElement;
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
@@ -223,6 +227,7 @@ export default function Home() {
     pointerId: number;
     startX: number;
     startY: number;
+    pressStartedAt: number;
     lastX: number;
     lastY: number;
     offsetX: number;
@@ -232,6 +237,11 @@ export default function Home() {
     originRect: { left: number; top: number; right: number; bottom: number };
     reorderUnlocked: boolean;
     lastReorderAt: number;
+    candidateToken: string;
+    candidateSince: number;
+    pendingPriority: 'vert' | 'orange' | 'rouge';
+    pendingTargetId: string | null;
+    pendingInsertAfter: boolean;
     element: HTMLElement;
   } | null>(null);
   const notesRef = useRef<Note[]>([]);
@@ -1515,6 +1525,56 @@ export default function Home() {
     return true;
   };
 
+  const captureMemoLayout = (excludeId?: string) => {
+    const rects = new Map<string, DOMRect>();
+    document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
+      const id = element.dataset.memoCardId;
+      if (!id || id === excludeId) return;
+      rects.set(id, element.getBoundingClientRect());
+    });
+    return rects;
+  };
+
+  const animateMemoLayoutFrom = (before: Map<string, DOMRect>, excludeId?: string) => {
+    // FLIP : les cartes gardent visuellement leur ancienne place puis glissent
+    // vers leur nouvelle position. Cela évite les changements secs et le
+    // sentiment de cartes qui "sautent" dans tous les sens.
+    requestAnimationFrame(() => {
+      const animated: HTMLElement[] = [];
+      document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
+        const id = element.dataset.memoCardId;
+        if (!id || id === excludeId) return;
+        const previous = before.get(id);
+        if (!previous) return;
+        const next = element.getBoundingClientRect();
+        const dx = previous.left - next.left;
+        const dy = previous.top - next.top;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+        element.style.transition = 'none';
+        element.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+        element.style.willChange = 'transform';
+        animated.push(element);
+      });
+
+      if (!animated.length) return;
+      // Force le navigateur à prendre en compte la position de départ.
+      void document.body.offsetHeight;
+      requestAnimationFrame(() => {
+        animated.forEach((element) => {
+          element.style.transition = 'transform 190ms cubic-bezier(0.22, 0.8, 0.22, 1), box-shadow 160ms ease, opacity 120ms ease';
+          element.style.transform = 'translate3d(0, 0, 0)';
+        });
+        window.setTimeout(() => {
+          animated.forEach((element) => {
+            element.style.transition = '';
+            element.style.transform = '';
+            element.style.willChange = '';
+          });
+        }, 230);
+      });
+    });
+  };
+
   const previewMemoReorder = (sourceId: string, targetId: string | null, insertAfter = false) => {
     const current = memoEntriesRef.current;
     const source = current.find(memo => memo.id === sourceId);
@@ -1541,10 +1601,12 @@ export default function Home() {
     const nextIds = reordered.map(memo => memo.id).join('|');
     if (currentIds === nextIds) return;
 
+    const before = captureMemoLayout(sourceId);
     const orderMap = new Map(reordered.map((memo, index) => [memo.id, index]));
     const next = current.map(memo => orderMap.has(memo.id) ? { ...memo, sort_order: orderMap.get(memo.id)! } : memo);
     memoEntriesRef.current = next;
     setMemoEntries(next);
+    animateMemoLayoutFrom(before, sourceId);
   };
 
   const persistCurrentMemoDragGroup = async (sourceId: string) => {
@@ -1647,18 +1709,43 @@ export default function Home() {
       const target = memoEntriesRef.current.find(memo => memo.id === targetId);
       if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
       const rect = card!.getBoundingClientRect();
+
+      // On découpe chaque carte en deux vraies zones d'insertion. La petite
+      // bande centrale est volontairement neutre : elle empêche les oscillations
+      // avant/après lorsque le doigt est proche du milieu.
       const midpoint = rect.top + rect.height / 2;
-      const deadZone = Math.min(10, Math.max(5, rect.height * 0.08));
-      if (Math.abs(clientY - midpoint) <= deadZone) return;
+      const deadZone = Math.min(18, Math.max(9, rect.height * 0.12));
+      if (Math.abs(clientY - midpoint) <= deadZone) {
+        drag.candidateToken = '';
+        drag.candidateSince = 0;
+        return;
+      }
+
       const insertAfter = clientY > midpoint;
       const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
       setMemoDragTargetId(prev => prev === targetId ? prev : targetId);
       const now = performance.now();
-      if (memoDragLastPreviewRef.current !== token && now - drag.lastReorderAt >= 75) {
-        memoDragLastPreviewRef.current = token;
-        drag.lastReorderAt = now;
-        previewMemoReorder(drag.id, targetId, insertAfter);
+
+      // Le pointeur doit viser le même emplacement pendant un court instant.
+      // Cela évite qu'un simple changement de layout déclenche une deuxième
+      // réorganisation sous le doigt sans intention de l'utilisateur.
+      if (drag.candidateToken !== token) {
+        drag.candidateToken = token;
+        drag.candidateSince = now;
+        return;
       }
+
+      const movedSinceLastReorder = Math.hypot(clientX - drag.lastReorderX, clientY - drag.lastReorderY);
+      if (now - drag.candidateSince < 65 || movedSinceLastReorder < 14 || now - drag.lastReorderAt < 105) return;
+      if (memoDragLastPreviewRef.current === token) return;
+
+      memoDragLastPreviewRef.current = token;
+      drag.lastReorderAt = now;
+      drag.lastReorderX = clientX;
+      drag.lastReorderY = clientY;
+      drag.candidateToken = '';
+      drag.candidateSince = 0;
+      previewMemoReorder(drag.id, targetId, insertAfter);
       return;
     }
 
@@ -1668,9 +1755,19 @@ export default function Home() {
       const token = `${expectedZone}:end`;
       setMemoDragTargetId(null);
       const now = performance.now();
-      if (memoDragLastPreviewRef.current !== token && now - drag.lastReorderAt >= 75) {
+      if (drag.candidateToken !== token) {
+        drag.candidateToken = token;
+        drag.candidateSince = now;
+        return;
+      }
+      const movedSinceLastReorder = Math.hypot(clientX - drag.lastReorderX, clientY - drag.lastReorderY);
+      if (memoDragLastPreviewRef.current !== token && now - drag.candidateSince >= 80 && movedSinceLastReorder >= 18 && now - drag.lastReorderAt >= 110) {
         memoDragLastPreviewRef.current = token;
         drag.lastReorderAt = now;
+        drag.lastReorderX = clientX;
+        drag.lastReorderY = clientY;
+        drag.candidateToken = '';
+        drag.candidateSince = 0;
         previewMemoReorder(drag.id, null, true);
       }
     }
@@ -1733,6 +1830,10 @@ export default function Home() {
       originRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
       reorderUnlocked: false,
       lastReorderAt: 0,
+      lastReorderX: e.clientX,
+      lastReorderY: e.clientY,
+      candidateToken: '',
+      candidateSince: 0,
       element: e.currentTarget,
     };
 
@@ -1752,6 +1853,10 @@ export default function Home() {
       drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
       drag.reorderUnlocked = false;
       drag.lastReorderAt = 0;
+      drag.lastReorderX = drag.lastX;
+      drag.lastReorderY = drag.lastY;
+      drag.candidateToken = '';
+      drag.candidateSince = 0;
       setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
       // On conserve la capture du pointeur pendant tout le drag. Cela évite de
       // perdre le doigt lors d'un déplacement rapide sur mobile.
@@ -1964,25 +2069,41 @@ export default function Home() {
     const targetPriority = priorityValue as 'vert' | 'orange' | 'rouge';
 
     setTaskDragHoverPriority(prev => prev === targetPriority ? prev : targetPriority);
-    setCollapsedPriorities(prev => (prev[targetPriority] ?? false) ? { ...prev, [targetPriority]: false } : prev);
 
     const targetId = card?.dataset.taskCardId || null;
     let insertAfter = false;
     if (card && targetId && targetId !== drag.id) {
       const rect = card.getBoundingClientRect();
       const midpoint = rect.top + rect.height / 2;
-      const deadZone = Math.min(12, Math.max(6, rect.height * 0.08));
+      const deadZone = Math.min(14, Math.max(7, rect.height * 0.1));
       if (Math.abs(clientY - midpoint) <= deadZone) return;
       insertAfter = clientY > midpoint;
     }
 
-    const token = `${targetPriority}:${targetId || 'end'}:${insertAfter ? 'after' : 'before'}`;
-    if (taskDragLastPreviewRef.current === token) return;
+    const normalizedTargetId = targetId && targetId !== drag.id ? targetId : null;
+    drag.pendingPriority = targetPriority;
+    drag.pendingTargetId = normalizedTargetId;
+    drag.pendingInsertAfter = insertAfter;
+
+    const token = `${targetPriority}:${normalizedTargetId || 'end'}:${insertAfter ? 'after' : 'before'}`;
     const now = performance.now();
-    if (now - drag.lastReorderAt < 80) return;
+    if (drag.candidateToken !== token) {
+      drag.candidateToken = token;
+      drag.candidateSince = now;
+      return;
+    }
+
+    // IMPORTANT : une autre priorité n'est qu'une cible visuelle tant que le
+    // doigt est posé. La tâche change réellement de priorité uniquement au
+    // relâchement. C'est beaucoup plus prévisible sur mobile.
+    if (targetPriority !== drag.originalPriority) return;
+
+    // Dans la priorité d'origine, on peut prévisualiser le changement d'ordre,
+    // mais seulement après une courte stabilité sur la même cible.
+    if (taskDragLastPreviewRef.current === token || now - drag.candidateSince < 55 || now - drag.lastReorderAt < 95) return;
     taskDragLastPreviewRef.current = token;
     drag.lastReorderAt = now;
-    previewTaskReorder(drag.id, targetPriority, targetId && targetId !== drag.id ? targetId : null, insertAfter);
+    previewTaskReorder(drag.id, drag.originalPriority, normalizedTargetId, insertAfter);
   };
 
   const finishTaskDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
@@ -1997,8 +2118,18 @@ export default function Home() {
       preventDefault?.();
       stopPropagation?.();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
-      const moved = notesRef.current.find(note => note.id === drag.id);
-      const finalPriority = moved?.importance || drag.originalPriority;
+
+      const finalPriority = drag.pendingPriority || drag.originalPriority;
+      // Si l'on dépose dans une autre priorité, le changement n'est appliqué
+      // qu'ici, au relâchement. Dans la priorité d'origine, on réapplique la
+      // dernière cible pour garantir un dépôt exact même si le dernier mouvement
+      // était trop court pour déclencher la prévisualisation.
+      if (finalPriority !== drag.originalPriority) {
+        previewTaskReorder(drag.id, finalPriority, drag.pendingTargetId, drag.pendingInsertAfter);
+      } else if (drag.pendingTargetId) {
+        previewTaskReorder(drag.id, drag.originalPriority, drag.pendingTargetId, drag.pendingInsertAfter);
+      }
+
       setDraggingTaskId(null);
       setTaskDragVisual(null);
       setTaskDragHoverPriority(null);
@@ -2037,6 +2168,26 @@ export default function Home() {
     window.addEventListener('touchmove', touchMove, { passive: false });
   };
 
+  const activateTaskDrag = (drag: NonNullable<typeof taskDragRef.current>) => {
+    if (drag.active) return;
+    const currentRect = drag.element.getBoundingClientRect();
+    drag.active = true;
+    taskDragLastPreviewRef.current = '';
+    setDraggingTaskId(drag.id);
+    setTaskDragHoverPriority(drag.originalPriority);
+    drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
+    drag.reorderUnlocked = false;
+    drag.lastReorderAt = 0;
+    drag.candidateToken = '';
+    drag.candidateSince = 0;
+    drag.pendingPriority = drag.originalPriority;
+    drag.pendingTargetId = null;
+    drag.pendingInsertAfter = false;
+    setTaskDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
+    attachTaskWindowListeners();
+    if ('vibrate' in navigator) navigator.vibrate(14);
+  };
+
   const beginTaskLongPress = (e: React.PointerEvent<HTMLElement>, note: Note) => {
     if (showArchived !== false || activeTab !== 'notes' || editingId === note.id || !taskIsDragEligible(note)) return;
     if (e.button !== 0) return;
@@ -2049,6 +2200,7 @@ export default function Home() {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      pressStartedAt: performance.now(),
       lastX: e.clientX,
       lastY: e.clientY,
       offsetX: e.clientX - rect.left,
@@ -2058,6 +2210,11 @@ export default function Home() {
       originRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
       reorderUnlocked: false,
       lastReorderAt: 0,
+      candidateToken: '',
+      candidateSince: 0,
+      pendingPriority: note.importance,
+      pendingTargetId: null,
+      pendingInsertAfter: false,
       element: e.currentTarget,
     };
 
@@ -2066,20 +2223,8 @@ export default function Home() {
     taskLongPressTimerRef.current = window.setTimeout(() => {
       const drag = taskDragRef.current;
       if (!drag || drag.id !== note.id || drag.pointerId !== e.pointerId) return;
-      const currentRect = drag.element.getBoundingClientRect();
-      drag.active = true;
-      taskDragLastPreviewRef.current = '';
-      setDraggingTaskId(note.id);
-      setTaskDragHoverPriority(note.importance);
-      drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
-      drag.reorderUnlocked = false;
-      drag.lastReorderAt = 0;
-      setTaskDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-      // Conserver la capture rend le suivi beaucoup plus fiable lors d'un
-      // déplacement rapide du doigt sur Android.
-      attachTaskWindowListeners();
-      if ('vibrate' in navigator) navigator.vibrate(16);
-    }, 240);
+      activateTaskDrag(drag);
+    }, 195);
   };
 
   const moveTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
@@ -2091,7 +2236,20 @@ export default function Home() {
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (distance > 36) {
+    const elapsed = performance.now() - drag.pressStartedAt;
+
+    // Sur mobile, l'utilisateur commence souvent à déplacer le doigt juste
+    // avant la fin du délai d'appui long. À partir de 125 ms, un mouvement
+    // volontaire suffit donc à activer le drag sans attendre le timer complet.
+    if (elapsed >= 125 && distance >= 7) {
+      clearTaskLongPressTimer();
+      activateTaskDrag(drag);
+      return;
+    }
+
+    // Un mouvement très rapide immédiatement après le toucher reste interprété
+    // comme un scroll vertical normal de la page.
+    if (elapsed < 125 && distance > 34) {
       clearTaskLongPressTimer();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       taskDragRef.current = null;
@@ -4096,7 +4254,7 @@ export default function Home() {
         onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
           pointerEvents: isDragging ? 'none' : 'auto',
