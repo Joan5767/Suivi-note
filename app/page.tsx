@@ -198,6 +198,8 @@ export default function Home() {
   const [draggingMemoId, setDraggingMemoId] = useState<string | null>(null);
   const [, setMemoDragTargetId] = useState<string | null>(null);
   const [memoDragVisual, setMemoDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [memoTrashHover, setMemoTrashHover] = useState(false);
+  const memoTrashRef = useRef<HTMLDivElement | null>(null);
   const [memoColumnCount, setMemoColumnCount] = useState(2);
   const [memoCardHeights, setMemoCardHeights] = useState<Record<string, number>>({});
   const memoGhostRef = useRef<HTMLDivElement | null>(null);
@@ -226,6 +228,7 @@ export default function Home() {
     acceptedToken: string;
     layoutLockedUntil: number;
     slotRefreshTimer: number | null;
+    originalEntries: MemoEntry[];
     element: HTMLElement;
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
@@ -1771,6 +1774,13 @@ export default function Home() {
     return { targetId: slot.id, insertAfter: centerY >= lowerThreshold };
   };
 
+  const isMemoPointerOverTrash = (clientX: number, clientY: number) => {
+    const trash = memoTrashRef.current;
+    if (!trash) return false;
+    const rect = trash.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  };
+
   const processMemoDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== pointerId || !drag.active) return;
@@ -1790,6 +1800,13 @@ export default function Home() {
     if (memoGhostRef.current) {
       memoGhostRef.current.style.left = `${ghostLeft}px`;
       memoGhostRef.current.style.top = `${ghostTop}px`;
+    }
+
+    const overTrash = isMemoPointerOverTrash(clientX, clientY);
+    setMemoTrashHover(overTrash);
+    if (overTrash) {
+      setMemoDragTargetId(null);
+      return;
     }
 
     if (!drag.reorderUnlocked) {
@@ -1832,6 +1849,9 @@ export default function Home() {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== pointerId) return;
 
+    const droppedOnTrash = drag.active && isMemoPointerOverTrash(drag.lastX, drag.lastY);
+    const sourceMemo = drag.originalEntries.find(memo => memo.id === drag.id);
+
     memoDragRef.current = null;
     detachMemoWindowListeners();
     if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
@@ -1842,7 +1862,22 @@ export default function Home() {
       setDraggingMemoId(null);
       setMemoDragTargetId(null);
       setMemoDragVisual(null);
+      setMemoTrashHover(false);
       memoDragLastPreviewRef.current = '';
+
+      if (droppedOnTrash && sourceMemo) {
+        // Les réorganisations pendant le drag n'ont pas encore été persistées.
+        // On remet donc l'ordre d'origine avant d'afficher la confirmation.
+        memoPendingFlipRef.current = null;
+        memoFlipAnimationsRef.current.forEach(animation => animation.cancel());
+        memoFlipAnimationsRef.current.clear();
+        memoEntriesRef.current = drag.originalEntries;
+        setMemoEntries(drag.originalEntries);
+        window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
+        deleteMemo(sourceMemo);
+        return;
+      }
+
       void persistCurrentMemoDragGroup(sourceId);
       window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
     }
@@ -1893,6 +1928,7 @@ export default function Home() {
       acceptedToken: '',
       layoutLockedUntil: 0,
       slotRefreshTimer: null,
+      originalEntries: memoEntriesRef.current,
       element: e.currentTarget,
     };
 
@@ -1909,6 +1945,7 @@ export default function Home() {
       memoDragLastPreviewRef.current = '';
       setDraggingMemoId(memo.id);
       setMemoDragTargetId(null);
+      setMemoTrashHover(false);
       drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
       drag.reorderUnlocked = false;
       drag.lastReorderAt = 0;
@@ -1968,6 +2005,7 @@ export default function Home() {
     setDraggingMemoId(null);
     setMemoDragTargetId(null);
     setMemoDragVisual(null);
+    setMemoTrashHover(false);
     memoDragLastPreviewRef.current = '';
   };
 
@@ -5235,20 +5273,15 @@ export default function Home() {
           </div>
 
           {!showMemoArchived && (
-            <div className="flex items-center justify-center gap-2 mb-2">
+            <div className="flex items-center justify-center mb-3">
               <button
                 type="button"
                 onClick={() => openNewMemo('text')}
-                className="bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] rounded-2xl px-4 py-2.5 text-sm font-black shadow-sm active:scale-[0.98]"
+                className="w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] text-[27px] leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] active:scale-[0.94] transition-transform flex items-center justify-center"
+                aria-label="Créer une note, une liste ou un dessin"
+                title="Créer"
               >
-                ＋ Note / mémo
-              </button>
-              <button
-                type="button"
-                onClick={() => openNewMemo('list')}
-                className="bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] border border-[#DAC9B5] rounded-2xl px-4 py-2.5 text-sm font-black shadow-sm active:scale-[0.98]"
-              >
-                ☑ Liste
+                ＋
               </button>
             </div>
           )}
@@ -5299,6 +5332,22 @@ export default function Home() {
             </div>
           )}
 
+          {draggingMemoId && (
+            <div className="fixed left-1/2 -translate-x-1/2 bottom-[max(22px,env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
+              <div
+                ref={memoTrashRef}
+                className={`pointer-events-auto min-w-[150px] h-14 px-5 rounded-full border-2 shadow-xl flex items-center justify-center gap-2 font-black text-sm transition-all duration-150 ${
+                  memoTrashHover
+                    ? 'bg-[#B85D55] border-[#9F4A43] text-white scale-110 shadow-[0_10px_28px_rgba(150,65,57,0.32)]'
+                    : 'bg-[#F7EBE7] border-[#D8AAA2] text-[#8A514A] scale-100'
+                }`}
+              >
+                <span className={`text-xl transition-transform ${memoTrashHover ? 'scale-125' : ''}`}>🗑️</span>
+                <span>{memoTrashHover ? 'Relâche pour supprimer' : 'Supprimer'}</span>
+              </div>
+            </div>
+          )}
+
           {draggingMemoId && memoDragVisual && (() => {
             const memo = memoEntries.find(item => item.id === draggingMemoId);
             if (!memo) return null;
@@ -5330,8 +5379,8 @@ export default function Home() {
                     ))}
                   </div>
                 )}
-                <div className="absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg">
-                  Relâche pour placer
+                <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : 'bg-[#4B5843]'}`}>
+                  {memoTrashHover ? 'Relâche pour supprimer' : 'Relâche pour placer'}
                 </div>
               </div>
             );
@@ -5358,6 +5407,12 @@ export default function Home() {
                       onClick={() => setMemoDraftType('list')}
                       className={`px-3 py-1.5 rounded-xl text-xs font-black border ${memoDraftType === 'list' ? 'bg-white/75 border-black/10' : 'bg-white/30 border-transparent'}`}
                     >☑ Liste</button>
+                    <button
+                      type="button"
+                      onClick={() => showAppMessage('DrawNote arrive à l’étape suivante.')}
+                      className="px-3 py-1.5 rounded-xl text-xs font-black border bg-white/30 border-transparent hover:bg-white/55"
+                      title="DrawNote sera ajouté à l'étape suivante"
+                    >✏️ DrawNote</button>
                   </div>
                   <button
                     type="button"
