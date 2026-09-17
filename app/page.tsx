@@ -192,6 +192,7 @@ export default function Home() {
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
 
   // Réorganisation des mémos façon Google Keep : appui long, carte flottante,
   // réorganisation en direct puis sauvegarde de l'ordre dans Supabase.
@@ -1517,6 +1518,12 @@ export default function Home() {
   }, [memoEntries]);
 
   useEffect(() => {
+    if (mainMode !== 'memos') {
+      setSelectedMemoIds(prev => prev.size ? new Set() : prev);
+    }
+  }, [mainMode]);
+
+  useEffect(() => {
     notesRef.current = notes;
   }, [notes]);
 
@@ -1899,7 +1906,7 @@ export default function Home() {
 
       if (droppedOnTrash && sourceMemo) {
         // Les réorganisations pendant le drag n'ont pas encore été persistées.
-        // On remet donc l'ordre d'origine avant d'afficher la confirmation.
+        // On remet donc l'ordre d'origine avant la suppression directe.
         memoPendingFlipRef.current = null;
         memoFlipAnimationsRef.current.forEach(animation => animation.cancel());
         memoFlipAnimationsRef.current.clear();
@@ -1907,6 +1914,21 @@ export default function Home() {
         setMemoEntries(drag.originalEntries);
         window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
         void deleteMemoImmediately(sourceMemo);
+        return;
+      }
+
+      // Appui long sans vrai déplacement = sélection, comme Google Keep.
+      // Le même geste sert donc soit à saisir/déplacer la carte, soit à entrer
+      // dans le mode multisélection si on relâche sans l'avoir déplacée.
+      const travelled = Math.hypot(drag.lastX - drag.startX, drag.lastY - drag.startY);
+      if (!drag.reorderUnlocked && travelled < 16) {
+        memoPendingFlipRef.current = null;
+        memoFlipAnimationsRef.current.forEach(animation => animation.cancel());
+        memoFlipAnimationsRef.current.clear();
+        memoEntriesRef.current = drag.originalEntries;
+        setMemoEntries(drag.originalEntries);
+        selectMemo(sourceId);
+        window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
         return;
       }
 
@@ -1968,6 +1990,7 @@ export default function Home() {
   };
 
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
+    if (selectedMemoIds.size > 0) return;
     if (memoSearch.trim()) return;
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return;
@@ -2472,8 +2495,32 @@ export default function Home() {
     cancelActiveTaskDrag(e?.pointerId);
   };
 
+  const clearMemoSelection = () => setSelectedMemoIds(new Set());
+
+  const selectMemo = (id: string) => {
+    setSelectedMemoIds(prev => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+
+  const toggleMemoSelection = (id: string) => {
+    setSelectedMemoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const openMemoCard = (memo: MemoEntry) => {
     if (memoSuppressClickIdsRef.current.has(memo.id)) return;
+    if (selectedMemoIds.size > 0) {
+      toggleMemoSelection(memo.id);
+      return;
+    }
     openMemoEditor(memo);
   };
 
@@ -2622,6 +2669,105 @@ export default function Home() {
         await fetchMemos();
       },
     });
+  };
+
+  const getSelectedMemos = () => {
+    const ids = selectedMemoIds;
+    return memoEntriesRef.current.filter(memo => ids.has(memo.id));
+  };
+
+  const deleteSelectedMemos = async () => {
+    const ids = Array.from(selectedMemoIds);
+    if (!ids.length) return;
+
+    // Comme le glisser vers la poubelle : suppression directe. La confirmation
+    // reste réservée à la poubelle située dans l'éditeur d'un mémo ouvert.
+    const previousEntries = memoEntriesRef.current;
+    const nextEntries = previousEntries.filter(memo => !selectedMemoIds.has(memo.id));
+    memoEntriesRef.current = nextEntries;
+    setMemoEntries(nextEntries);
+    clearMemoSelection();
+
+    const { error } = await supabase.from('memo_notes').delete().in('id', ids);
+    if (error) {
+      memoEntriesRef.current = previousEntries;
+      setMemoEntries(previousEntries);
+      showAppMessage('Erreur lors de la suppression des mémos : ' + error.message);
+    }
+  };
+
+  const setSelectedMemosPinned = async () => {
+    const selected = getSelectedMemos();
+    if (!selected.length) return;
+    const selectedIds = new Set(selected.map(memo => memo.id));
+    const targetPinned = !selected.every(memo => memo.pinned);
+    const now = new Date().toISOString();
+
+    // Un compteur par état d'archive pour conserver un ordre propre dans chaque groupe.
+    const nextOrderByArchive = new Map<boolean, number>();
+    for (const archived of [false, true]) {
+      const max = memoEntriesRef.current
+        .filter(memo => !selectedIds.has(memo.id) && memo.archived === archived && memo.pinned === targetPinned)
+        .reduce((value, memo) => Math.max(value, Number.isFinite(memo.sort_order) ? memo.sort_order : 0), -1);
+      nextOrderByArchive.set(archived, max + 1);
+    }
+
+    const results = await Promise.all(selected.map(memo => {
+      const order = nextOrderByArchive.get(memo.archived) ?? 0;
+      nextOrderByArchive.set(memo.archived, order + 1);
+      return supabase.from('memo_notes').update({
+        pinned: targetPinned,
+        sort_order: order,
+        updated_at: now,
+      }).eq('id', memo.id);
+    }));
+
+    const error = results.find(result => result.error)?.error;
+    if (error) {
+      showAppMessage('Erreur lors de la mise à jour des mémos : ' + error.message);
+      clearMemoSelection();
+      await fetchMemos();
+      return;
+    }
+    clearMemoSelection();
+    await fetchMemos();
+  };
+
+  const setSelectedMemosArchived = async () => {
+    const selected = getSelectedMemos();
+    if (!selected.length) return;
+    const selectedIds = new Set(selected.map(memo => memo.id));
+    const targetArchived = !showMemoArchived;
+    const now = new Date().toISOString();
+
+    // Les mémos épinglés/non épinglés conservent leurs groupes respectifs.
+    const nextOrderByPinned = new Map<boolean, number>();
+    for (const pinned of [false, true]) {
+      const max = memoEntriesRef.current
+        .filter(memo => !selectedIds.has(memo.id) && memo.archived === targetArchived && memo.pinned === pinned)
+        .reduce((value, memo) => Math.max(value, Number.isFinite(memo.sort_order) ? memo.sort_order : 0), -1);
+      nextOrderByPinned.set(pinned, max + 1);
+    }
+
+    const results = await Promise.all(selected.map(memo => {
+      const order = nextOrderByPinned.get(memo.pinned) ?? 0;
+      nextOrderByPinned.set(memo.pinned, order + 1);
+      return supabase.from('memo_notes').update({
+        archived: targetArchived,
+        sort_order: order,
+        updated_at: now,
+      }).eq('id', memo.id);
+    }));
+
+    const error = results.find(result => result.error)?.error;
+    if (error) {
+      showAppMessage('Erreur lors de la mise à jour des mémos : ' + error.message);
+      clearMemoSelection();
+      await fetchMemos();
+      return;
+    }
+    clearMemoSelection();
+    await fetchMemos();
   };
 
   const transferMemoToTasks = (memo: MemoEntry) => {
@@ -4463,11 +4609,13 @@ export default function Home() {
 
   const renderMemoCard = (memo: MemoEntry) => {
     const isDragging = draggingMemoId === memo.id;
+    const isSelected = selectedMemoIds.has(memo.id);
 
     return (
       <article
         key={memo.id}
         data-memo-card-id={memo.id}
+        aria-selected={isSelected}
         onClick={() => openMemoCard(memo)}
         onPointerDown={(e) => beginMemoLongPress(e, memo)}
         onPointerMove={moveMemoLongPress}
@@ -4475,7 +4623,7 @@ export default function Home() {
         onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity,transform] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isSelected ? 'ring-2 ring-[#6F7B64] ring-offset-2 ring-offset-[#F8F5EF] shadow-md' : ''} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
           pointerEvents: isDragging ? 'none' : 'auto',
@@ -4484,6 +4632,9 @@ export default function Home() {
           WebkitTouchCallout: 'none',
         } as React.CSSProperties}
       >
+        {isSelected && (
+          <span className="absolute -top-2 -left-2 z-10 w-6 h-6 rounded-full bg-[#6F7B64] text-white border-2 border-[#F8F5EF] shadow flex items-center justify-center text-[12px] font-black">✓</span>
+        )}
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
             {memo.title && <h3 className="font-black text-[14px] leading-tight whitespace-pre-wrap break-words">{memo.title}</h3>}
@@ -5340,29 +5491,69 @@ export default function Home() {
             <div />
           </div>
 
-          <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
-            <div className="flex items-center gap-2">
-              <div className="flex-1 relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
-                <input
-                  type="text"
-                  value={memoSearch}
-                  onChange={(e) => setMemoSearch(e.target.value)}
-                  placeholder="Rechercher dans Notes, Mémos & Listes"
-                  className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
-                />
+          {selectedMemoIds.size > 0 ? (
+            <div className="bg-[#E9EDE2] border border-[#CBD3C1] rounded-[22px] p-2.5 mb-4 shadow-sm">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <button
+                  type="button"
+                  onClick={clearMemoSelection}
+                  className="w-10 h-10 flex-shrink-0 rounded-full bg-white border border-[#D3DACB] text-[#56614E] font-black text-lg shadow-sm active:scale-95"
+                  aria-label="Annuler la sélection"
+                >
+                  ×
+                </button>
+                <span className="text-sm font-black text-[#4F5A48] whitespace-nowrap mr-auto">
+                  {selectedMemoIds.size} sélectionnée{selectedMemoIds.size > 1 ? 's' : ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void setSelectedMemosPinned()}
+                  className="h-10 px-3 flex-shrink-0 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-xs font-black shadow-sm active:scale-95"
+                >
+                  {getSelectedMemos().every(memo => memo.pinned) ? '📌 Désépingler' : '📌 Épingler'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void setSelectedMemosArchived()}
+                  className="h-10 px-3 flex-shrink-0 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-xs font-black shadow-sm active:scale-95"
+                >
+                  {showMemoArchived ? '↩ Restaurer' : '📦 Archiver'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteSelectedMemos()}
+                  className="w-10 h-10 flex-shrink-0 rounded-xl bg-[#F3DEDA] border border-[#DFBBB4] text-[#94554D] font-black shadow-sm active:scale-95"
+                  aria-label="Supprimer la sélection"
+                >
+                  🗑️
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowMemoArchived(prev => !prev)}
-                className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
-              >
-                {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
-              </button>
             </div>
-          </div>
+          ) : (
+            <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
+                  <input
+                    type="text"
+                    value={memoSearch}
+                    onChange={(e) => setMemoSearch(e.target.value)}
+                    placeholder="Rechercher dans Notes, Mémos & Listes"
+                    className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMemoArchived(prev => !prev)}
+                  className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
+                >
+                  {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
+                </button>
+              </div>
+            </div>
+          )}
 
-          {!showMemoArchived && (
+          {!showMemoArchived && selectedMemoIds.size === 0 && (
             <div className="flex items-center justify-center mb-3">
               <button
                 type="button"
@@ -5376,7 +5567,7 @@ export default function Home() {
             </div>
           )}
 
-          {!showMemoArchived && !memoSearch.trim() && visibleMemos.length > 1 && (
+          {!showMemoArchived && selectedMemoIds.size === 0 && !memoSearch.trim() && visibleMemos.length > 1 && (
             <p className="text-center text-[10px] font-bold text-[#8A8175] mb-4">Maintiens une carte : elle se soulève, puis les autres glissent seulement quand tu changes réellement d'emplacement.</p>
           )}
 
@@ -5422,7 +5613,7 @@ export default function Home() {
             </div>
           )}
 
-          {draggingMemoId && (
+          {draggingMemoId && selectedMemoIds.size === 0 && (
             <div className="fixed left-1/2 -translate-x-1/2 bottom-[max(22px,env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
               <div
                 ref={memoTrashRef}
