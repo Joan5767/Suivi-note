@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface Subtask {
@@ -230,6 +230,10 @@ export default function Home() {
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
   const memoSuppressClickIdsRef = useRef<Set<string>>(new Set());
+  // Vrai FLIP : on capture les positions AVANT le changement d'ordre, puis
+  // on anime les cartes depuis leur ancienne position APRÈS le rendu React.
+  const memoPendingFlipRef = useRef<{ before: Map<string, DOMRect>; excludeId?: string } | null>(null);
+  const memoFlipAnimationsRef = useRef<Map<string, Animation>>(new Map());
 
   // Réorganisation des tâches : même logique que pour les mémos, avec en plus
   // la possibilité de déposer une tâche dans une autre priorité.
@@ -266,7 +270,88 @@ export default function Home() {
     element: HTMLElement;
   } | null>(null);
   const notesRef = useRef<Note[]>([]);
+  const taskPendingFlipRef = useRef<{ before: Map<string, DOMRect>; excludeId?: string } | null>(null);
+  const taskFlipAnimationsRef = useRef<Map<string, Animation>>(new Map());
   
+  // Animation de réorganisation façon Google Keep.
+  // L'élément est déjà dans sa nouvelle place logique, mais l'animation WAAPI
+  // le dessine d'abord à son ancienne position puis le fait glisser jusqu'à la nouvelle.
+  useLayoutEffect(() => {
+    const pending = memoPendingFlipRef.current;
+    if (!pending) return;
+    memoPendingFlipRef.current = null;
+
+    document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
+      const id = element.dataset.memoCardId;
+      if (!id || id === pending.excludeId) return;
+      const previous = pending.before.get(id);
+      if (!previous) return;
+      const next = element.getBoundingClientRect();
+      const dx = previous.left - next.left;
+      const dy = previous.top - next.top;
+      if (Math.abs(dx) < 0.75 && Math.abs(dy) < 0.75) return;
+
+      memoFlipAnimationsRef.current.get(id)?.cancel();
+      const animation = element.animate(
+        [
+          { transform: `translate3d(${dx}px, ${dy}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        {
+          duration: 285,
+          easing: 'cubic-bezier(0.20, 0.80, 0.20, 1)',
+          fill: 'none',
+        }
+      );
+      memoFlipAnimationsRef.current.set(id, animation);
+      const clear = () => {
+        if (memoFlipAnimationsRef.current.get(id) === animation) {
+          memoFlipAnimationsRef.current.delete(id);
+        }
+      };
+      animation.onfinish = clear;
+      animation.oncancel = clear;
+    });
+  }, [memoEntries]);
+
+  useLayoutEffect(() => {
+    const pending = taskPendingFlipRef.current;
+    if (!pending) return;
+    taskPendingFlipRef.current = null;
+
+    document.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach((element) => {
+      const id = element.dataset.taskCardId;
+      if (!id || id === pending.excludeId) return;
+      const previous = pending.before.get(id);
+      if (!previous) return;
+      const next = element.getBoundingClientRect();
+      const dx = previous.left - next.left;
+      const dy = previous.top - next.top;
+      if (Math.abs(dx) < 0.75 && Math.abs(dy) < 0.75) return;
+
+      taskFlipAnimationsRef.current.get(id)?.cancel();
+      const animation = element.animate(
+        [
+          { transform: `translate3d(${dx}px, ${dy}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        {
+          duration: 260,
+          easing: 'cubic-bezier(0.20, 0.80, 0.20, 1)',
+          fill: 'none',
+        }
+      );
+      taskFlipAnimationsRef.current.set(id, animation);
+      const clear = () => {
+        if (taskFlipAnimationsRef.current.get(id) === animation) {
+          taskFlipAnimationsRef.current.delete(id);
+        }
+      };
+      animation.onfinish = clear;
+      animation.oncancel = clear;
+    });
+  }, [notes]);
+
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
   const [showPopupConfig, setShowPopupConfig] = useState(false);
@@ -1556,45 +1641,6 @@ export default function Home() {
     return rects;
   };
 
-  const animateMemoLayoutFrom = (before: Map<string, DOMRect>, excludeId?: string) => {
-    // FLIP : les cartes gardent visuellement leur ancienne place puis glissent
-    // vers leur nouvelle position. Cela évite les changements secs et le
-    // sentiment de cartes qui "sautent" dans tous les sens.
-    requestAnimationFrame(() => {
-      const animated: HTMLElement[] = [];
-      document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
-        const id = element.dataset.memoCardId;
-        if (!id || id === excludeId) return;
-        const previous = before.get(id);
-        if (!previous) return;
-        const next = element.getBoundingClientRect();
-        const dx = previous.left - next.left;
-        const dy = previous.top - next.top;
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-        element.style.transition = 'none';
-        element.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
-        element.style.willChange = 'transform';
-        animated.push(element);
-      });
-
-      if (!animated.length) return;
-      // Force le navigateur à prendre en compte la position de départ.
-      void document.body.offsetHeight;
-      requestAnimationFrame(() => {
-        animated.forEach((element) => {
-          element.style.transition = 'transform 220ms cubic-bezier(0.2, 0.75, 0.25, 1), box-shadow 160ms ease, opacity 120ms ease';
-          element.style.transform = 'translate3d(0, 0, 0)';
-        });
-        window.setTimeout(() => {
-          animated.forEach((element) => {
-            element.style.transition = '';
-            element.style.transform = '';
-            element.style.willChange = '';
-          });
-        }, 255);
-      });
-    });
-  };
 
   const previewMemoReorder = (sourceId: string, targetId: string | null, insertAfter = false) => {
     const current = memoEntriesRef.current;
@@ -1625,9 +1671,11 @@ export default function Home() {
     const before = captureMemoLayout(sourceId);
     const orderMap = new Map(reordered.map((memo, index) => [memo.id, index]));
     const next = current.map(memo => orderMap.has(memo.id) ? { ...memo, sort_order: orderMap.get(memo.id)! } : memo);
+    // Important : on mémorise les anciennes coordonnées avant le setState.
+    // useLayoutEffect jouera ensuite le vrai glissement entre les deux layouts.
+    memoPendingFlipRef.current = { before, excludeId: sourceId };
     memoEntriesRef.current = next;
     setMemoEntries(next);
-    animateMemoLayoutFrom(before, sourceId);
   };
 
   const persistCurrentMemoDragGroup = async (sourceId: string) => {
@@ -1774,9 +1822,9 @@ export default function Home() {
     if (token === drag.acceptedToken) return;
 
     drag.acceptedToken = token;
-    drag.layoutLockedUntil = performance.now() + 215;
+    drag.layoutLockedUntil = performance.now() + 300;
     previewMemoReorder(drag.id, candidate.targetId, candidate.insertAfter);
-    refreshMemoDragSlotsSoon(drag, 225);
+    refreshMemoDragSlotsSoon(drag, 305);
   };
 
   const finishMemoDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
@@ -1954,40 +2002,6 @@ export default function Home() {
     return rects;
   };
 
-  const animateTaskLayoutFrom = (before: Map<string, DOMRect>, excludeId?: string) => {
-    requestAnimationFrame(() => {
-      const animated: HTMLElement[] = [];
-      document.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach((element) => {
-        const id = element.dataset.taskCardId;
-        if (!id || id === excludeId) return;
-        const previous = before.get(id);
-        if (!previous) return;
-        const next = element.getBoundingClientRect();
-        const dx = previous.left - next.left;
-        const dy = previous.top - next.top;
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-        element.style.transition = 'none';
-        element.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
-        element.style.willChange = 'transform';
-        animated.push(element);
-      });
-      if (!animated.length) return;
-      void document.body.offsetHeight;
-      requestAnimationFrame(() => {
-        animated.forEach((element) => {
-          element.style.transition = 'transform 210ms cubic-bezier(0.2, 0.75, 0.25, 1), opacity 120ms ease';
-          element.style.transform = 'translate3d(0, 0, 0)';
-        });
-        window.setTimeout(() => {
-          animated.forEach((element) => {
-            element.style.transition = '';
-            element.style.transform = '';
-            element.style.willChange = '';
-          });
-        }, 245);
-      });
-    });
-  };
 
   const captureTaskSlots = (priority: 'vert' | 'orange' | 'rouge') => {
     const slots: DragSlot[] = [];
@@ -2048,9 +2062,9 @@ export default function Home() {
     });
 
     const before = captureTaskLayout();
+    taskPendingFlipRef.current = { before, excludeId: sourceId };
     notesRef.current = next;
     setNotes(next);
-    animateTaskLayoutFrom(before, sourceId);
   };
 
   const persistTaskPriorities = async (priorities: Array<'vert' | 'orange' | 'rouge'>) => {
@@ -2192,9 +2206,9 @@ export default function Home() {
     if (token === drag.acceptedToken) return;
 
     drag.acceptedToken = token;
-    drag.layoutLockedUntil = performance.now() + 205;
+    drag.layoutLockedUntil = performance.now() + 275;
     previewTaskReorder(drag.id, drag.originalPriority, candidate.targetId, candidate.insertAfter);
-    refreshTaskDragSlotsSoon(drag, 220);
+    refreshTaskDragSlotsSoon(drag, 280);
   };
 
   const finishTaskDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
@@ -4333,7 +4347,7 @@ export default function Home() {
         onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
           pointerEvents: isDragging ? 'none' : 'auto',
@@ -4389,7 +4403,7 @@ export default function Home() {
         WebkitUserSelect: 'none',
         WebkitTouchCallout: 'none',
       } as React.CSSProperties}
-      className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-0' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
+      className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-[box-shadow,opacity,border-color,background-color] duration-150 scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-0' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
       note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
       note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
