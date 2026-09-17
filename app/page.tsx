@@ -29,7 +29,8 @@ interface Note {
   last_reminded_at?: string | null;
   last_email_reminded_at?: string | null;
   last_popup_reminded_at?: string | null;
-  created_at?: string | null; 
+  created_at?: string | null;
+  sort_order: number;
 }
 
 interface WeeklyBlock {
@@ -179,21 +180,48 @@ export default function Home() {
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
 
-  // Réorganisation des mémos façon Google Keep : appui long puis déplacement.
-  // L'ordre est aussi enregistré dans Supabase via memo_notes.sort_order.
+  // Réorganisation des mémos façon Google Keep : appui long, carte flottante,
+  // réorganisation en direct puis sauvegarde de l'ordre dans Supabase.
   const [draggingMemoId, setDraggingMemoId] = useState<string | null>(null);
   const [memoDragTargetId, setMemoDragTargetId] = useState<string | null>(null);
+  const [memoDragVisual, setMemoDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [memoGridSpans, setMemoGridSpans] = useState<Record<string, number>>({});
   const memoLongPressTimerRef = useRef<number | null>(null);
+  const memoDragLastPreviewRef = useRef('');
   const memoDragRef = useRef<{
     id: string;
     pointerId: number;
     startX: number;
     startY: number;
+    offsetX: number;
+    offsetY: number;
     active: boolean;
+    pinned: boolean;
+    archived: boolean;
     element: HTMLElement;
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
   const memoSuppressClickIdsRef = useRef<Set<string>>(new Set());
+
+  // Réorganisation des tâches : même logique que pour les mémos, avec en plus
+  // la possibilité de déposer une tâche dans une autre priorité.
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+  const [taskDragVisual, setTaskDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [taskDragHoverPriority, setTaskDragHoverPriority] = useState<'vert' | 'orange' | 'rouge' | null>(null);
+  const taskLongPressTimerRef = useRef<number | null>(null);
+  const taskDragLastPreviewRef = useRef('');
+  const taskDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    active: boolean;
+    originalPriority: 'vert' | 'orange' | 'rouge';
+    element: HTMLElement;
+  } | null>(null);
+  const notesRef = useRef<Note[]>([]);
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
@@ -1202,6 +1230,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from('notes')
       .select('*')
+      .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -1209,7 +1238,12 @@ export default function Home() {
       return false;
     }
 
-    setNotes((data || []) as Note[]);
+    const normalized = (data || []).map((row: any) => ({
+      ...row,
+      sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
+    })) as Note[];
+    notesRef.current = normalized;
+    setNotes(normalized);
     return true;
   };
 
@@ -1348,6 +1382,42 @@ export default function Home() {
     memoEntriesRef.current = memoEntries;
   }, [memoEntries]);
 
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  // Masonry sans dépendance externe : les cartes occupent un nombre de petites
+  // lignes calculé d'après leur hauteur réelle, et grid-auto-flow:dense comble
+  // les espaces comme Google Keep.
+  useEffect(() => {
+    if (mainMode !== 'memos') return;
+
+    let frame = 0;
+    const calculate = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const next: Record<string, number> = {};
+        document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
+          const id = element.dataset.memoCardId;
+          if (!id) return;
+          const height = element.getBoundingClientRect().height;
+          // 8 px de ligne + 10 px d'espace vertical.
+          next[id] = Math.max(1, Math.ceil((height + 10) / 18));
+        });
+        setMemoGridSpans(next);
+      });
+    };
+
+    calculate();
+    const timer = window.setTimeout(calculate, 80);
+    window.addEventListener('resize', calculate);
+    return () => {
+      window.clearTimeout(timer);
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', calculate);
+    };
+  }, [mainMode, memoEntries, memoSearch, showMemoArchived]);
+
   const nextMemoSortOrder = (pinned: boolean, archived: boolean, excludeId?: string) => {
     const orders = memoEntriesRef.current
       .filter(memo => memo.id !== excludeId && memo.pinned === pinned && memo.archived === archived)
@@ -1373,36 +1443,45 @@ export default function Home() {
     return true;
   };
 
-  const reorderMemoCards = async (sourceId: string, targetId: string) => {
-    if (!sourceId || !targetId || sourceId === targetId) return;
-
+  const previewMemoReorder = (sourceId: string, targetId: string | null, insertAfter = false) => {
     const current = memoEntriesRef.current;
     const source = current.find(memo => memo.id === sourceId);
-    const target = current.find(memo => memo.id === targetId);
-    if (!source || !target) return;
-
-    // Les mémos épinglés et non épinglés gardent deux zones distinctes, comme Keep.
-    // De même, on ne mélange jamais actifs et archives par un simple déplacement.
-    if (source.pinned !== target.pinned || source.archived !== target.archived) return;
+    if (!source) return;
 
     const group = current
       .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived)
       .sort((a, b) => a.sort_order - b.sort_order || String(a.updated_at || '').localeCompare(String(b.updated_at || '')));
 
-    const sourceIndex = group.findIndex(memo => memo.id === sourceId);
-    const targetIndex = group.findIndex(memo => memo.id === targetId);
-    if (sourceIndex < 0 || targetIndex < 0) return;
+    const withoutSource = group.filter(memo => memo.id !== sourceId);
+    let insertIndex = withoutSource.length;
 
-    const reordered = [...group];
-    const [moved] = reordered.splice(sourceIndex, 1);
-    reordered.splice(targetIndex, 0, moved);
+    if (targetId) {
+      const target = withoutSource.find(memo => memo.id === targetId);
+      if (!target || target.pinned !== source.pinned || target.archived !== source.archived) return;
+      const targetIndex = withoutSource.findIndex(memo => memo.id === targetId);
+      insertIndex = Math.max(0, Math.min(withoutSource.length, targetIndex + (insertAfter ? 1 : 0)));
+    }
+
+    const reordered = [...withoutSource];
+    reordered.splice(insertIndex, 0, source);
+
+    const currentIds = group.map(memo => memo.id).join('|');
+    const nextIds = reordered.map(memo => memo.id).join('|');
+    if (currentIds === nextIds) return;
 
     const orderMap = new Map(reordered.map((memo, index) => [memo.id, index]));
     const next = current.map(memo => orderMap.has(memo.id) ? { ...memo, sort_order: orderMap.get(memo.id)! } : memo);
-
     memoEntriesRef.current = next;
     setMemoEntries(next);
-    await persistMemoGroupOrder(reordered.map((memo, index) => ({ ...memo, sort_order: index })));
+  };
+
+  const persistCurrentMemoDragGroup = async (sourceId: string) => {
+    const source = memoEntriesRef.current.find(memo => memo.id === sourceId);
+    if (!source) return;
+    const group = memoEntriesRef.current
+      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    await persistMemoGroupOrder(group);
   };
 
   const clearMemoLongPressTimer = () => {
@@ -1412,28 +1491,47 @@ export default function Home() {
     }
   };
 
+  const autoScrollDuringDrag = (clientY: number) => {
+    const edge = 84;
+    if (clientY < edge) window.scrollBy({ top: -18, behavior: 'auto' });
+    else if (clientY > window.innerHeight - edge) window.scrollBy({ top: 18, behavior: 'auto' });
+  };
+
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
-    if (memoSearch.trim()) return; // En recherche, l'ordre affiché est filtré : on ne le modifie pas.
+    if (memoSearch.trim()) return;
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return;
 
     clearMemoLongPressTimer();
+    const rect = e.currentTarget.getBoundingClientRect();
     memoDragRef.current = {
       id: memo.id,
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
       active: false,
+      pinned: memo.pinned,
+      archived: memo.archived,
       element: e.currentTarget,
     };
 
     memoLongPressTimerRef.current = window.setTimeout(() => {
       const drag = memoDragRef.current;
       if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
+      const currentRect = drag.element.getBoundingClientRect();
       drag.active = true;
       memoSuppressClickIdsRef.current.add(memo.id);
+      memoDragLastPreviewRef.current = '';
       setDraggingMemoId(memo.id);
       setMemoDragTargetId(null);
+      setMemoDragVisual({
+        x: currentRect.left,
+        y: currentRect.top,
+        width: currentRect.width,
+        height: currentRect.height,
+      });
       try { drag.element.setPointerCapture(drag.pointerId); } catch (_) {}
       if ('vibrate' in navigator) navigator.vibrate(25);
     }, 380);
@@ -1445,7 +1543,6 @@ export default function Home() {
 
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
     if (!drag.active) {
-      // Un vrai geste de scroll ne doit jamais devenir un déplacement de carte.
       if (distance > 12) {
         clearMemoLongPressTimer();
         memoDragRef.current = null;
@@ -1454,21 +1551,43 @@ export default function Home() {
     }
 
     e.preventDefault();
+    autoScrollDuringDrag(e.clientY);
+    setMemoDragVisual(prev => prev ? { ...prev, x: e.clientX - drag.offsetX, y: e.clientY - drag.offsetY } : prev);
+
+    // Le vrai emplacement reste dans la grille mais devient transparent ; on le
+    // retire temporairement du hit-test pour détecter la carte située dessous.
+    const previousPointerEvents = drag.element.style.pointerEvents;
+    drag.element.style.pointerEvents = 'none';
     const beneath = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    drag.element.style.pointerEvents = previousPointerEvents;
+
     const card = beneath?.closest<HTMLElement>('[data-memo-card-id]');
     const targetId = card?.dataset.memoCardId || null;
-    if (!targetId || targetId === drag.id) {
-      setMemoDragTargetId(null);
+
+    if (targetId && targetId !== drag.id) {
+      const target = memoEntriesRef.current.find(memo => memo.id === targetId);
+      if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
+      const rect = card!.getBoundingClientRect();
+      const insertAfter = e.clientY > rect.top + rect.height / 2;
+      const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
+      setMemoDragTargetId(targetId);
+      if (memoDragLastPreviewRef.current !== token) {
+        memoDragLastPreviewRef.current = token;
+        previewMemoReorder(drag.id, targetId, insertAfter);
+      }
       return;
     }
 
-    const source = memoEntriesRef.current.find(memo => memo.id === drag.id);
-    const target = memoEntriesRef.current.find(memo => memo.id === targetId);
-    if (!source || !target || source.pinned !== target.pinned || source.archived !== target.archived) {
+    const zone = beneath?.closest<HTMLElement>('[data-memo-drop-zone]');
+    const expectedZone = `${drag.archived ? 'archived' : 'active'}-${drag.pinned ? 'pinned' : 'other'}`;
+    if (zone?.dataset.memoDropZone === expectedZone) {
+      const token = `${expectedZone}:end`;
       setMemoDragTargetId(null);
-      return;
+      if (memoDragLastPreviewRef.current !== token) {
+        memoDragLastPreviewRef.current = token;
+        previewMemoReorder(drag.id, null, true);
+      }
     }
-    setMemoDragTargetId(targetId);
   };
 
   const endMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
@@ -1482,10 +1601,11 @@ export default function Home() {
       e.stopPropagation();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       const sourceId = drag.id;
-      const targetId = memoDragTargetId;
       setDraggingMemoId(null);
       setMemoDragTargetId(null);
-      if (targetId) void reorderMemoCards(sourceId, targetId);
+      setMemoDragVisual(null);
+      memoDragLastPreviewRef.current = '';
+      void persistCurrentMemoDragGroup(sourceId);
       window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 450);
     }
   };
@@ -1500,6 +1620,261 @@ export default function Home() {
     }
     setDraggingMemoId(null);
     setMemoDragTargetId(null);
+    setMemoDragVisual(null);
+    memoDragLastPreviewRef.current = '';
+  };
+
+  // ---------- Réorganisation des tâches et changement de priorité ----------
+  const clearTaskLongPressTimer = () => {
+    if (taskLongPressTimerRef.current !== null) {
+      window.clearTimeout(taskLongPressTimerRef.current);
+      taskLongPressTimerRef.current = null;
+    }
+  };
+
+  const taskIsDragEligible = (note: Note) => {
+    if (note.completed || note.is_archived) return false;
+    const snoozed = !!note.snooze_until && getSafeTime(note.snooze_until) > currentTime;
+    return !snoozed;
+  };
+
+  const nextTaskSortOrder = (priority: 'vert' | 'orange' | 'rouge') => {
+    const orders = notesRef.current
+      .filter(note => taskIsDragEligible(note) && note.importance === priority)
+      .map(note => Number.isFinite(note.sort_order) ? note.sort_order : 0);
+    return orders.length ? Math.max(...orders) + 1 : 0;
+  };
+
+  const previewTaskReorder = (sourceId: string, targetPriority: 'vert' | 'orange' | 'rouge', targetId: string | null, insertAfter = false) => {
+    const current = notesRef.current;
+    const source = current.find(note => note.id === sourceId);
+    if (!source || !taskIsDragEligible(source)) return;
+    const originalPriority = source.importance;
+
+    const oldGroup = current
+      .filter(note => taskIsDragEligible(note) && note.importance === originalPriority && note.id !== sourceId)
+      .sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
+
+    const targetBase = current
+      .filter(note => taskIsDragEligible(note) && note.importance === targetPriority && note.id !== sourceId)
+      .sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
+
+    let insertIndex = targetBase.length;
+    if (targetId) {
+      const targetIndex = targetBase.findIndex(note => note.id === targetId);
+      if (targetIndex < 0) return;
+      insertIndex = Math.max(0, Math.min(targetBase.length, targetIndex + (insertAfter ? 1 : 0)));
+    }
+
+    const movedSource: Note = { ...source, importance: targetPriority };
+    const targetGroup = [...targetBase];
+    targetGroup.splice(insertIndex, 0, movedSource);
+
+    const patchMap = new Map<string, Partial<Note>>();
+    targetGroup.forEach((note, index) => patchMap.set(note.id, { importance: targetPriority, sort_order: index }));
+    if (originalPriority !== targetPriority) {
+      oldGroup.forEach((note, index) => patchMap.set(note.id, { sort_order: index }));
+    }
+
+    const next = current.map(note => {
+      const patch = patchMap.get(note.id);
+      return patch ? { ...note, ...patch } : note;
+    });
+
+    notesRef.current = next;
+    setNotes(next);
+  };
+
+  const persistTaskPriorities = async (priorities: Array<'vert' | 'orange' | 'rouge'>) => {
+    const unique = Array.from(new Set(priorities));
+    const updates: PromiseLike<any>[] = [];
+
+    unique.forEach(priority => {
+      const group = notesRef.current
+        .filter(note => taskIsDragEligible(note) && note.importance === priority)
+        .sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
+      group.forEach((note, index) => {
+        note.sort_order = index;
+        updates.push(
+          supabase.from('notes').update({ importance: priority, sort_order: index }).eq('id', note.id)
+        );
+      });
+    });
+
+    const results = await Promise.all(updates);
+    const failed = results.find((result: any) => result?.error);
+    if (failed?.error) {
+      showAppMessage("L'ordre des tâches n'a pas pu être enregistré : " + failed.error.message);
+      await fetchNotes();
+      return false;
+    }
+    setNotes([...notesRef.current]);
+    return true;
+  };
+
+  const taskWindowListenersRef = useRef<{
+    move: (event: PointerEvent) => void;
+    up: (event: PointerEvent) => void;
+    cancel: (event: PointerEvent) => void;
+  } | null>(null);
+
+  const detachTaskWindowListeners = () => {
+    const listeners = taskWindowListenersRef.current;
+    if (!listeners) return;
+    window.removeEventListener('pointermove', listeners.move);
+    window.removeEventListener('pointerup', listeners.up);
+    window.removeEventListener('pointercancel', listeners.cancel);
+    taskWindowListenersRef.current = null;
+  };
+
+  const processTaskDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
+    const drag = taskDragRef.current;
+    if (!drag || drag.pointerId !== pointerId || !drag.active) return;
+
+    preventDefault?.();
+    autoScrollDuringDrag(clientY);
+    setTaskDragVisual(prev => prev ? { ...prev, x: clientX - drag.offsetX, y: clientY - drag.offsetY } : prev);
+
+    const previousPointerEvents = drag.element.style.pointerEvents;
+    drag.element.style.pointerEvents = 'none';
+    const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    drag.element.style.pointerEvents = previousPointerEvents;
+
+    const card = beneath?.closest<HTMLElement>('[data-task-card-id]');
+    const zone = beneath?.closest<HTMLElement>('[data-task-priority-zone]');
+    const priorityValue = card?.dataset.taskPriority || zone?.dataset.taskPriorityZone;
+    if (priorityValue !== 'vert' && priorityValue !== 'orange' && priorityValue !== 'rouge') return;
+    const targetPriority = priorityValue as 'vert' | 'orange' | 'rouge';
+
+    setTaskDragHoverPriority(targetPriority);
+    setCollapsedPriorities(prev => ({ ...prev, [targetPriority]: false }));
+
+    const targetId = card?.dataset.taskCardId || null;
+    let insertAfter = false;
+    if (card && targetId && targetId !== drag.id) {
+      const rect = card.getBoundingClientRect();
+      insertAfter = clientY > rect.top + rect.height / 2;
+    }
+
+    const token = `${targetPriority}:${targetId || 'end'}:${insertAfter ? 'after' : 'before'}`;
+    if (taskDragLastPreviewRef.current === token) return;
+    taskDragLastPreviewRef.current = token;
+    previewTaskReorder(drag.id, targetPriority, targetId && targetId !== drag.id ? targetId : null, insertAfter);
+  };
+
+  const finishTaskDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
+    clearTaskLongPressTimer();
+    const drag = taskDragRef.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+
+    taskDragRef.current = null;
+    detachTaskWindowListeners();
+
+    if (drag.active) {
+      preventDefault?.();
+      stopPropagation?.();
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      const moved = notesRef.current.find(note => note.id === drag.id);
+      const finalPriority = moved?.importance || drag.originalPriority;
+      setDraggingTaskId(null);
+      setTaskDragVisual(null);
+      setTaskDragHoverPriority(null);
+      taskDragLastPreviewRef.current = '';
+      void persistTaskPriorities([drag.originalPriority, finalPriority]);
+    }
+  };
+
+  const cancelActiveTaskDrag = (pointerId?: number) => {
+    clearTaskLongPressTimer();
+    const drag = taskDragRef.current;
+    if (drag && pointerId !== undefined && drag.pointerId !== pointerId) return;
+    taskDragRef.current = null;
+    detachTaskWindowListeners();
+    if (drag?.active) {
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+    }
+    setDraggingTaskId(null);
+    setTaskDragVisual(null);
+    setTaskDragHoverPriority(null);
+    taskDragLastPreviewRef.current = '';
+  };
+
+  const attachTaskWindowListeners = () => {
+    detachTaskWindowListeners();
+    const move = (event: PointerEvent) => processTaskDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
+    const up = (event: PointerEvent) => finishTaskDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
+    const cancel = (event: PointerEvent) => cancelActiveTaskDrag(event.pointerId);
+    taskWindowListenersRef.current = { move, up, cancel };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+  };
+
+  const beginTaskLongPress = (e: React.PointerEvent<HTMLElement>, note: Note) => {
+    if (showArchived !== false || activeTab !== 'notes' || editingId === note.id || !taskIsDragEligible(note)) return;
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button, input, textarea, select, a, label')) return;
+
+    clearTaskLongPressTimer();
+    const rect = e.currentTarget.getBoundingClientRect();
+    taskDragRef.current = {
+      id: note.id,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      active: false,
+      originalPriority: note.importance,
+      element: e.currentTarget,
+    };
+
+    taskLongPressTimerRef.current = window.setTimeout(() => {
+      const drag = taskDragRef.current;
+      if (!drag || drag.id !== note.id || drag.pointerId !== e.pointerId) return;
+      const currentRect = drag.element.getBoundingClientRect();
+      drag.active = true;
+      taskDragLastPreviewRef.current = '';
+      setDraggingTaskId(note.id);
+      setTaskDragHoverPriority(note.importance);
+      setTaskDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
+      try { drag.element.setPointerCapture(drag.pointerId); } catch (_) {}
+      attachTaskWindowListeners();
+      if ('vibrate' in navigator) navigator.vibrate(25);
+    }, 380);
+  };
+
+  const moveTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
+    const drag = taskDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+    if (!drag.active) {
+      if (distance > 12) {
+        clearTaskLongPressTimer();
+        taskDragRef.current = null;
+      }
+      return;
+    }
+
+    processTaskDragMove(e.clientX, e.clientY, e.pointerId, () => e.preventDefault());
+  };
+
+  const endTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
+    const drag = taskDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    if (!drag.active) {
+      clearTaskLongPressTimer();
+      taskDragRef.current = null;
+      return;
+    }
+    // Le listener window conclut le déplacement. Si l'élément n'a pas été déplacé
+    // vers un autre parent React, cet appel sert seulement de secours.
+    finishTaskDrag(e.pointerId, () => e.preventDefault(), () => e.stopPropagation());
+  };
+
+  const cancelTaskLongPress = (e?: React.PointerEvent<HTMLElement>) => {
+    cancelActiveTaskDrag(e?.pointerId);
   };
 
   const openMemoCard = (memo: MemoEntry) => {
@@ -2646,6 +3021,7 @@ export default function Home() {
         daily_reminder_time: safeDailyTime,
         target_date: finalTargetDate,
         popup_active: finalPopupActive,
+        sort_order: nextTaskSortOrder(importance),
       }]);
 
       if (error) throw error;
@@ -2991,6 +3367,7 @@ export default function Home() {
         daily_reminder_time: dailyReminderTime,
         target_date: targetDateValue,
         popup_active: isPopupActive,
+        sort_order: nextTaskSortOrder(safeImportance),
       }]);
 
       if (error) throw error;
@@ -3233,6 +3610,9 @@ export default function Home() {
       target_date: finalTargetDate,
       popup_active: finalPopupActive,
       importance: editingImportance,
+      sort_order: previousNote && previousNote.importance !== editingImportance
+        ? nextTaskSortOrder(editingImportance)
+        : (previousNote?.sort_order ?? nextTaskSortOrder(editingImportance)),
       reminder_active: editingReminderActive,
       reminder_popup_active: editingReminderPopupActive,
       daily_reminder_time: safeDailyTime,
@@ -3399,12 +3779,12 @@ export default function Home() {
   };
 
   const displayedNotes = notes.filter(n => {
-    if (n.completed) return false; 
+    if (n.completed) return false;
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
     if (showArchived === true) return n.is_archived;
     if (showArchived === 'snoozed') return !n.is_archived && isSnoozed;
     return !n.is_archived && !isSnoozed;
-  });
+  }).sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
 
   const historyNotes = notes.filter(n => {
     if (!n.completed) return false;
@@ -3479,8 +3859,11 @@ export default function Home() {
         onPointerUp={endMemoLongPress}
         onPointerCancel={cancelMemoLongPress}
         onContextMenu={(e) => { if (isDragging) e.preventDefault(); }}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none self-start ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-60 scale-[0.97] shadow-lg ring-2 ring-[#819076]' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
-        style={{ touchAction: isDragging ? 'none' : 'pan-y' }}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-[0.08] shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
+        style={{
+          touchAction: isDragging ? 'none' : 'pan-y',
+          gridRowEnd: `span ${memoGridSpans[memo.id] || 10}`,
+        }}
       >
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
@@ -3506,17 +3889,23 @@ export default function Home() {
           </div>
         )}
 
-        {isDragging && (
-          <div className="absolute inset-x-0 -bottom-7 mx-auto w-max max-w-[90%] rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg z-30">
-            Déplace puis relâche
-          </div>
-        )}
       </article>
     );
   };
 
   const renderNoteItem = (note: Note) => (
-    <li id={`note-${note.id}`} key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
+    <li
+      id={`note-${note.id}`}
+      key={note.id}
+      data-task-card-id={note.id}
+      data-task-priority={note.importance}
+      onPointerDown={(e) => beginTaskLongPress(e, note)}
+      onPointerMove={moveTaskLongPress}
+      onPointerUp={endTaskLongPress}
+      onPointerCancel={cancelTaskLongPress}
+      onContextMenu={(e) => { if (draggingTaskId === note.id) e.preventDefault(); }}
+      style={{ touchAction: draggingTaskId === note.id ? 'none' : 'pan-y' }}
+      className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-[0.08]' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
       note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
       note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
@@ -4381,7 +4770,11 @@ export default function Home() {
               {pinnedMemos.length > 0 && (
                 <section>
                   <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Épinglés</div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 items-start">
+                  <div
+                    data-memo-drop-zone={`${showMemoArchived ? 'archived' : 'active'}-pinned`}
+                    className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
+                    style={{ gridAutoRows: '8px', gridAutoFlow: 'dense', columnGap: '10px', rowGap: '10px' }}
+                  >
                     {pinnedMemos.map(renderMemoCard)}
                   </div>
                 </section>
@@ -4390,13 +4783,54 @@ export default function Home() {
               {otherMemos.length > 0 && (
                 <section>
                   {pinnedMemos.length > 0 && <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Autres</div>}
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 items-start">
+                  <div
+                    data-memo-drop-zone={`${showMemoArchived ? 'archived' : 'active'}-other`}
+                    className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
+                    style={{ gridAutoRows: '8px', gridAutoFlow: 'dense', columnGap: '10px', rowGap: '10px' }}
+                  >
                     {otherMemos.map(renderMemoCard)}
                   </div>
                 </section>
               )}
             </div>
           )}
+
+          {draggingMemoId && memoDragVisual && (() => {
+            const memo = memoEntries.find(item => item.id === draggingMemoId);
+            if (!memo) return null;
+            return (
+              <div
+                className={`fixed z-[12850] pointer-events-none rounded-[18px] border p-3 shadow-2xl scale-[1.035] ${memoColorClasses(memo.color)}`}
+                style={{
+                  left: memoDragVisual.x,
+                  top: memoDragVisual.y,
+                  width: memoDragVisual.width,
+                  maxHeight: Math.max(memoDragVisual.height, 72),
+                }}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    {memo.title && <h3 className="font-black text-[14px] leading-tight whitespace-pre-wrap break-words">{memo.title}</h3>}
+                    {memo.content && <p className="text-[12px] mt-1.5 whitespace-pre-wrap leading-[1.35] opacity-85 break-words line-clamp-6">{memo.content}</p>}
+                  </div>
+                  {memo.pinned && <span className="text-xs flex-shrink-0">📌</span>}
+                </div>
+                {memo.memo_type === 'list' && memo.items.length > 0 && (
+                  <div className="mt-2.5 flex flex-col gap-1">
+                    {memo.items.slice(0, 6).map(item => (
+                      <div key={item.id} className="flex items-start gap-1.5 text-[11px] font-semibold leading-tight">
+                        <span className="mt-[-1px] flex-shrink-0 opacity-70">{item.completed ? '☑' : '☐'}</span>
+                        <span className={`break-words ${item.completed ? 'line-through opacity-45' : ''}`}>{item.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg">
+                  Relâche pour placer
+                </div>
+              </div>
+            );
+          })()}
 
           {memoEditorOpen && (
             <div
@@ -5489,9 +5923,17 @@ export default function Home() {
                   </ul>
                 </div>
               ) : (
-                <div className={`grid items-start gap-4 grid-cols-1 lg:grid-cols-3`}>
+                <>
+                  {displayedNotes.length > 1 && (
+                    <p className="text-center text-[10px] font-bold text-[#8A8175] mb-3">Maintiens une tâche puis déplace-la pour changer son ordre ou sa priorité.</p>
+                  )}
+                  <div className={`grid items-start gap-4 grid-cols-1 lg:grid-cols-3`}>
                   {columns.map((col) => (
-                    <div key={col.id} className="flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border border-[#E1D9CE]">
+                    <div
+                      key={col.id}
+                      data-task-priority-zone={col.id}
+                      className={`flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border transition-all ${taskDragHoverPriority === col.id ? 'border-[#8E9D80] ring-2 ring-[#B9C5AD] bg-[#F3F6EF]' : 'border-[#E1D9CE]'}`}
+                    >
                       <button type="button" onClick={() => setCollapsedPriorities(prev => ({
                         rouge: true,
                         orange: true,
@@ -5506,7 +5948,33 @@ export default function Home() {
                       )}
                     </div>
                   ))}
-                </div>
+                  </div>
+
+                  {draggingTaskId && taskDragVisual && (() => {
+                    const task = notes.find(item => item.id === draggingTaskId);
+                    if (!task) return null;
+                    const palette = task.importance === 'rouge'
+                      ? 'border-[#D5A195] bg-[#FAECE7]'
+                      : task.importance === 'orange'
+                        ? 'border-[#D6B384] bg-[#F6EAD9]'
+                        : 'border-[#AAB99D] bg-[#EDF1E7]';
+                    return (
+                      <div
+                        className={`fixed z-[12860] pointer-events-none rounded-xl border-l-4 border p-3 shadow-2xl scale-[1.025] ${palette}`}
+                        style={{ left: taskDragVisual.x, top: taskDragVisual.y, width: taskDragVisual.width }}
+                      >
+                        <div className="text-[10px] font-black uppercase tracking-wide opacity-60 mb-1">
+                          {task.importance === 'rouge' ? '🔴 Urgente' : task.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'}
+                        </div>
+                        <div className="font-black text-sm text-[#443F39] break-words">{task.title || '(Sans titre)'}</div>
+                        {task.content && <div className="text-xs mt-1 text-[#6A6258] line-clamp-3 whitespace-pre-wrap">{task.content}</div>}
+                        <div className="absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg">
+                          Relâche pour placer
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
 
               <div className="mt-12 mb-8 text-center">
