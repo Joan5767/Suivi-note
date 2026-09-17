@@ -195,11 +195,16 @@ export default function Home() {
     pointerId: number;
     startX: number;
     startY: number;
+    lastX: number;
+    lastY: number;
     offsetX: number;
     offsetY: number;
     active: boolean;
     pinned: boolean;
     archived: boolean;
+    originRect: { left: number; top: number; right: number; bottom: number };
+    reorderUnlocked: boolean;
+    lastReorderAt: number;
     element: HTMLElement;
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
@@ -218,10 +223,15 @@ export default function Home() {
     pointerId: number;
     startX: number;
     startY: number;
+    lastX: number;
+    lastY: number;
     offsetX: number;
     offsetY: number;
     active: boolean;
     originalPriority: 'vert' | 'orange' | 'rouge';
+    originRect: { left: number; top: number; right: number; bottom: number };
+    reorderUnlocked: boolean;
+    lastReorderAt: number;
     element: HTMLElement;
   } | null>(null);
   const notesRef = useRef<Note[]>([]);
@@ -1563,6 +1573,7 @@ export default function Home() {
     move: (event: PointerEvent) => void;
     up: (event: PointerEvent) => void;
     cancel: (event: PointerEvent) => void;
+    touchMove: (event: TouchEvent) => void;
   } | null>(null);
 
   const detachMemoWindowListeners = () => {
@@ -1571,6 +1582,7 @@ export default function Home() {
     window.removeEventListener('pointermove', listeners.move);
     window.removeEventListener('pointerup', listeners.up);
     window.removeEventListener('pointercancel', listeners.cancel);
+    window.removeEventListener('touchmove', listeners.touchMove);
     memoWindowListenersRef.current = null;
   };
 
@@ -1580,9 +1592,31 @@ export default function Home() {
 
     preventDefault?.();
     autoScrollDuringDrag(clientY);
+    drag.lastX = clientX;
+    drag.lastY = clientY;
+
     if (memoGhostRef.current) {
       memoGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
       memoGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+    }
+
+    // Au moment où la carte se soulève, son emplacement reste figé.
+    // Les autres cartes ne commencent à se réorganiser que lorsque le doigt
+    // quitte réellement la case d'origine, comme dans Google Keep.
+    if (!drag.reorderUnlocked) {
+      const margin = 10;
+      const insideOrigin =
+        clientX >= drag.originRect.left - margin &&
+        clientX <= drag.originRect.right + margin &&
+        clientY >= drag.originRect.top - margin &&
+        clientY <= drag.originRect.bottom + margin;
+      if (insideOrigin) {
+        setMemoDragTargetId(null);
+        return;
+      }
+      drag.reorderUnlocked = true;
+      drag.lastReorderAt = 0;
+      memoDragLastPreviewRef.current = '';
     }
 
     const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
@@ -1613,11 +1647,16 @@ export default function Home() {
       const target = memoEntriesRef.current.find(memo => memo.id === targetId);
       if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
       const rect = card!.getBoundingClientRect();
-      const insertAfter = clientY > rect.top + rect.height / 2;
+      const midpoint = rect.top + rect.height / 2;
+      const deadZone = Math.min(10, Math.max(5, rect.height * 0.08));
+      if (Math.abs(clientY - midpoint) <= deadZone) return;
+      const insertAfter = clientY > midpoint;
       const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
       setMemoDragTargetId(prev => prev === targetId ? prev : targetId);
-      if (memoDragLastPreviewRef.current !== token) {
+      const now = performance.now();
+      if (memoDragLastPreviewRef.current !== token && now - drag.lastReorderAt >= 75) {
         memoDragLastPreviewRef.current = token;
+        drag.lastReorderAt = now;
         previewMemoReorder(drag.id, targetId, insertAfter);
       }
       return;
@@ -1628,8 +1667,10 @@ export default function Home() {
     if (zone?.dataset.memoDropZone === expectedZone) {
       const token = `${expectedZone}:end`;
       setMemoDragTargetId(null);
-      if (memoDragLastPreviewRef.current !== token) {
+      const now = performance.now();
+      if (memoDragLastPreviewRef.current !== token && now - drag.lastReorderAt >= 75) {
         memoDragLastPreviewRef.current = token;
+        drag.lastReorderAt = now;
         previewMemoReorder(drag.id, null, true);
       }
     }
@@ -1660,10 +1701,14 @@ export default function Home() {
     const move = (event: PointerEvent) => processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     const up = (event: PointerEvent) => finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
     const cancel = (event: PointerEvent) => cancelMemoLongPress(event.pointerId);
-    memoWindowListenersRef.current = { move, up, cancel };
+    const touchMove = (event: TouchEvent) => {
+      if (memoDragRef.current?.active && event.cancelable) event.preventDefault();
+    };
+    memoWindowListenersRef.current = { move, up, cancel, touchMove };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', cancel);
+    window.addEventListener('touchmove', touchMove, { passive: false });
   };
 
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
@@ -1678,11 +1723,16 @@ export default function Home() {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
       offsetX: e.clientX - rect.left,
       offsetY: e.clientY - rect.top,
       active: false,
       pinned: memo.pinned,
       archived: memo.archived,
+      originRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      reorderUnlocked: false,
+      lastReorderAt: 0,
       element: e.currentTarget,
     };
 
@@ -1699,11 +1749,15 @@ export default function Home() {
       memoDragLastPreviewRef.current = '';
       setDraggingMemoId(memo.id);
       setMemoDragTargetId(null);
+      drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
+      drag.reorderUnlocked = false;
+      drag.lastReorderAt = 0;
       setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      // On conserve la capture du pointeur pendant tout le drag. Cela évite de
+      // perdre le doigt lors d'un déplacement rapide sur mobile.
       attachMemoWindowListeners();
-      if ('vibrate' in navigator) navigator.vibrate(20);
-    }, 320);
+      if ('vibrate' in navigator) navigator.vibrate(16);
+    }, 240);
   };
 
   const moveMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
@@ -1714,8 +1768,10 @@ export default function Home() {
     // double traitement pointermove qui causait des sauts.
     if (drag.active) return;
 
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (distance > 22) {
+    if (distance > 36) {
       clearMemoLongPressTimer();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       memoDragRef.current = null;
@@ -1839,6 +1895,7 @@ export default function Home() {
     move: (event: PointerEvent) => void;
     up: (event: PointerEvent) => void;
     cancel: (event: PointerEvent) => void;
+    touchMove: (event: TouchEvent) => void;
   } | null>(null);
 
   const detachTaskWindowListeners = () => {
@@ -1847,6 +1904,7 @@ export default function Home() {
     window.removeEventListener('pointermove', listeners.move);
     window.removeEventListener('pointerup', listeners.up);
     window.removeEventListener('pointercancel', listeners.cancel);
+    window.removeEventListener('touchmove', listeners.touchMove);
     taskWindowListenersRef.current = null;
   };
 
@@ -1856,9 +1914,27 @@ export default function Home() {
 
     preventDefault?.();
     autoScrollDuringDrag(clientY);
+    drag.lastX = clientX;
+    drag.lastY = clientY;
+
     if (taskGhostRef.current) {
       taskGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
       taskGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+    }
+
+    // Comme pour les mémos, la tâche se soulève d'abord sans déplacer la liste.
+    // La réorganisation ne démarre qu'une fois la zone d'origine quittée.
+    if (!drag.reorderUnlocked) {
+      const margin = 8;
+      const insideOrigin =
+        clientX >= drag.originRect.left - margin &&
+        clientX <= drag.originRect.right + margin &&
+        clientY >= drag.originRect.top - margin &&
+        clientY <= drag.originRect.bottom + margin;
+      if (insideOrigin) return;
+      drag.reorderUnlocked = true;
+      drag.lastReorderAt = 0;
+      taskDragLastPreviewRef.current = '';
     }
 
     const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
@@ -1894,12 +1970,18 @@ export default function Home() {
     let insertAfter = false;
     if (card && targetId && targetId !== drag.id) {
       const rect = card.getBoundingClientRect();
-      insertAfter = clientY > rect.top + rect.height / 2;
+      const midpoint = rect.top + rect.height / 2;
+      const deadZone = Math.min(12, Math.max(6, rect.height * 0.08));
+      if (Math.abs(clientY - midpoint) <= deadZone) return;
+      insertAfter = clientY > midpoint;
     }
 
     const token = `${targetPriority}:${targetId || 'end'}:${insertAfter ? 'after' : 'before'}`;
     if (taskDragLastPreviewRef.current === token) return;
+    const now = performance.now();
+    if (now - drag.lastReorderAt < 80) return;
     taskDragLastPreviewRef.current = token;
+    drag.lastReorderAt = now;
     previewTaskReorder(drag.id, targetPriority, targetId && targetId !== drag.id ? targetId : null, insertAfter);
   };
 
@@ -1945,10 +2027,14 @@ export default function Home() {
     const move = (event: PointerEvent) => processTaskDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     const up = (event: PointerEvent) => finishTaskDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
     const cancel = (event: PointerEvent) => cancelActiveTaskDrag(event.pointerId);
-    taskWindowListenersRef.current = { move, up, cancel };
+    const touchMove = (event: TouchEvent) => {
+      if (taskDragRef.current?.active && event.cancelable) event.preventDefault();
+    };
+    taskWindowListenersRef.current = { move, up, cancel, touchMove };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', cancel);
+    window.addEventListener('touchmove', touchMove, { passive: false });
   };
 
   const beginTaskLongPress = (e: React.PointerEvent<HTMLElement>, note: Note) => {
@@ -1963,10 +2049,15 @@ export default function Home() {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
       offsetX: e.clientX - rect.left,
       offsetY: e.clientY - rect.top,
       active: false,
       originalPriority: note.importance,
+      originRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      reorderUnlocked: false,
+      lastReorderAt: 0,
       element: e.currentTarget,
     };
 
@@ -1980,11 +2071,15 @@ export default function Home() {
       taskDragLastPreviewRef.current = '';
       setDraggingTaskId(note.id);
       setTaskDragHoverPriority(note.importance);
+      drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
+      drag.reorderUnlocked = false;
+      drag.lastReorderAt = 0;
       setTaskDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      // Conserver la capture rend le suivi beaucoup plus fiable lors d'un
+      // déplacement rapide du doigt sur Android.
       attachTaskWindowListeners();
-      if ('vibrate' in navigator) navigator.vibrate(20);
-    }, 320);
+      if ('vibrate' in navigator) navigator.vibrate(16);
+    }, 240);
   };
 
   const moveTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
@@ -1993,8 +2088,10 @@ export default function Home() {
 
     if (drag.active) return; // déplacement géré uniquement par window
 
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (distance > 22) {
+    if (distance > 36) {
       clearTaskLongPressTimer();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       taskDragRef.current = null;
@@ -3999,7 +4096,7 @@ export default function Home() {
         onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-[0.08] shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
           pointerEvents: isDragging ? 'none' : 'auto',
@@ -4055,7 +4152,7 @@ export default function Home() {
         WebkitUserSelect: 'none',
         WebkitTouchCallout: 'none',
       } as React.CSSProperties}
-      className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-[0.08]' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
+      className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 select-none ${draggingTaskId === note.id ? 'opacity-0' : ''} ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
       showArchived === true ? 'border-[#D6D0C7] bg-[#F3F0EA]' : 
       note.importance === 'rouge' ? 'border-[#D5A195] bg-[#FAECE7]' : 
       note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
