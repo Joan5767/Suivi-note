@@ -208,6 +208,8 @@ export default function Home() {
   const memoDragRef = useRef<{
     id: string;
     pointerId: number;
+    pointerType: string;
+    pointerCancelled: boolean;
     startX: number;
     startY: number;
     lastX: number;
@@ -1708,6 +1710,8 @@ export default function Home() {
     up: (event: PointerEvent) => void;
     cancel: (event: PointerEvent) => void;
     touchMove: (event: TouchEvent) => void;
+    touchEnd: (event: TouchEvent) => void;
+    touchCancel: (event: TouchEvent) => void;
   } | null>(null);
 
   const detachMemoWindowListeners = () => {
@@ -1717,6 +1721,8 @@ export default function Home() {
     window.removeEventListener('pointerup', listeners.up);
     window.removeEventListener('pointercancel', listeners.cancel);
     window.removeEventListener('touchmove', listeners.touchMove);
+    window.removeEventListener('touchend', listeners.touchEnd);
+    window.removeEventListener('touchcancel', listeners.touchCancel);
     memoWindowListenersRef.current = null;
   };
 
@@ -1778,7 +1784,33 @@ export default function Home() {
     const trash = memoTrashRef.current;
     if (!trash) return false;
     const rect = trash.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+
+    // Zone volontairement un peu plus généreuse sur mobile. La suppression est
+    // considérée comme ciblée soit lorsque le doigt entre dans la poubelle, soit
+    // lorsque la carte flottante la recouvre nettement. Cela évite d'avoir à
+    // descendre le doigt jusqu'au dernier pixel de l'écran.
+    const marginX = 18;
+    const marginY = 14;
+    const fingerInside =
+      clientX >= rect.left - marginX &&
+      clientX <= rect.right + marginX &&
+      clientY >= rect.top - marginY &&
+      clientY <= rect.bottom + marginY;
+    if (fingerInside) return true;
+
+    const drag = memoDragRef.current;
+    if (!drag?.active) return false;
+    const ghostLeft = clientX - drag.offsetX;
+    const ghostTop = clientY - drag.offsetY;
+    const ghostWidth = drag.originRect.right - drag.originRect.left;
+    const ghostHeight = drag.originRect.bottom - drag.originRect.top;
+    const ghostRight = ghostLeft + ghostWidth;
+    const ghostBottom = ghostTop + ghostHeight;
+    const overlapX = Math.max(0, Math.min(ghostRight, rect.right) - Math.max(ghostLeft, rect.left));
+    const overlapY = Math.max(0, Math.min(ghostBottom, rect.bottom) - Math.max(ghostTop, rect.top));
+    const overlapArea = overlapX * overlapY;
+    const ghostArea = Math.max(1, ghostWidth * ghostHeight);
+    return overlapArea / ghostArea >= 0.18;
   };
 
   const processMemoDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
@@ -1874,7 +1906,7 @@ export default function Home() {
         memoEntriesRef.current = drag.originalEntries;
         setMemoEntries(drag.originalEntries);
         window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 500);
-        deleteMemo(sourceMemo);
+        void deleteMemoImmediately(sourceMemo);
         return;
       }
 
@@ -1885,17 +1917,54 @@ export default function Home() {
 
   const attachMemoWindowListeners = () => {
     detachMemoWindowListeners();
-    const move = (event: PointerEvent) => processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
-    const up = (event: PointerEvent) => finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
-    const cancel = (event: PointerEvent) => cancelMemoLongPress(event.pointerId);
-    const touchMove = (event: TouchEvent) => {
-      if (memoDragRef.current?.active && event.cancelable) event.preventDefault();
+    const move = (event: PointerEvent) => {
+      const drag = memoDragRef.current;
+      if (!drag || drag.pointerCancelled) return;
+      processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     };
-    memoWindowListenersRef.current = { move, up, cancel, touchMove };
+    const up = (event: PointerEvent) => {
+      const drag = memoDragRef.current;
+      if (!drag || drag.pointerCancelled) return;
+      finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
+    };
+    const cancel = (event: PointerEvent) => {
+      const drag = memoDragRef.current;
+      if (drag?.active && drag.pointerId === event.pointerId && drag.pointerType === 'touch') {
+        // Android/Chrome peut annuler le flux PointerEvent dès qu'un long drag vertical
+        // ressemble à un scroll. On garde alors le drag vivant avec les TouchEvents
+        // jusqu'au vrai touchend, ce qui permet de partir d'une carte tout en haut
+        // et d'atteindre la poubelle en bas sans relâchement prématuré.
+        drag.pointerCancelled = true;
+        return;
+      }
+      cancelMemoLongPress(event.pointerId);
+    };
+    const touchMove = (event: TouchEvent) => {
+      const drag = memoDragRef.current;
+      if (!drag?.active) return;
+      if (event.cancelable) event.preventDefault();
+      if (!drag.pointerCancelled || event.touches.length === 0) return;
+      const touch = event.touches[0];
+      processMemoDragMove(touch.clientX, touch.clientY, drag.pointerId);
+    };
+    const touchEnd = (event: TouchEvent) => {
+      const drag = memoDragRef.current;
+      if (!drag?.active || !drag.pointerCancelled) return;
+      if (event.cancelable) event.preventDefault();
+      finishMemoDrag(drag.pointerId);
+    };
+    const touchCancel = () => {
+      const drag = memoDragRef.current;
+      if (!drag) return;
+      cancelMemoLongPress(drag.pointerId);
+    };
+    memoWindowListenersRef.current = { move, up, cancel, touchMove, touchEnd, touchCancel };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', cancel);
     window.addEventListener('touchmove', touchMove, { passive: false });
+    window.addEventListener('touchend', touchEnd, { passive: false });
+    window.addEventListener('touchcancel', touchCancel);
   };
 
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
@@ -1908,6 +1977,8 @@ export default function Home() {
     memoDragRef.current = {
       id: memo.id,
       pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      pointerCancelled: false,
       startX: e.clientX,
       startY: e.clientY,
       lastX: e.clientX,
@@ -2514,6 +2585,25 @@ export default function Home() {
     }
 
     await fetchMemos();
+    return true;
+  };
+
+  const deleteMemoImmediately = async (memo: MemoEntry) => {
+    // Suppression par glisser-déposer vers la poubelle : volontairement directe,
+    // sans confirmation. On retire la carte immédiatement pour garder un geste
+    // fluide, puis on restaure l'état si Supabase renvoie une erreur.
+    const previousEntries = memoEntriesRef.current;
+    const nextEntries = previousEntries.filter(item => item.id !== memo.id);
+    memoEntriesRef.current = nextEntries;
+    setMemoEntries(nextEntries);
+
+    const { error } = await supabase.from('memo_notes').delete().eq('id', memo.id);
+    if (error) {
+      memoEntriesRef.current = previousEntries;
+      setMemoEntries(previousEntries);
+      showAppMessage('Erreur lors de la suppression du mémo : ' + error.message);
+      return false;
+    }
     return true;
   };
 
