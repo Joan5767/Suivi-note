@@ -82,6 +82,7 @@ interface MemoEntry {
   color: MemoColor;
   pinned: boolean;
   archived: boolean;
+  sort_order: number;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -177,6 +178,22 @@ export default function Home() {
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+
+  // Réorganisation des mémos façon Google Keep : appui long puis déplacement.
+  // L'ordre est aussi enregistré dans Supabase via memo_notes.sort_order.
+  const [draggingMemoId, setDraggingMemoId] = useState<string | null>(null);
+  const [memoDragTargetId, setMemoDragTargetId] = useState<string | null>(null);
+  const memoLongPressTimerRef = useRef<number | null>(null);
+  const memoDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+    element: HTMLElement;
+  } | null>(null);
+  const memoEntriesRef = useRef<MemoEntry[]>([]);
+  const memoSuppressClickIdsRef = useRef<Set<string>>(new Set());
   
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sendImmediateEmail, setSendImmediateEmail] = useState(false);
@@ -237,7 +254,7 @@ export default function Home() {
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
-  const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai'>('none');
+  const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai' | 'memo_title' | 'memo_content' | 'memo_item'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiProposal, setAiProposal] = useState<AiProposal | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -919,6 +936,19 @@ export default function Home() {
       setShowExportModal(false);
       setShowExportHelp(false);
       setShowNotesHelp(false);
+
+      // Un volet de paramétrage ne doit pas rester ouvert après avoir quitté
+      // Tâches & Rappels puis y être revenu. On replie uniquement l'interface :
+      // les valeurs saisies du brouillon restent conservées.
+      setShowAdvancedSettings(false);
+      setShowPopupConfig(false);
+      setShowDailyConfig(false);
+      setShowCalendarConfig(false);
+      setShowEditingAdvancedSettings(false);
+      setShowEditingPopupConfig(false);
+      setShowEditingDailyConfig(false);
+      setShowEditingExactDateConfig(false);
+
       setMemoEditorOpen(false);
 
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
@@ -1227,6 +1257,7 @@ export default function Home() {
     color: ['sage', 'sand', 'rose', 'blue', 'lavender', 'white'].includes(row?.color) ? row.color : 'sage',
     pinned: Boolean(row?.pinned),
     archived: Boolean(row?.archived),
+    sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
     created_at: typeof row?.created_at === 'string' ? row.created_at : null,
     updated_at: typeof row?.updated_at === 'string' ? row.updated_at : null,
   });
@@ -1236,6 +1267,7 @@ export default function Home() {
       .from('memo_notes')
       .select('*')
       .order('pinned', { ascending: false })
+      .order('sort_order', { ascending: true, nullsFirst: false })
       .order('updated_at', { ascending: false });
 
     if (error) {
@@ -1243,7 +1275,9 @@ export default function Home() {
       return false;
     }
 
-    setMemoEntries((data || []).map(normalizeMemoEntry));
+    const normalized = (data || []).map(normalizeMemoEntry);
+    memoEntriesRef.current = normalized;
+    setMemoEntries(normalized);
     return true;
   };
 
@@ -1309,6 +1343,170 @@ export default function Home() {
   };
 
 
+
+  useEffect(() => {
+    memoEntriesRef.current = memoEntries;
+  }, [memoEntries]);
+
+  const nextMemoSortOrder = (pinned: boolean, archived: boolean, excludeId?: string) => {
+    const orders = memoEntriesRef.current
+      .filter(memo => memo.id !== excludeId && memo.pinned === pinned && memo.archived === archived)
+      .map(memo => Number.isFinite(memo.sort_order) ? memo.sort_order : 0);
+    return orders.length ? Math.max(...orders) + 1 : 0;
+  };
+
+  const persistMemoGroupOrder = async (orderedGroup: MemoEntry[]) => {
+    const updates = orderedGroup.map((memo, index) =>
+      supabase
+        .from('memo_notes')
+        .update({ sort_order: index })
+        .eq('id', memo.id)
+    );
+
+    const results = await Promise.all(updates);
+    const failed = results.find(result => result.error);
+    if (failed?.error) {
+      showAppMessage("L'ordre a été modifié à l'écran mais n'a pas pu être enregistré : " + failed.error.message);
+      await fetchMemos();
+      return false;
+    }
+    return true;
+  };
+
+  const reorderMemoCards = async (sourceId: string, targetId: string) => {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+
+    const current = memoEntriesRef.current;
+    const source = current.find(memo => memo.id === sourceId);
+    const target = current.find(memo => memo.id === targetId);
+    if (!source || !target) return;
+
+    // Les mémos épinglés et non épinglés gardent deux zones distinctes, comme Keep.
+    // De même, on ne mélange jamais actifs et archives par un simple déplacement.
+    if (source.pinned !== target.pinned || source.archived !== target.archived) return;
+
+    const group = current
+      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived)
+      .sort((a, b) => a.sort_order - b.sort_order || String(a.updated_at || '').localeCompare(String(b.updated_at || '')));
+
+    const sourceIndex = group.findIndex(memo => memo.id === sourceId);
+    const targetIndex = group.findIndex(memo => memo.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const reordered = [...group];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    const orderMap = new Map(reordered.map((memo, index) => [memo.id, index]));
+    const next = current.map(memo => orderMap.has(memo.id) ? { ...memo, sort_order: orderMap.get(memo.id)! } : memo);
+
+    memoEntriesRef.current = next;
+    setMemoEntries(next);
+    await persistMemoGroupOrder(reordered.map((memo, index) => ({ ...memo, sort_order: index })));
+  };
+
+  const clearMemoLongPressTimer = () => {
+    if (memoLongPressTimerRef.current !== null) {
+      window.clearTimeout(memoLongPressTimerRef.current);
+      memoLongPressTimerRef.current = null;
+    }
+  };
+
+  const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
+    if (memoSearch.trim()) return; // En recherche, l'ordre affiché est filtré : on ne le modifie pas.
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return;
+
+    clearMemoLongPressTimer();
+    memoDragRef.current = {
+      id: memo.id,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      element: e.currentTarget,
+    };
+
+    memoLongPressTimerRef.current = window.setTimeout(() => {
+      const drag = memoDragRef.current;
+      if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
+      drag.active = true;
+      memoSuppressClickIdsRef.current.add(memo.id);
+      setDraggingMemoId(memo.id);
+      setMemoDragTargetId(null);
+      try { drag.element.setPointerCapture(drag.pointerId); } catch (_) {}
+      if ('vibrate' in navigator) navigator.vibrate(25);
+    }, 380);
+  };
+
+  const moveMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
+    const drag = memoDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+    if (!drag.active) {
+      // Un vrai geste de scroll ne doit jamais devenir un déplacement de carte.
+      if (distance > 12) {
+        clearMemoLongPressTimer();
+        memoDragRef.current = null;
+      }
+      return;
+    }
+
+    e.preventDefault();
+    const beneath = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const card = beneath?.closest<HTMLElement>('[data-memo-card-id]');
+    const targetId = card?.dataset.memoCardId || null;
+    if (!targetId || targetId === drag.id) {
+      setMemoDragTargetId(null);
+      return;
+    }
+
+    const source = memoEntriesRef.current.find(memo => memo.id === drag.id);
+    const target = memoEntriesRef.current.find(memo => memo.id === targetId);
+    if (!source || !target || source.pinned !== target.pinned || source.archived !== target.archived) {
+      setMemoDragTargetId(null);
+      return;
+    }
+    setMemoDragTargetId(targetId);
+  };
+
+  const endMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
+    clearMemoLongPressTimer();
+    const drag = memoDragRef.current;
+    memoDragRef.current = null;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    if (drag.active) {
+      e.preventDefault();
+      e.stopPropagation();
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      const sourceId = drag.id;
+      const targetId = memoDragTargetId;
+      setDraggingMemoId(null);
+      setMemoDragTargetId(null);
+      if (targetId) void reorderMemoCards(sourceId, targetId);
+      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 450);
+    }
+  };
+
+  const cancelMemoLongPress = (e?: React.PointerEvent<HTMLElement>) => {
+    clearMemoLongPressTimer();
+    const drag = memoDragRef.current;
+    memoDragRef.current = null;
+    if (drag?.active) {
+      try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
+      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(drag.id), 450);
+    }
+    setDraggingMemoId(null);
+    setMemoDragTargetId(null);
+  };
+
+  const openMemoCard = (memo: MemoEntry) => {
+    if (memoSuppressClickIdsRef.current.has(memo.id)) return;
+    openMemoEditor(memo);
+  };
+
   const resetMemoDraft = (type: 'text' | 'list' = 'text') => {
     setEditingMemoId(null);
     setMemoDraftType(type);
@@ -1358,6 +1556,13 @@ export default function Home() {
 
     setLoading(true);
     try {
+      const existingMemo = editingMemoId ? memoEntriesRef.current.find(memo => memo.id === editingMemoId) : null;
+      const targetArchived = existingMemo?.archived ?? false;
+      const keepExistingOrder = existingMemo && existingMemo.pinned === memoDraftPinned;
+      const sortOrder = keepExistingOrder
+        ? existingMemo.sort_order
+        : nextMemoSortOrder(memoDraftPinned, targetArchived, editingMemoId || undefined);
+
       const payload = {
         title,
         content,
@@ -1365,6 +1570,7 @@ export default function Home() {
         items,
         color: memoDraftColor,
         pinned: memoDraftPinned,
+        sort_order: sortOrder,
         updated_at: new Date().toISOString(),
       };
 
@@ -1385,10 +1591,22 @@ export default function Home() {
     }
   };
 
-  const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items'>>) => {
+  const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items' | 'sort_order'>>) => {
+    const currentMemo = memoEntriesRef.current.find(memo => memo.id === id);
+    const nextPayload: Partial<MemoEntry> = { ...payload };
+
+    if (currentMemo && (
+      (typeof payload.pinned === 'boolean' && payload.pinned !== currentMemo.pinned) ||
+      (typeof payload.archived === 'boolean' && payload.archived !== currentMemo.archived)
+    )) {
+      const nextPinned = typeof payload.pinned === 'boolean' ? payload.pinned : currentMemo.pinned;
+      const nextArchived = typeof payload.archived === 'boolean' ? payload.archived : currentMemo.archived;
+      nextPayload.sort_order = nextMemoSortOrder(nextPinned, nextArchived, id);
+    }
+
     const { error } = await supabase
       .from('memo_notes')
-      .update({ ...payload, updated_at: new Date().toISOString() })
+      .update({ ...nextPayload, updated_at: new Date().toISOString() })
       .eq('id', id);
 
     if (error) {
@@ -1415,11 +1633,6 @@ export default function Home() {
         await fetchMemos();
       },
     });
-  };
-
-  const toggleMemoListItem = async (memo: MemoEntry, itemId: string) => {
-    const items = memo.items.map(item => item.id === itemId ? { ...item, completed: !item.completed } : item);
-    await updateMemo(memo.id, { items });
   };
 
   const transferMemoToTasks = (memo: MemoEntry) => {
@@ -2615,7 +2828,7 @@ export default function Home() {
     }
   };
 
-  const toggleDictation = (mode: 'title' | 'content' | 'list_item' | 'ai') => {
+  const toggleDictation = (mode: 'title' | 'content' | 'list_item' | 'ai' | 'memo_title' | 'memo_content' | 'memo_item') => {
     if (listeningMode === mode) {
       if (recognitionRef.current) {
         recognitionRef.current.manuallyStopped = true;
@@ -2654,6 +2867,9 @@ export default function Home() {
       if (mode === 'title') setNewTitle(prev => (prev ? prev + ' ' : '') + newText.trim());
       else if (mode === 'content') setNewContent(prev => (prev ? prev + ' ' : '') + newText.trim());
       else if (mode === 'list_item') setCurrentNewListItem(prev => (prev ? prev + ' ' : '') + newText.trim());
+      else if (mode === 'memo_title') setMemoDraftTitle(prev => (prev ? prev + ' ' : '') + newText.trim());
+      else if (mode === 'memo_content') setMemoDraftContent(prev => (prev ? prev + ' ' : '') + newText.trim());
+      else if (mode === 'memo_item') setMemoNewItem(prev => (prev ? prev + ' ' : '') + newText.trim());
       else if (mode === 'ai') {
         recognition.accumulatedTranscript += newText + ' ';
       }
@@ -2685,6 +2901,17 @@ export default function Home() {
       setListeningMode('none');
     }
   };
+
+
+  useEffect(() => {
+    if (memoEditorOpen) return;
+    if (!['memo_title', 'memo_content', 'memo_item'].includes(listeningMode)) return;
+    if (recognitionRef.current) {
+      recognitionRef.current.manuallyStopped = true;
+      try { recognitionRef.current.stop(); } catch (_) {}
+    }
+    setListeningMode('none');
+  }, [memoEditorOpen]);
 
   const normalizeAiListItems = (value: unknown) => {
     if (!Array.isArray(value)) return [] as string[];
@@ -3231,72 +3458,62 @@ export default function Home() {
       .toLocaleLowerCase('fr-FR');
     return searchable.includes(normalizedMemoSearch);
   });
-  const pinnedMemos = visibleMemos.filter(memo => memo.pinned);
-  const otherMemos = visibleMemos.filter(memo => !memo.pinned);
+  const pinnedMemos = visibleMemos
+    .filter(memo => memo.pinned)
+    .sort((a, b) => a.sort_order - b.sort_order);
+  const otherMemos = visibleMemos
+    .filter(memo => !memo.pinned)
+    .sort((a, b) => a.sort_order - b.sort_order);
 
-  const renderMemoCard = (memo: MemoEntry) => (
-    <article
-      key={memo.id}
-      onClick={() => openMemoEditor(memo)}
-      className={`rounded-[22px] border p-3.5 shadow-sm transition-all hover:shadow-md active:scale-[0.99] cursor-pointer break-inside-avoid ${memoColorClasses(memo.color)}`}
-    >
-      <div className="flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          {memo.title && <h3 className="font-black text-base leading-tight whitespace-pre-wrap">{memo.title}</h3>}
-          {memo.content && <p className="text-sm mt-1.5 whitespace-pre-wrap leading-relaxed opacity-90">{memo.content}</p>}
+  const renderMemoCard = (memo: MemoEntry) => {
+    const isDragging = draggingMemoId === memo.id;
+    const isDropTarget = memoDragTargetId === memo.id;
+
+    return (
+      <article
+        key={memo.id}
+        data-memo-card-id={memo.id}
+        onClick={() => openMemoCard(memo)}
+        onPointerDown={(e) => beginMemoLongPress(e, memo)}
+        onPointerMove={moveMemoLongPress}
+        onPointerUp={endMemoLongPress}
+        onPointerCancel={cancelMemoLongPress}
+        onContextMenu={(e) => { if (isDragging) e.preventDefault(); }}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] cursor-pointer select-none self-start ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-60 scale-[0.97] shadow-lg ring-2 ring-[#819076]' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
+        style={{ touchAction: isDragging ? 'none' : 'pan-y' }}
+      >
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            {memo.title && <h3 className="font-black text-[14px] leading-tight whitespace-pre-wrap break-words">{memo.title}</h3>}
+            {memo.content && (
+              <p className="text-[12px] mt-1.5 whitespace-pre-wrap leading-[1.35] opacity-85 break-words line-clamp-6">{memo.content}</p>
+            )}
+          </div>
+          {memo.pinned && <span className="text-xs flex-shrink-0" title="Épinglé">📌</span>}
         </div>
-        {memo.pinned && <span className="text-sm flex-shrink-0" title="Épinglé">📌</span>}
-      </div>
 
-      {memo.memo_type === 'list' && memo.items.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1.5">
-          {memo.items.slice(0, 7).map(item => (
-            <label
-              key={item.id}
-              onClick={(e) => e.stopPropagation()}
-              className="flex items-start gap-2 text-xs font-semibold cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={item.completed}
-                onChange={() => void toggleMemoListItem(memo, item.id)}
-                className="mt-0.5 accent-[#829076]"
-              />
-              <span className={item.completed ? 'line-through opacity-50' : ''}>{item.text}</span>
-            </label>
-          ))}
-          {memo.items.length > 7 && <span className="text-[10px] font-bold opacity-55">+ {memo.items.length - 7} autre{memo.items.length - 7 > 1 ? 's' : ''}</span>}
-        </div>
-      )}
+        {memo.memo_type === 'list' && memo.items.length > 0 && (
+          <div className="mt-2.5 flex flex-col gap-1">
+            {memo.items.slice(0, 6).map(item => (
+              <div key={item.id} className="flex items-start gap-1.5 text-[11px] font-semibold leading-tight">
+                <span className="mt-[-1px] flex-shrink-0 opacity-70">{item.completed ? '☑' : '☐'}</span>
+                <span className={`break-words ${item.completed ? 'line-through opacity-45' : ''}`}>{item.text}</span>
+              </div>
+            ))}
+            {memo.items.length > 6 && (
+              <span className="text-[9px] font-bold opacity-50 mt-0.5">+ {memo.items.length - 6} autre{memo.items.length - 6 > 1 ? 's' : ''}</span>
+            )}
+          </div>
+        )}
 
-      <div className="mt-3 pt-2.5 border-t border-black/10 flex items-center gap-1 overflow-x-auto [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); void updateMemo(memo.id, { pinned: !memo.pinned }); }}
-          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-white/80 flex items-center justify-center text-sm"
-          title={memo.pinned ? 'Désépingler' : 'Épingler'}
-        >{memo.pinned ? '📍' : '📌'}</button>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); transferMemoToTasks(memo); }}
-          className="flex-shrink-0 px-2.5 h-8 rounded-full bg-white/55 hover:bg-white/80 text-[10px] font-black"
-          title="Créer une tâche à partir de ce mémo"
-        >→ Tâche</button>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); void updateMemo(memo.id, { archived: !memo.archived }); }}
-          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-white/80 flex items-center justify-center text-sm"
-          title={memo.archived ? 'Désarchiver' : 'Archiver'}
-        >{memo.archived ? '↩' : '📦'}</button>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); deleteMemo(memo); }}
-          className="flex-shrink-0 w-8 h-8 rounded-full bg-white/55 hover:bg-[#F0DDD7] flex items-center justify-center text-sm"
-          title="Supprimer"
-        >🗑</button>
-      </div>
-    </article>
-  );
+        {isDragging && (
+          <div className="absolute inset-x-0 -bottom-7 mx-auto w-max max-w-[90%] rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg z-30">
+            Déplace puis relâche
+          </div>
+        )}
+      </article>
+    );
+  };
 
   const renderNoteItem = (note: Note) => (
     <li id={`note-${note.id}`} key={note.id} className={`flex flex-col gap-2 p-3 rounded shadow border-l-4 transition-all scroll-mt-24 ${highlightedNoteId === note.id ? 'ring-4 ring-[#AEBB9E] ring-offset-2' : ''} ${
@@ -4116,8 +4333,8 @@ export default function Home() {
                   type="text"
                   value={memoSearch}
                   onChange={(e) => setMemoSearch(e.target.value)}
-                  placeholder="Rechercher dans tes notes et listes..."
-                  className="w-full bg-white border border-[#DED5C8] rounded-xl pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                  placeholder="Rechercher dans Notes, Mémos & Listes"
+                  className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
                 />
               </div>
               <button
@@ -4131,7 +4348,7 @@ export default function Home() {
           </div>
 
           {!showMemoArchived && (
-            <div className="flex items-center justify-center gap-2 mb-5">
+            <div className="flex items-center justify-center gap-2 mb-2">
               <button
                 type="button"
                 onClick={() => openNewMemo('text')}
@@ -4149,6 +4366,10 @@ export default function Home() {
             </div>
           )}
 
+          {!showMemoArchived && !memoSearch.trim() && visibleMemos.length > 1 && (
+            <p className="text-center text-[10px] font-bold text-[#8A8175] mb-4">Maintiens une carte puis déplace-la pour changer l'ordre.</p>
+          )}
+
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
               <div className="text-4xl mb-3">{showMemoArchived ? '📦' : '🗒️'}</div>
@@ -4160,7 +4381,7 @@ export default function Home() {
               {pinnedMemos.length > 0 && (
                 <section>
                   <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Épinglés</div>
-                  <div className="columns-1 sm:columns-2 lg:columns-3 gap-3 space-y-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 items-start">
                     {pinnedMemos.map(renderMemoCard)}
                   </div>
                 </section>
@@ -4169,7 +4390,7 @@ export default function Home() {
               {otherMemos.length > 0 && (
                 <section>
                   {pinnedMemos.length > 0 && <div className="text-[11px] font-black uppercase tracking-[0.16em] text-[#82796C] mb-2 px-1">Autres</div>}
-                  <div className="columns-1 sm:columns-2 lg:columns-3 gap-3 space-y-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 items-start">
                     {otherMemos.map(renderMemoCard)}
                   </div>
                 </section>
@@ -4206,21 +4427,37 @@ export default function Home() {
                   >×</button>
                 </div>
 
-                <input
-                  type="text"
-                  value={memoDraftTitle}
-                  onChange={(e) => setMemoDraftTitle(e.target.value)}
-                  placeholder="Titre"
-                  className="w-full bg-white/70 border border-black/10 rounded-xl px-3 py-2.5 text-lg font-black text-inherit placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={memoDraftTitle}
+                    onChange={(e) => setMemoDraftTitle(e.target.value)}
+                    placeholder="Titre"
+                    className="w-full bg-white/70 border border-black/10 rounded-xl pl-3 pr-14 py-2.5 text-lg font-black text-inherit placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleDictation('memo_title')}
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full flex items-center justify-center text-base shadow-sm transition-all ${listeningMode === 'memo_title' ? 'bg-red-500 text-white animate-pulse scale-105' : 'bg-white/70 text-[#6F685E] hover:bg-white'}`}
+                    aria-label="Dicter le titre"
+                  >🎙️</button>
+                </div>
 
                 {memoDraftType === 'text' ? (
-                  <textarea
-                    value={memoDraftContent}
-                    onChange={(e) => setMemoDraftContent(e.target.value)}
-                    placeholder="Écris ton mémo ici..."
-                    className="w-full mt-2 min-h-[190px] bg-white/55 border border-black/10 rounded-xl p-3 text-sm font-semibold text-inherit resize-y placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
-                  />
+                  <div className="relative mt-2">
+                    <textarea
+                      value={memoDraftContent}
+                      onChange={(e) => setMemoDraftContent(e.target.value)}
+                      placeholder="Écris ton mémo ici..."
+                      className="w-full min-h-[190px] bg-white/55 border border-black/10 rounded-xl p-3 pr-14 text-sm font-semibold text-inherit resize-y placeholder:text-black/30 focus:outline-none focus:ring-2 focus:ring-black/10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => toggleDictation('memo_content')}
+                      className={`absolute right-2 top-2 w-9 h-9 rounded-full flex items-center justify-center text-base shadow-sm transition-all ${listeningMode === 'memo_content' ? 'bg-red-500 text-white animate-pulse scale-105' : 'bg-white/70 text-[#6F685E] hover:bg-white'}`}
+                      aria-label="Dicter le contenu"
+                    >🎙️</button>
+                  </div>
                 ) : (
                   <div className="mt-3 flex flex-col gap-2">
                     {memoDraftItems.map((item, index) => (
@@ -4241,14 +4478,22 @@ export default function Home() {
                       </div>
                     ))}
                     <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={memoNewItem}
-                        onChange={(e) => setMemoNewItem(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addMemoDraftItem(); } }}
-                        placeholder="Ajouter un élément..."
-                        className="flex-1 bg-white/65 border border-black/10 rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-black/10"
-                      />
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={memoNewItem}
+                          onChange={(e) => setMemoNewItem(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addMemoDraftItem(); } }}
+                          placeholder="Ajouter un élément..."
+                          className="w-full bg-white/65 border border-black/10 rounded-xl pl-3 pr-12 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-black/10"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleDictation('memo_item')}
+                          className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-sm shadow-sm transition-all ${listeningMode === 'memo_item' ? 'bg-red-500 text-white animate-pulse' : 'bg-white/70 text-[#6F685E] hover:bg-white'}`}
+                          aria-label="Dicter un élément de liste"
+                        >🎙️</button>
+                      </div>
                       <button type="button" onClick={addMemoDraftItem} className="w-10 h-10 rounded-xl bg-white/70 hover:bg-white text-lg font-black">＋</button>
                     </div>
                     <textarea
@@ -4284,13 +4529,31 @@ export default function Home() {
                   const originalMemo = memoEntries.find(memo => memo.id === editingMemoId);
                   if (!originalMemo) return null;
                   return (
-                    <button
-                      type="button"
-                      onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); transferMemoToTasks(originalMemo); }}
-                      className="w-full mt-4 py-2.5 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-xs font-black"
-                    >
-                      → Envoyer vers Tâches &amp; Rappels
-                    </button>
+                    <div className="mt-4 grid grid-cols-[1fr_auto_auto] gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); transferMemoToTasks(originalMemo); }}
+                        className="min-w-0 py-2.5 px-3 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-[11px] font-black truncate"
+                      >
+                        → Envoyer vers Tâches &amp; Rappels
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setMemoEditorOpen(false);
+                          resetMemoDraft();
+                          await updateMemo(originalMemo.id, { archived: !originalMemo.archived });
+                        }}
+                        className="w-10 h-10 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-sm font-black"
+                        title={originalMemo.archived ? 'Désarchiver' : 'Archiver'}
+                      >{originalMemo.archived ? '↩' : '📦'}</button>
+                      <button
+                        type="button"
+                        onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); deleteMemo(originalMemo); }}
+                        className="w-10 h-10 rounded-xl bg-white/55 hover:bg-[#F0DDD7] border border-black/10 text-sm font-black"
+                        title="Supprimer"
+                      >🗑</button>
+                    </div>
                   );
                 })()}
 
