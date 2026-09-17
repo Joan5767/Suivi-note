@@ -193,6 +193,8 @@ export default function Home() {
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
+  const selectedMemoIdsRef = useRef<Set<string>>(new Set());
+  const memoSelectionHistoryArmedRef = useRef(false);
 
   // Réorganisation des mémos façon Google Keep : appui long, carte flottante,
   // réorganisation en direct puis sauvegarde de l'ordre dans Supabase.
@@ -213,6 +215,7 @@ export default function Home() {
     pointerCancelled: boolean;
     startX: number;
     startY: number;
+    pressStartedAt: number;
     lastX: number;
     lastY: number;
     offsetX: number;
@@ -1152,9 +1155,24 @@ export default function Home() {
       window.history.replaceState(null, '', window.location.pathname + '#hub');
     }
 
+    const handleMemoSelectionPopState = () => {
+      // Le bouton Retour doit d'abord quitter la sélection multiple, sans sortir
+      // de Notes, Mémos & Listes. La sélection crée une entrée d'historique
+      // invisible sur le même #memos, exactement pour consommer ce premier retour.
+      if (selectedMemoIdsRef.current.size > 0) {
+        selectedMemoIdsRef.current = new Set();
+        setSelectedMemoIds(new Set());
+        memoSelectionHistoryArmedRef.current = false;
+      }
+    };
+
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('popstate', handleMemoSelectionPopState);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('popstate', handleMemoSelectionPopState);
+    };
   }, []);
 
   // Quand une notification ouvre #note-<id>, on ouvre la bonne priorité,
@@ -1518,8 +1536,14 @@ export default function Home() {
   }, [memoEntries]);
 
   useEffect(() => {
+    selectedMemoIdsRef.current = selectedMemoIds;
+  }, [selectedMemoIds]);
+
+  useEffect(() => {
     if (mainMode !== 'memos') {
+      selectedMemoIdsRef.current = new Set();
       setSelectedMemoIds(prev => prev.size ? new Set() : prev);
+      memoSelectionHistoryArmedRef.current = false;
     }
   }, [mainMode]);
 
@@ -1989,8 +2013,32 @@ export default function Home() {
     window.addEventListener('touchcancel', touchCancel);
   };
 
+  const activateMemoDrag = (drag: NonNullable<typeof memoDragRef.current>) => {
+    if (drag.active) return;
+    const currentRect = drag.element.getBoundingClientRect();
+    drag.active = true;
+    memoSuppressClickIdsRef.current.add(drag.id);
+    memoDragLastPreviewRef.current = '';
+    setDraggingMemoId(drag.id);
+    setMemoDragTargetId(null);
+    setMemoTrashHover(false);
+    drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
+    drag.reorderUnlocked = false;
+    drag.lastReorderAt = 0;
+    drag.lastReorderX = drag.lastX;
+    drag.lastReorderY = drag.lastY;
+    drag.candidateToken = '';
+    drag.candidateSince = 0;
+    drag.acceptedToken = '';
+    drag.layoutLockedUntil = 0;
+    drag.slots = captureMemoSlots(drag);
+    setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
+    attachMemoWindowListeners();
+    if ('vibrate' in navigator) navigator.vibrate(16);
+  };
+
   const beginMemoLongPress = (e: React.PointerEvent<HTMLElement>, memo: MemoEntry) => {
-    if (selectedMemoIds.size > 0) return;
+    if (selectedMemoIdsRef.current.size > 0) return;
     if (memoSearch.trim()) return;
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return;
@@ -2004,6 +2052,7 @@ export default function Home() {
       pointerCancelled: false,
       startX: e.clientX,
       startY: e.clientY,
+      pressStartedAt: performance.now(),
       lastX: e.clientX,
       lastY: e.clientY,
       offsetX: e.clientX - rect.left,
@@ -2026,50 +2075,37 @@ export default function Home() {
       element: e.currentTarget,
     };
 
-    // Capture pendant l'attente uniquement : cela fiabilise l'appui long sans
-    // conserver une capture sur une carte qui peut changer de colonne ensuite.
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 
     memoLongPressTimerRef.current = window.setTimeout(() => {
       const drag = memoDragRef.current;
       if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
-      const currentRect = drag.element.getBoundingClientRect();
-      drag.active = true;
-      memoSuppressClickIdsRef.current.add(memo.id);
-      memoDragLastPreviewRef.current = '';
-      setDraggingMemoId(memo.id);
-      setMemoDragTargetId(null);
-      setMemoTrashHover(false);
-      drag.originRect = { left: currentRect.left, top: currentRect.top, right: currentRect.right, bottom: currentRect.bottom };
-      drag.reorderUnlocked = false;
-      drag.lastReorderAt = 0;
-      drag.lastReorderX = drag.lastX;
-      drag.lastReorderY = drag.lastY;
-      drag.candidateToken = '';
-      drag.candidateSince = 0;
-      drag.acceptedToken = '';
-      drag.layoutLockedUntil = 0;
-      drag.slots = captureMemoSlots(drag);
-      setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-      // On conserve la capture du pointeur pendant tout le drag. Cela évite de
-      // perdre le doigt lors d'un déplacement rapide sur mobile.
-      attachMemoWindowListeners();
-      if ('vibrate' in navigator) navigator.vibrate(16);
-    }, 200);
+      activateMemoDrag(drag);
+    }, 180);
   };
 
   const moveMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
 
-    // Une fois actif, seul le listener window déplace la carte. Cela évite le
-    // double traitement pointermove qui causait des sauts.
     if (drag.active) return;
 
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    if (distance > 36) {
+    const heldFor = performance.now() - drag.pressStartedAt;
+
+    // Si l'utilisateur a déjà marqué un vrai appui long, on autorise le départ
+    // immédiat du drag même s'il bouge vite. Cela évite l'impression de freeze.
+    if (distance > 10 && heldFor >= 115) {
+      clearMemoLongPressTimer();
+      activateMemoDrag(drag);
+      processMemoDragMove(e.clientX, e.clientY, e.pointerId, () => e.preventDefault());
+      return;
+    }
+
+    // Avant 115 ms, un grand mouvement reste interprété comme un scroll normal.
+    if (distance > 56 && heldFor < 115) {
       clearMemoLongPressTimer();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       memoDragRef.current = null;
@@ -2495,29 +2531,49 @@ export default function Home() {
     cancelActiveTaskDrag(e?.pointerId);
   };
 
-  const clearMemoSelection = () => setSelectedMemoIds(new Set());
+  const armMemoSelectionHistory = () => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hash !== '#memos' || window.history.state?.memoSelection) return;
+    window.history.pushState({ ...(window.history.state || {}), memoSelection: true }, '', window.location.href);
+    memoSelectionHistoryArmedRef.current = true;
+  };
+
+  const clearMemoSelection = (consumeHistory = true) => {
+    selectedMemoIdsRef.current = new Set();
+    setSelectedMemoIds(new Set());
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoSelection) {
+      window.history.back();
+    } else {
+      memoSelectionHistoryArmedRef.current = false;
+    }
+  };
 
   const selectMemo = (id: string) => {
-    setSelectedMemoIds(prev => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
+    if (selectedMemoIdsRef.current.size === 0) armMemoSelectionHistory();
+    const next = new Set(selectedMemoIdsRef.current);
+    next.add(id);
+    selectedMemoIdsRef.current = next;
+    setSelectedMemoIds(next);
   };
 
   const toggleMemoSelection = (id: string) => {
-    setSelectedMemoIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    const next = new Set(selectedMemoIdsRef.current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+
+    if (next.size === 0) {
+      clearMemoSelection(true);
+      return;
+    }
+
+    if (selectedMemoIdsRef.current.size === 0) armMemoSelectionHistory();
+    selectedMemoIdsRef.current = next;
+    setSelectedMemoIds(next);
   };
 
   const openMemoCard = (memo: MemoEntry) => {
     if (memoSuppressClickIdsRef.current.has(memo.id)) return;
-    if (selectedMemoIds.size > 0) {
+    if (selectedMemoIdsRef.current.size > 0) {
       toggleMemoSelection(memo.id);
       return;
     }
@@ -2672,18 +2728,18 @@ export default function Home() {
   };
 
   const getSelectedMemos = () => {
-    const ids = selectedMemoIds;
+    const ids = selectedMemoIdsRef.current;
     return memoEntriesRef.current.filter(memo => ids.has(memo.id));
   };
 
   const deleteSelectedMemos = async () => {
-    const ids = Array.from(selectedMemoIds);
+    const ids = Array.from(selectedMemoIdsRef.current);
     if (!ids.length) return;
 
     // Comme le glisser vers la poubelle : suppression directe. La confirmation
     // reste réservée à la poubelle située dans l'éditeur d'un mémo ouvert.
     const previousEntries = memoEntriesRef.current;
-    const nextEntries = previousEntries.filter(memo => !selectedMemoIds.has(memo.id));
+    const nextEntries = previousEntries.filter(memo => !selectedMemoIdsRef.current.has(memo.id));
     memoEntriesRef.current = nextEntries;
     setMemoEntries(nextEntries);
     clearMemoSelection();
@@ -5491,67 +5547,59 @@ export default function Home() {
             <div />
           </div>
 
-          {selectedMemoIds.size > 0 ? (
-            <div className="bg-[#E9EDE2] border border-[#CBD3C1] rounded-[22px] p-2.5 mb-4 shadow-sm">
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-                <button
-                  type="button"
-                  onClick={clearMemoSelection}
-                  className="w-10 h-10 flex-shrink-0 rounded-full bg-white border border-[#D3DACB] text-[#56614E] font-black text-lg shadow-sm active:scale-95"
-                  aria-label="Annuler la sélection"
-                >
-                  ×
-                </button>
-                <span className="text-sm font-black text-[#4F5A48] whitespace-nowrap mr-auto">
-                  {selectedMemoIds.size} sélectionnée{selectedMemoIds.size > 1 ? 's' : ''}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void setSelectedMemosPinned()}
-                  className="h-10 px-3 flex-shrink-0 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-xs font-black shadow-sm active:scale-95"
-                >
-                  {getSelectedMemos().every(memo => memo.pinned) ? '📌 Désépingler' : '📌 Épingler'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void setSelectedMemosArchived()}
-                  className="h-10 px-3 flex-shrink-0 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-xs font-black shadow-sm active:scale-95"
-                >
-                  {showMemoArchived ? '↩ Restaurer' : '📦 Archiver'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void deleteSelectedMemos()}
-                  className="w-10 h-10 flex-shrink-0 rounded-xl bg-[#F3DEDA] border border-[#DFBBB4] text-[#94554D] font-black shadow-sm active:scale-95"
-                  aria-label="Supprimer la sélection"
-                >
-                  🗑️
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
-                  <input
-                    type="text"
-                    value={memoSearch}
-                    onChange={(e) => setMemoSearch(e.target.value)}
-                    placeholder="Rechercher dans Notes, Mémos & Listes"
-                    className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowMemoArchived(prev => !prev)}
-                  className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
-                >
-                  {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
-                </button>
-              </div>
+          {selectedMemoIds.size > 0 && (
+            <div className="fixed left-1/2 -translate-x-1/2 top-[max(10px,env(safe-area-inset-top))] z-[12950] bg-[#EEF1E8]/95 backdrop-blur-md border border-[#C9D1C0] rounded-2xl shadow-[0_8px_28px_rgba(66,76,58,0.22)] px-2 py-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void setSelectedMemosPinned()}
+                className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
+                aria-label={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
+                title={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
+              >
+                📌
+              </button>
+              <button
+                type="button"
+                onClick={() => void setSelectedMemosArchived()}
+                className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
+                aria-label={showMemoArchived ? 'Restaurer' : 'Archiver'}
+                title={showMemoArchived ? 'Restaurer' : 'Archiver'}
+              >
+                {showMemoArchived ? '↩️' : '📦'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteSelectedMemos()}
+                className="w-11 h-11 rounded-xl bg-[#F3DEDA] border border-[#DFBBB4] text-[#94554D] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
+                aria-label="Supprimer"
+                title="Supprimer"
+              >
+                🗑️
+              </button>
             </div>
           )}
+
+          <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
+                <input
+                  type="text"
+                  value={memoSearch}
+                  onChange={(e) => setMemoSearch(e.target.value)}
+                  placeholder="Rechercher dans Notes, Mémos & Listes"
+                  className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMemoArchived(prev => !prev)}
+                className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
+              >
+                {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
+              </button>
+            </div>
+          </div>
 
           {!showMemoArchived && selectedMemoIds.size === 0 && (
             <div className="flex items-center justify-center mb-3">
