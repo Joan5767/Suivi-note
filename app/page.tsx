@@ -88,6 +88,19 @@ interface MemoEntry {
   updated_at?: string | null;
 }
 
+interface DragSlot {
+  id: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  priority?: 'vert' | 'orange' | 'rouge';
+}
+
 interface AppConfirmDialog {
   title: string;
   message: string;
@@ -183,7 +196,7 @@ export default function Home() {
   // Réorganisation des mémos façon Google Keep : appui long, carte flottante,
   // réorganisation en direct puis sauvegarde de l'ordre dans Supabase.
   const [draggingMemoId, setDraggingMemoId] = useState<string | null>(null);
-  const [memoDragTargetId, setMemoDragTargetId] = useState<string | null>(null);
+  const [, setMemoDragTargetId] = useState<string | null>(null);
   const [memoDragVisual, setMemoDragVisual] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [memoColumnCount, setMemoColumnCount] = useState(2);
   const [memoCardHeights, setMemoCardHeights] = useState<Record<string, number>>({});
@@ -209,6 +222,10 @@ export default function Home() {
     lastReorderY: number;
     candidateToken: string;
     candidateSince: number;
+    slots: DragSlot[];
+    acceptedToken: string;
+    layoutLockedUntil: number;
+    slotRefreshTimer: number | null;
     element: HTMLElement;
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
@@ -239,6 +256,10 @@ export default function Home() {
     lastReorderAt: number;
     candidateToken: string;
     candidateSince: number;
+    slots: DragSlot[];
+    acceptedToken: string;
+    layoutLockedUntil: number;
+    slotRefreshTimer: number | null;
     pendingPriority: 'vert' | 'orange' | 'rouge';
     pendingTargetId: string | null;
     pendingInsertAfter: boolean;
@@ -1561,7 +1582,7 @@ export default function Home() {
       void document.body.offsetHeight;
       requestAnimationFrame(() => {
         animated.forEach((element) => {
-          element.style.transition = 'transform 190ms cubic-bezier(0.22, 0.8, 0.22, 1), box-shadow 160ms ease, opacity 120ms ease';
+          element.style.transition = 'transform 220ms cubic-bezier(0.2, 0.75, 0.25, 1), box-shadow 160ms ease, opacity 120ms ease';
           element.style.transform = 'translate3d(0, 0, 0)';
         });
         window.setTimeout(() => {
@@ -1570,7 +1591,7 @@ export default function Home() {
             element.style.transform = '';
             element.style.willChange = '';
           });
-        }, 230);
+        }, 255);
       });
     });
   };
@@ -1648,6 +1669,60 @@ export default function Home() {
     memoWindowListenersRef.current = null;
   };
 
+  const captureMemoSlots = (drag: NonNullable<typeof memoDragRef.current>) => {
+    const slots: DragSlot[] = [];
+    document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach((element) => {
+      const id = element.dataset.memoCardId;
+      if (!id) return;
+      const memo = memoEntriesRef.current.find(item => item.id === id);
+      if (!memo || memo.pinned !== drag.pinned || memo.archived !== drag.archived) return;
+      const rect = element.getBoundingClientRect();
+      slots.push({
+        id,
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+      });
+    });
+    return slots;
+  };
+
+  const refreshMemoDragSlotsSoon = (drag: NonNullable<typeof memoDragRef.current>, delay = 225) => {
+    if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
+    drag.slotRefreshTimer = window.setTimeout(() => {
+      const current = memoDragRef.current;
+      if (!current || current !== drag || !current.active) return;
+      current.slots = captureMemoSlots(current);
+      current.layoutLockedUntil = 0;
+      current.slotRefreshTimer = null;
+    }, delay);
+  };
+
+  const findMemoDropCandidate = (drag: NonNullable<typeof memoDragRef.current>, centerX: number, centerY: number) => {
+    let best: { slot: DragSlot; distance: number } | null = null;
+    for (const slot of drag.slots) {
+      if (slot.id === drag.id) continue;
+      const dx = centerX < slot.left ? slot.left - centerX : centerX > slot.right ? centerX - slot.right : 0;
+      const dy = centerY < slot.top ? slot.top - centerY : centerY > slot.bottom ? centerY - slot.bottom : 0;
+      const outsideDistance = Math.hypot(dx, dy);
+      if (outsideDistance > 58) continue;
+      const centerDistance = Math.hypot(centerX - slot.centerX, centerY - slot.centerY);
+      const score = outsideDistance * 4 + centerDistance * 0.22;
+      if (!best || score < best.distance) best = { slot, distance: score };
+    }
+    if (!best) return null;
+    const slot = best.slot;
+    const upperThreshold = slot.top + slot.height * 0.42;
+    const lowerThreshold = slot.top + slot.height * 0.58;
+    if (centerY > upperThreshold && centerY < lowerThreshold) return null;
+    return { targetId: slot.id, insertAfter: centerY >= lowerThreshold };
+  };
+
   const processMemoDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== pointerId || !drag.active) return;
@@ -1657,120 +1732,51 @@ export default function Home() {
     drag.lastX = clientX;
     drag.lastY = clientY;
 
+    const ghostLeft = clientX - drag.offsetX;
+    const ghostTop = clientY - drag.offsetY;
+    const ghostWidth = drag.originRect.right - drag.originRect.left;
+    const ghostHeight = drag.originRect.bottom - drag.originRect.top;
+    const centerX = ghostLeft + ghostWidth / 2;
+    const centerY = ghostTop + ghostHeight / 2;
+
     if (memoGhostRef.current) {
-      memoGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
-      memoGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+      memoGhostRef.current.style.left = `${ghostLeft}px`;
+      memoGhostRef.current.style.top = `${ghostTop}px`;
     }
 
-    // Au moment où la carte se soulève, son emplacement reste figé.
-    // Les autres cartes ne commencent à se réorganiser que lorsque le doigt
-    // quitte réellement la case d'origine, comme dans Google Keep.
     if (!drag.reorderUnlocked) {
-      const margin = 10;
-      const insideOrigin =
-        clientX >= drag.originRect.left - margin &&
-        clientX <= drag.originRect.right + margin &&
-        clientY >= drag.originRect.top - margin &&
-        clientY <= drag.originRect.bottom + margin;
-      if (insideOrigin) {
+      const insetX = Math.min(18, ghostWidth * 0.12);
+      const insetY = Math.min(18, ghostHeight * 0.12);
+      const stillInOrigin =
+        centerX >= drag.originRect.left + insetX &&
+        centerX <= drag.originRect.right - insetX &&
+        centerY >= drag.originRect.top + insetY &&
+        centerY <= drag.originRect.bottom - insetY;
+      if (stillInOrigin) {
         setMemoDragTargetId(null);
         return;
       }
       drag.reorderUnlocked = true;
-      drag.lastReorderAt = 0;
-      memoDragLastPreviewRef.current = '';
+      drag.acceptedToken = '';
+      drag.slots = captureMemoSlots(drag);
     }
 
-    const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    let card = beneath?.closest<HTMLElement>('[data-memo-card-id]') || null;
+    if (performance.now() < drag.layoutLockedUntil) return;
 
-    // Dans l'espace entre deux cartes, on prend la carte la plus proche au lieu
-    // d'envoyer brutalement la note en fin de liste.
-    if (!card) {
-      let bestDistance = Number.POSITIVE_INFINITY;
-      document.querySelectorAll<HTMLElement>('[data-memo-card-id]').forEach(candidate => {
-        const id = candidate.dataset.memoCardId;
-        if (!id || id === drag.id) return;
-        const candidateMemo = memoEntriesRef.current.find(memo => memo.id === id);
-        if (!candidateMemo || candidateMemo.pinned !== drag.pinned || candidateMemo.archived !== drag.archived) return;
-        const rect = candidate.getBoundingClientRect();
-        const cx = Math.max(rect.left, Math.min(clientX, rect.right));
-        const cy = Math.max(rect.top, Math.min(clientY, rect.bottom));
-        const distance = Math.hypot(clientX - cx, clientY - cy);
-        if (distance < bestDistance && distance < 44) {
-          bestDistance = distance;
-          card = candidate;
-        }
-      });
-    }
-
-    const targetId = card?.dataset.memoCardId || null;
-    if (targetId && targetId !== drag.id) {
-      const target = memoEntriesRef.current.find(memo => memo.id === targetId);
-      if (!target || target.pinned !== drag.pinned || target.archived !== drag.archived) return;
-      const rect = card!.getBoundingClientRect();
-
-      // On découpe chaque carte en deux vraies zones d'insertion. La petite
-      // bande centrale est volontairement neutre : elle empêche les oscillations
-      // avant/après lorsque le doigt est proche du milieu.
-      const midpoint = rect.top + rect.height / 2;
-      const deadZone = Math.min(18, Math.max(9, rect.height * 0.12));
-      if (Math.abs(clientY - midpoint) <= deadZone) {
-        drag.candidateToken = '';
-        drag.candidateSince = 0;
-        return;
-      }
-
-      const insertAfter = clientY > midpoint;
-      const token = `${targetId}:${insertAfter ? 'after' : 'before'}`;
-      setMemoDragTargetId(prev => prev === targetId ? prev : targetId);
-      const now = performance.now();
-
-      // Le pointeur doit viser le même emplacement pendant un court instant.
-      // Cela évite qu'un simple changement de layout déclenche une deuxième
-      // réorganisation sous le doigt sans intention de l'utilisateur.
-      if (drag.candidateToken !== token) {
-        drag.candidateToken = token;
-        drag.candidateSince = now;
-        return;
-      }
-
-      const movedSinceLastReorder = Math.hypot(clientX - drag.lastReorderX, clientY - drag.lastReorderY);
-      if (now - drag.candidateSince < 65 || movedSinceLastReorder < 14 || now - drag.lastReorderAt < 105) return;
-      if (memoDragLastPreviewRef.current === token) return;
-
-      memoDragLastPreviewRef.current = token;
-      drag.lastReorderAt = now;
-      drag.lastReorderX = clientX;
-      drag.lastReorderY = clientY;
-      drag.candidateToken = '';
-      drag.candidateSince = 0;
-      previewMemoReorder(drag.id, targetId, insertAfter);
+    const candidate = findMemoDropCandidate(drag, centerX, centerY);
+    if (!candidate) {
+      setMemoDragTargetId(null);
       return;
     }
 
-    const zone = beneath?.closest<HTMLElement>('[data-memo-drop-zone]');
-    const expectedZone = `${drag.archived ? 'archived' : 'active'}-${drag.pinned ? 'pinned' : 'other'}`;
-    if (zone?.dataset.memoDropZone === expectedZone) {
-      const token = `${expectedZone}:end`;
-      setMemoDragTargetId(null);
-      const now = performance.now();
-      if (drag.candidateToken !== token) {
-        drag.candidateToken = token;
-        drag.candidateSince = now;
-        return;
-      }
-      const movedSinceLastReorder = Math.hypot(clientX - drag.lastReorderX, clientY - drag.lastReorderY);
-      if (memoDragLastPreviewRef.current !== token && now - drag.candidateSince >= 80 && movedSinceLastReorder >= 18 && now - drag.lastReorderAt >= 110) {
-        memoDragLastPreviewRef.current = token;
-        drag.lastReorderAt = now;
-        drag.lastReorderX = clientX;
-        drag.lastReorderY = clientY;
-        drag.candidateToken = '';
-        drag.candidateSince = 0;
-        previewMemoReorder(drag.id, null, true);
-      }
-    }
+    const token = `${candidate.targetId}:${candidate.insertAfter ? 'after' : 'before'}`;
+    setMemoDragTargetId(candidate.targetId);
+    if (token === drag.acceptedToken) return;
+
+    drag.acceptedToken = token;
+    drag.layoutLockedUntil = performance.now() + 215;
+    previewMemoReorder(drag.id, candidate.targetId, candidate.insertAfter);
+    refreshMemoDragSlotsSoon(drag, 225);
   };
 
   const finishMemoDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
@@ -1780,6 +1786,7 @@ export default function Home() {
 
     memoDragRef.current = null;
     detachMemoWindowListeners();
+    if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
     if (drag.active) {
       preventDefault?.();
       stopPropagation?.();
@@ -1834,6 +1841,10 @@ export default function Home() {
       lastReorderY: e.clientY,
       candidateToken: '',
       candidateSince: 0,
+      slots: [],
+      acceptedToken: '',
+      layoutLockedUntil: 0,
+      slotRefreshTimer: null,
       element: e.currentTarget,
     };
 
@@ -1857,12 +1868,15 @@ export default function Home() {
       drag.lastReorderY = drag.lastY;
       drag.candidateToken = '';
       drag.candidateSince = 0;
+      drag.acceptedToken = '';
+      drag.layoutLockedUntil = 0;
+      drag.slots = captureMemoSlots(drag);
       setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
       // On conserve la capture du pointeur pendant tout le drag. Cela évite de
       // perdre le doigt lors d'un déplacement rapide sur mobile.
       attachMemoWindowListeners();
       if ('vibrate' in navigator) navigator.vibrate(16);
-    }, 240);
+    }, 200);
   };
 
   const moveMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
@@ -1898,6 +1912,7 @@ export default function Home() {
     if (drag && pointerId !== undefined && drag.pointerId !== pointerId) return;
     memoDragRef.current = null;
     detachMemoWindowListeners();
+    if (drag?.slotRefreshTimer !== null && drag?.slotRefreshTimer !== undefined) window.clearTimeout(drag.slotRefreshTimer);
     if (drag) {
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       if (drag.active) window.setTimeout(() => memoSuppressClickIdsRef.current.delete(drag.id), 500);
@@ -1927,6 +1942,73 @@ export default function Home() {
       .filter(note => taskIsDragEligible(note) && note.importance === priority)
       .map(note => Number.isFinite(note.sort_order) ? note.sort_order : 0);
     return orders.length ? Math.max(...orders) + 1 : 0;
+  };
+
+  const captureTaskLayout = () => {
+    const rects = new Map<string, DOMRect>();
+    document.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach((element) => {
+      const id = element.dataset.taskCardId;
+      if (!id) return;
+      rects.set(id, element.getBoundingClientRect());
+    });
+    return rects;
+  };
+
+  const animateTaskLayoutFrom = (before: Map<string, DOMRect>, excludeId?: string) => {
+    requestAnimationFrame(() => {
+      const animated: HTMLElement[] = [];
+      document.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach((element) => {
+        const id = element.dataset.taskCardId;
+        if (!id || id === excludeId) return;
+        const previous = before.get(id);
+        if (!previous) return;
+        const next = element.getBoundingClientRect();
+        const dx = previous.left - next.left;
+        const dy = previous.top - next.top;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+        element.style.transition = 'none';
+        element.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+        element.style.willChange = 'transform';
+        animated.push(element);
+      });
+      if (!animated.length) return;
+      void document.body.offsetHeight;
+      requestAnimationFrame(() => {
+        animated.forEach((element) => {
+          element.style.transition = 'transform 210ms cubic-bezier(0.2, 0.75, 0.25, 1), opacity 120ms ease';
+          element.style.transform = 'translate3d(0, 0, 0)';
+        });
+        window.setTimeout(() => {
+          animated.forEach((element) => {
+            element.style.transition = '';
+            element.style.transform = '';
+            element.style.willChange = '';
+          });
+        }, 245);
+      });
+    });
+  };
+
+  const captureTaskSlots = (priority: 'vert' | 'orange' | 'rouge') => {
+    const slots: DragSlot[] = [];
+    document.querySelectorAll<HTMLElement>(`[data-task-card-id][data-task-priority="${priority}"]`).forEach((element) => {
+      const id = element.dataset.taskCardId;
+      if (!id) return;
+      const rect = element.getBoundingClientRect();
+      slots.push({
+        id,
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+        priority,
+      });
+    });
+    return slots;
   };
 
   const previewTaskReorder = (sourceId: string, targetPriority: 'vert' | 'orange' | 'rouge', targetId: string | null, insertAfter = false) => {
@@ -1965,8 +2047,10 @@ export default function Home() {
       return patch ? { ...note, ...patch } : note;
     });
 
+    const before = captureTaskLayout();
     notesRef.current = next;
     setNotes(next);
+    animateTaskLayoutFrom(before, sourceId);
   };
 
   const persistTaskPriorities = async (priorities: Array<'vert' | 'orange' | 'rouge'>) => {
@@ -2013,6 +2097,34 @@ export default function Home() {
     taskWindowListenersRef.current = null;
   };
 
+  const refreshTaskDragSlotsSoon = (drag: NonNullable<typeof taskDragRef.current>, delay = 220) => {
+    if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
+    drag.slotRefreshTimer = window.setTimeout(() => {
+      const current = taskDragRef.current;
+      if (!current || current !== drag || !current.active) return;
+      current.slots = captureTaskSlots(current.originalPriority);
+      current.layoutLockedUntil = 0;
+      current.slotRefreshTimer = null;
+    }, delay);
+  };
+
+  const findTaskDropCandidate = (drag: NonNullable<typeof taskDragRef.current>, centerY: number) => {
+    let best: { slot: DragSlot; distance: number } | null = null;
+    for (const slot of drag.slots) {
+      if (slot.id === drag.id) continue;
+      const dy = centerY < slot.top ? slot.top - centerY : centerY > slot.bottom ? centerY - slot.bottom : 0;
+      if (dy > 48) continue;
+      const score = dy * 4 + Math.abs(centerY - slot.centerY) * 0.18;
+      if (!best || score < best.distance) best = { slot, distance: score };
+    }
+    if (!best) return null;
+    const slot = best.slot;
+    const upper = slot.top + slot.height * 0.42;
+    const lower = slot.top + slot.height * 0.58;
+    if (centerY > upper && centerY < lower) return null;
+    return { targetId: slot.id, insertAfter: centerY >= lower };
+  };
+
   const processTaskDragMove = (clientX: number, clientY: number, pointerId: number, preventDefault?: () => void) => {
     const drag = taskDragRef.current;
     if (!drag || drag.pointerId !== pointerId || !drag.active) return;
@@ -2022,88 +2134,67 @@ export default function Home() {
     drag.lastX = clientX;
     drag.lastY = clientY;
 
+    const ghostLeft = clientX - drag.offsetX;
+    const ghostTop = clientY - drag.offsetY;
+    const ghostWidth = drag.originRect.right - drag.originRect.left;
+    const ghostHeight = drag.originRect.bottom - drag.originRect.top;
+    const centerX = ghostLeft + ghostWidth / 2;
+    const centerY = ghostTop + ghostHeight / 2;
+
     if (taskGhostRef.current) {
-      taskGhostRef.current.style.left = `${clientX - drag.offsetX}px`;
-      taskGhostRef.current.style.top = `${clientY - drag.offsetY}px`;
+      taskGhostRef.current.style.left = `${ghostLeft}px`;
+      taskGhostRef.current.style.top = `${ghostTop}px`;
     }
 
-    // Comme pour les mémos, la tâche se soulève d'abord sans déplacer la liste.
-    // La réorganisation ne démarre qu'une fois la zone d'origine quittée.
     if (!drag.reorderUnlocked) {
-      const margin = 8;
-      const insideOrigin =
-        clientX >= drag.originRect.left - margin &&
-        clientX <= drag.originRect.right + margin &&
-        clientY >= drag.originRect.top - margin &&
-        clientY <= drag.originRect.bottom + margin;
-      if (insideOrigin) return;
+      const insetX = Math.min(14, ghostWidth * 0.1);
+      const insetY = Math.min(14, ghostHeight * 0.1);
+      const stillInOrigin =
+        centerX >= drag.originRect.left + insetX &&
+        centerX <= drag.originRect.right - insetX &&
+        centerY >= drag.originRect.top + insetY &&
+        centerY <= drag.originRect.bottom - insetY;
+      if (stillInOrigin) return;
       drag.reorderUnlocked = true;
-      drag.lastReorderAt = 0;
-      taskDragLastPreviewRef.current = '';
+      drag.slots = captureTaskSlots(drag.originalPriority);
+      drag.acceptedToken = '';
     }
 
     const beneath = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-
-    let card = beneath?.closest<HTMLElement>('[data-task-card-id]') || null;
-    let zone = beneath?.closest<HTMLElement>('[data-task-priority-zone]') || null;
-
-    // Entre deux tâches, garde la priorité de la zone et accroche la carte la
-    // plus proche. Cela évite que la tâche saute en fin de liste au moindre trou.
-    if (!card && zone) {
-      let bestDistance = Number.POSITIVE_INFINITY;
-      zone.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach(candidate => {
-        const id = candidate.dataset.taskCardId;
-        if (!id || id === drag.id) return;
-        const rect = candidate.getBoundingClientRect();
-        const cy = Math.max(rect.top, Math.min(clientY, rect.bottom));
-        const distance = Math.abs(clientY - cy);
-        if (distance < bestDistance && distance < 50) {
-          bestDistance = distance;
-          card = candidate;
-        }
-      });
-    }
-
+    const zone = beneath?.closest<HTMLElement>('[data-task-priority-zone]') || null;
+    const card = beneath?.closest<HTMLElement>('[data-task-card-id]') || null;
     const priorityValue = card?.dataset.taskPriority || zone?.dataset.taskPriorityZone;
     if (priorityValue !== 'vert' && priorityValue !== 'orange' && priorityValue !== 'rouge') return;
     const targetPriority = priorityValue as 'vert' | 'orange' | 'rouge';
 
-    setTaskDragHoverPriority(prev => prev === targetPriority ? prev : targetPriority);
-
-    const targetId = card?.dataset.taskCardId || null;
-    let insertAfter = false;
-    if (card && targetId && targetId !== drag.id) {
-      const rect = card.getBoundingClientRect();
-      const midpoint = rect.top + rect.height / 2;
-      const deadZone = Math.min(14, Math.max(7, rect.height * 0.1));
-      if (Math.abs(clientY - midpoint) <= deadZone) return;
-      insertAfter = clientY > midpoint;
-    }
-
-    const normalizedTargetId = targetId && targetId !== drag.id ? targetId : null;
+    setTaskDragHoverPriority(targetPriority);
     drag.pendingPriority = targetPriority;
-    drag.pendingTargetId = normalizedTargetId;
-    drag.pendingInsertAfter = insertAfter;
 
-    const token = `${targetPriority}:${normalizedTargetId || 'end'}:${insertAfter ? 'after' : 'before'}`;
-    const now = performance.now();
-    if (drag.candidateToken !== token) {
-      drag.candidateToken = token;
-      drag.candidateSince = now;
+    if (targetPriority !== drag.originalPriority) {
+      const targetId = card?.dataset.taskCardId && card.dataset.taskCardId !== drag.id ? card.dataset.taskCardId : null;
+      let insertAfter = false;
+      if (card && targetId) {
+        const rect = card.getBoundingClientRect();
+        insertAfter = centerY > rect.top + rect.height / 2;
+      }
+      drag.pendingTargetId = targetId;
+      drag.pendingInsertAfter = insertAfter;
       return;
     }
 
-    // IMPORTANT : une autre priorité n'est qu'une cible visuelle tant que le
-    // doigt est posé. La tâche change réellement de priorité uniquement au
-    // relâchement. C'est beaucoup plus prévisible sur mobile.
-    if (targetPriority !== drag.originalPriority) return;
+    if (performance.now() < drag.layoutLockedUntil) return;
+    const candidate = findTaskDropCandidate(drag, centerY);
+    if (!candidate) return;
 
-    // Dans la priorité d'origine, on peut prévisualiser le changement d'ordre,
-    // mais seulement après une courte stabilité sur la même cible.
-    if (taskDragLastPreviewRef.current === token || now - drag.candidateSince < 55 || now - drag.lastReorderAt < 95) return;
-    taskDragLastPreviewRef.current = token;
-    drag.lastReorderAt = now;
-    previewTaskReorder(drag.id, drag.originalPriority, normalizedTargetId, insertAfter);
+    drag.pendingTargetId = candidate.targetId;
+    drag.pendingInsertAfter = candidate.insertAfter;
+    const token = `${candidate.targetId}:${candidate.insertAfter ? 'after' : 'before'}`;
+    if (token === drag.acceptedToken) return;
+
+    drag.acceptedToken = token;
+    drag.layoutLockedUntil = performance.now() + 205;
+    previewTaskReorder(drag.id, drag.originalPriority, candidate.targetId, candidate.insertAfter);
+    refreshTaskDragSlotsSoon(drag, 220);
   };
 
   const finishTaskDrag = (pointerId: number, preventDefault?: () => void, stopPropagation?: () => void) => {
@@ -2113,6 +2204,7 @@ export default function Home() {
 
     taskDragRef.current = null;
     detachTaskWindowListeners();
+    if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
 
     if (drag.active) {
       preventDefault?.();
@@ -2120,14 +2212,8 @@ export default function Home() {
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
 
       const finalPriority = drag.pendingPriority || drag.originalPriority;
-      // Si l'on dépose dans une autre priorité, le changement n'est appliqué
-      // qu'ici, au relâchement. Dans la priorité d'origine, on réapplique la
-      // dernière cible pour garantir un dépôt exact même si le dernier mouvement
-      // était trop court pour déclencher la prévisualisation.
       if (finalPriority !== drag.originalPriority) {
         previewTaskReorder(drag.id, finalPriority, drag.pendingTargetId, drag.pendingInsertAfter);
-      } else if (drag.pendingTargetId) {
-        previewTaskReorder(drag.id, drag.originalPriority, drag.pendingTargetId, drag.pendingInsertAfter);
       }
 
       setDraggingTaskId(null);
@@ -2144,6 +2230,7 @@ export default function Home() {
     if (drag && pointerId !== undefined && drag.pointerId !== pointerId) return;
     taskDragRef.current = null;
     detachTaskWindowListeners();
+    if (drag?.slotRefreshTimer !== null && drag?.slotRefreshTimer !== undefined) window.clearTimeout(drag.slotRefreshTimer);
     if (drag?.active) {
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
     }
@@ -2180,6 +2267,9 @@ export default function Home() {
     drag.lastReorderAt = 0;
     drag.candidateToken = '';
     drag.candidateSince = 0;
+    drag.acceptedToken = '';
+    drag.layoutLockedUntil = 0;
+    drag.slots = captureTaskSlots(drag.originalPriority);
     drag.pendingPriority = drag.originalPriority;
     drag.pendingTargetId = null;
     drag.pendingInsertAfter = false;
@@ -2212,6 +2302,10 @@ export default function Home() {
       lastReorderAt: 0,
       candidateToken: '',
       candidateSince: 0,
+      slots: [],
+      acceptedToken: '',
+      layoutLockedUntil: 0,
+      slotRefreshTimer: null,
       pendingPriority: note.importance,
       pendingTargetId: null,
       pendingInsertAfter: false,
@@ -2224,32 +2318,18 @@ export default function Home() {
       const drag = taskDragRef.current;
       if (!drag || drag.id !== note.id || drag.pointerId !== e.pointerId) return;
       activateTaskDrag(drag);
-    }, 195);
+    }, 185);
   };
 
   const moveTaskLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = taskDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
-
-    if (drag.active) return; // déplacement géré uniquement par window
+    if (drag.active) return;
 
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
     const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-    const elapsed = performance.now() - drag.pressStartedAt;
-
-    // Sur mobile, l'utilisateur commence souvent à déplacer le doigt juste
-    // avant la fin du délai d'appui long. À partir de 125 ms, un mouvement
-    // volontaire suffit donc à activer le drag sans attendre le timer complet.
-    if (elapsed >= 125 && distance >= 7) {
-      clearTaskLongPressTimer();
-      activateTaskDrag(drag);
-      return;
-    }
-
-    // Un mouvement très rapide immédiatement après le toucher reste interprété
-    // comme un scroll vertical normal de la page.
-    if (elapsed < 125 && distance > 34) {
+    if (distance > 28) {
       clearTaskLongPressTimer();
       try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
       taskDragRef.current = null;
@@ -4241,7 +4321,6 @@ export default function Home() {
 
   const renderMemoCard = (memo: MemoEntry) => {
     const isDragging = draggingMemoId === memo.id;
-    const isDropTarget = memoDragTargetId === memo.id;
 
     return (
       <article
@@ -4254,7 +4333,7 @@ export default function Home() {
         onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'} ${isDropTarget ? 'ring-2 ring-[#A8764F] ring-offset-2' : ''}`}
+        className={`relative rounded-[18px] border p-3 shadow-sm transition-[transform,box-shadow,opacity] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
           pointerEvents: isDragging ? 'none' : 'auto',
@@ -5161,7 +5240,7 @@ export default function Home() {
           )}
 
           {!showMemoArchived && !memoSearch.trim() && visibleMemos.length > 1 && (
-            <p className="text-center text-[10px] font-bold text-[#8A8175] mb-4">Maintiens une carte puis déplace-la pour changer l'ordre.</p>
+            <p className="text-center text-[10px] font-bold text-[#8A8175] mb-4">Maintiens une carte : elle se soulève, puis les autres glissent seulement quand tu changes réellement d'emplacement.</p>
           )}
 
           {visibleMemos.length === 0 ? (
