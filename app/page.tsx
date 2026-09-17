@@ -239,6 +239,7 @@ export default function Home() {
   } | null>(null);
   const memoEntriesRef = useRef<MemoEntry[]>([]);
   const memoSuppressClickIdsRef = useRef<Set<string>>(new Set());
+  const memoSuppressAllClicksUntilRef = useRef(0);
   // Vrai FLIP : on capture les positions AVANT le changement d'ordre, puis
   // on anime les cartes depuis leur ancienne position APRÈS le rendu React.
   const memoPendingFlipRef = useRef<{ before: Map<string, DOMRect>; excludeId?: string } | null>(null);
@@ -1966,20 +1967,22 @@ export default function Home() {
     const move = (event: PointerEvent) => {
       const drag = memoDragRef.current;
       if (!drag || drag.pointerCancelled) return;
+      // Sur mobile, les TouchEvents deviennent la source principale dès que le
+      // drag est actif. Cela évite les pointercancel intempestifs d'Android.
+      if (drag.pointerType === 'touch') return;
       processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     };
     const up = (event: PointerEvent) => {
       const drag = memoDragRef.current;
       if (!drag || drag.pointerCancelled) return;
+      if (drag.pointerType === 'touch') return;
       finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
     };
     const cancel = (event: PointerEvent) => {
       const drag = memoDragRef.current;
       if (drag?.active && drag.pointerId === event.pointerId && drag.pointerType === 'touch') {
-        // Android/Chrome peut annuler le flux PointerEvent dès qu'un long drag vertical
-        // ressemble à un scroll. On garde alors le drag vivant avec les TouchEvents
-        // jusqu'au vrai touchend, ce qui permet de partir d'une carte tout en haut
-        // et d'atteindre la poubelle en bas sans relâchement prématuré.
+        // Ne termine pas le drag ici : Android peut annuler le PointerEvent
+        // pendant un mouvement vertical. Le TouchEvent continue, lui.
         drag.pointerCancelled = true;
         return;
       }
@@ -1987,21 +1990,26 @@ export default function Home() {
     };
     const touchMove = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag?.active) return;
+      if (!drag?.active || drag.pointerType !== 'touch' || event.touches.length === 0) return;
       if (event.cancelable) event.preventDefault();
-      if (!drag.pointerCancelled || event.touches.length === 0) return;
       const touch = event.touches[0];
       processMemoDragMove(touch.clientX, touch.clientY, drag.pointerId);
     };
     const touchEnd = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag?.active || !drag.pointerCancelled) return;
+      if (!drag?.active || drag.pointerType !== 'touch') return;
       if (event.cancelable) event.preventDefault();
       finishMemoDrag(drag.pointerId);
     };
-    const touchCancel = () => {
+    const touchCancel = (event: TouchEvent) => {
       const drag = memoDragRef.current;
       if (!drag) return;
+      // Un touchcancel ne doit jamais laisser une carte flottante bloquée.
+      if (drag.active && drag.pointerType === 'touch') {
+        if (event.cancelable) event.preventDefault();
+        finishMemoDrag(drag.pointerId);
+        return;
+      }
       cancelMemoLongPress(drag.pointerId);
     };
     memoWindowListenersRef.current = { move, up, cancel, touchMove, touchEnd, touchCancel };
@@ -2554,6 +2562,10 @@ export default function Home() {
     next.add(id);
     selectedMemoIdsRef.current = next;
     setSelectedMemoIds(next);
+
+    // Empêche le relâchement d'un appui long de produire ensuite un clic
+    // sur une autre carte située sous le doigt après le changement d'état.
+    memoSuppressAllClicksUntilRef.current = performance.now() + 420;
   };
 
   const toggleMemoSelection = (id: string) => {
@@ -2572,6 +2584,7 @@ export default function Home() {
   };
 
   const openMemoCard = (memo: MemoEntry) => {
+    if (performance.now() < memoSuppressAllClicksUntilRef.current) return;
     if (memoSuppressClickIdsRef.current.has(memo.id)) return;
     if (selectedMemoIdsRef.current.size > 0) {
       toggleMemoSelection(memo.id);
@@ -4682,7 +4695,9 @@ export default function Home() {
         className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity,transform] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isSelected ? 'ring-2 ring-[#6F7B64] ring-offset-2 ring-offset-[#F8F5EF] shadow-md' : ''} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
         style={{
           touchAction: isDragging ? 'none' : 'pan-y',
-          pointerEvents: isDragging ? 'none' : 'auto',
+          // La carte d'origine reste dans le DOM et conserve le pointeur pendant
+          // tout le drag. Elle est invisible, mais pas désactivée côté événements.
+          pointerEvents: 'auto',
           userSelect: 'none',
           WebkitUserSelect: 'none',
           WebkitTouchCallout: 'none',
@@ -5601,22 +5616,18 @@ export default function Home() {
             </div>
           </div>
 
-          {!showMemoArchived && selectedMemoIds.size === 0 && (
-            <div className="flex items-center justify-center mb-3">
+          {!showMemoArchived && (
+            <div className="flex items-center justify-center mb-3 h-12">
               <button
                 type="button"
                 onClick={() => openNewMemo('text')}
-                className="w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] text-[27px] leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] active:scale-[0.94] transition-transform flex items-center justify-center"
+                className={`w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] text-[27px] leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] active:scale-[0.94] transition-[transform,opacity] flex items-center justify-center ${selectedMemoIds.size > 0 ? 'invisible pointer-events-none' : ''}`}
                 aria-label="Créer une note, une liste ou un dessin"
                 title="Créer"
               >
                 ＋
               </button>
             </div>
-          )}
-
-          {!showMemoArchived && selectedMemoIds.size === 0 && !memoSearch.trim() && visibleMemos.length > 1 && (
-            <p className="text-center text-[10px] font-bold text-[#8A8175] mb-4">Maintiens une carte : elle se soulève, puis les autres glissent seulement quand tu changes réellement d'emplacement.</p>
           )}
 
           {visibleMemos.length === 0 ? (
