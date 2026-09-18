@@ -32,6 +32,7 @@ export async function POST() {
     await clearTable('planning_events');
     await clearTable('planning_templates');
     await clearTable('memo_notes');
+    await clearTable('memo_folders');
     await clearTable('notes');
 
     const { error: notesError } = await supabase.from('notes').insert([

@@ -101,9 +101,16 @@ interface MemoEntry {
   color: MemoColor;
   pinned: boolean;
   archived: boolean;
+  archive_folder_id: string | null;
   sort_order: number;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+interface MemoFolder {
+  id: string;
+  name: string;
+  created_at?: string | null;
 }
 
 interface DragSlot {
@@ -264,8 +271,14 @@ export default function Home() {
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
+  const [memoFolders, setMemoFolders] = useState<MemoFolder[]>([]);
   const [memoSearch, setMemoSearch] = useState('');
   const [showMemoArchived, setShowMemoArchived] = useState(false);
+  const showMemoArchivedRef = useRef(false);
+  const [activeMemoFolderId, setActiveMemoFolderId] = useState<string | null>(null);
+  const [showMemoFolderCreate, setShowMemoFolderCreate] = useState(false);
+  const [memoFolderName, setMemoFolderName] = useState('');
+  const [showMemoMoveFolder, setShowMemoMoveFolder] = useState(false);
   const [memoEditorOpen, setMemoEditorOpen] = useState(false);
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
   const [memoDraftType, setMemoDraftType] = useState<'text' | 'list'>('text');
@@ -279,6 +292,8 @@ export default function Home() {
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
   const memoSelectionHistoryArmedRef = useRef(false);
   const memoEditorOpenRef = useRef(false);
+  const memoEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
+  const memoIgnoreNextPopRef = useRef(false);
 
   // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
   // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
@@ -1259,12 +1274,25 @@ export default function Home() {
     }
 
     const handleMemoSelectionPopState = () => {
-      // Dans Notes, Mémos & Listes, le bouton Retour ferme d'abord ce qui est
-      // ouvert localement (éditeur ou sélection) au lieu de quitter l'application.
+      if (memoIgnoreNextPopRef.current) {
+        memoIgnoreNextPopRef.current = false;
+        return;
+      }
+
+      // Retour Android : on ferme d'abord l'éditeur en sauvegardant automatiquement,
+      // puis la sélection, puis les Archives. On ne quitte l'application qu'après.
       if (memoEditorOpenRef.current) {
-        memoEditorOpenRef.current = false;
-        setMemoEditorOpen(false);
-        resetMemoDraft();
+        void memoEditorAutoSaveRef.current().then((saved) => {
+          if (!saved) {
+            if (typeof window !== 'undefined' && !window.history.state?.memoEditor) {
+              window.history.pushState({ ...(window.history.state || {}), memoEditor: true }, '', window.location.href);
+            }
+            return;
+          }
+          memoEditorOpenRef.current = false;
+          setMemoEditorOpen(false);
+          resetMemoDraft();
+        });
         return;
       }
 
@@ -1272,6 +1300,13 @@ export default function Home() {
         selectedMemoIdsRef.current = new Set();
         setSelectedMemoIds(new Set());
         memoSelectionHistoryArmedRef.current = false;
+        return;
+      }
+
+      if (showMemoArchivedRef.current) {
+        showMemoArchivedRef.current = false;
+        setShowMemoArchived(false);
+        setActiveMemoFolderId(null);
       }
     };
 
@@ -1585,6 +1620,7 @@ export default function Home() {
     color: ['sage', 'sand', 'rose', 'blue', 'lavender', 'white'].includes(row?.color) ? row.color : 'sage',
     pinned: Boolean(row?.pinned),
     archived: Boolean(row?.archived),
+    archive_folder_id: typeof row?.archive_folder_id === 'string' && row.archive_folder_id ? row.archive_folder_id : null,
     sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
     created_at: typeof row?.created_at === 'string' ? row.created_at : null,
     updated_at: typeof row?.updated_at === 'string' ? row.updated_at : null,
@@ -1609,10 +1645,31 @@ export default function Home() {
     return true;
   };
 
+  const fetchMemoFolders = async () => {
+    const { data, error } = await supabase
+      .from('memo_folders')
+      .select('id, name, created_at')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      // La table n'existe qu'après l'exécution du SQL fourni avec cette version.
+      console.error('Erreur chargement dossiers mémos :', error);
+      return false;
+    }
+
+    setMemoFolders((data || []).map((row: any) => ({
+      id: String(row.id),
+      name: typeof row.name === 'string' ? row.name : 'Dossier',
+      created_at: typeof row.created_at === 'string' ? row.created_at : null,
+    })));
+    return true;
+  };
+
   useEffect(() => { 
     fetchNotes(); 
     fetchTemplates();
     fetchMemos();
+    fetchMemoFolders();
   }, []);
 
   // Resynchronise les données quand l'utilisateur revient dans l'application.
@@ -1624,6 +1681,7 @@ export default function Home() {
       void fetchNotes();
       void fetchTemplates();
       void fetchMemos();
+      void fetchMemoFolders();
     };
 
     window.addEventListener('focus', syncWhenVisible);
@@ -1686,10 +1744,17 @@ export default function Home() {
   }, [selectedMemoIds]);
 
   useEffect(() => {
+    showMemoArchivedRef.current = showMemoArchived;
+  }, [showMemoArchived]);
+
+  useEffect(() => {
     if (mainMode !== 'memos') {
       selectedMemoIdsRef.current = new Set();
       setSelectedMemoIds(prev => prev.size ? new Set() : prev);
       memoSelectionHistoryArmedRef.current = false;
+      showMemoArchivedRef.current = false;
+      setShowMemoArchived(false);
+      setActiveMemoFolderId(null);
     }
   }, [mainMode]);
 
@@ -1830,7 +1895,7 @@ export default function Home() {
     if (!source) return;
 
     const group = current
-      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived)
+      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived && memo.archive_folder_id === source.archive_folder_id)
       .sort((a, b) => a.sort_order - b.sort_order || String(a.updated_at || '').localeCompare(String(b.updated_at || '')));
 
     const withoutSource = group.filter(memo => memo.id !== sourceId);
@@ -1838,7 +1903,7 @@ export default function Home() {
 
     if (targetId) {
       const target = withoutSource.find(memo => memo.id === targetId);
-      if (!target || target.pinned !== source.pinned || target.archived !== source.archived) return;
+      if (!target || target.pinned !== source.pinned || target.archived !== source.archived || target.archive_folder_id !== source.archive_folder_id) return;
       const targetIndex = withoutSource.findIndex(memo => memo.id === targetId);
       insertIndex = Math.max(0, Math.min(withoutSource.length, targetIndex + (insertAfter ? 1 : 0)));
     }
@@ -1864,7 +1929,7 @@ export default function Home() {
     const source = memoEntriesRef.current.find(memo => memo.id === sourceId);
     if (!source) return;
     const group = memoEntriesRef.current
-      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived)
+      .filter(memo => memo.pinned === source.pinned && memo.archived === source.archived && memo.archive_folder_id === source.archive_folder_id)
       .sort((a, b) => a.sort_order - b.sort_order);
     await persistMemoGroupOrder(group);
   };
@@ -2333,7 +2398,7 @@ export default function Home() {
     const source = memoEntriesRef.current.find(item => item.id === sourceId);
     const target = memoEntriesRef.current.find(item => item.id === overId);
     if (!source || !target) return;
-    if (source.pinned !== target.pinned || source.archived !== target.archived) return;
+    if (source.pinned !== target.pinned || source.archived !== target.archived || source.archive_folder_id !== target.archive_folder_id) return;
 
     const activeRect = event.active.rect.current.translated;
     const overRect = event.over?.rect;
@@ -2787,14 +2852,21 @@ export default function Home() {
     window.history.pushState({ ...(window.history.state || {}), memoEditor: true }, '', window.location.href);
   };
 
-  const closeMemoEditor = (consumeHistory = true) => {
+  const closeMemoEditor = async (consumeHistory = true, saveChanges = true) => {
+    if (saveChanges) {
+      const saved = await memoEditorAutoSaveRef.current();
+      if (!saved) return false;
+    }
+
     memoEditorOpenRef.current = false;
     setMemoEditorOpen(false);
     resetMemoDraft();
 
     if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoEditor) {
+      memoIgnoreNextPopRef.current = true;
       window.history.back();
     }
+    return true;
   };
 
   const armMemoSelectionHistory = () => {
@@ -2808,10 +2880,79 @@ export default function Home() {
     selectedMemoIdsRef.current = new Set();
     setSelectedMemoIds(new Set());
     if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoSelection) {
+      memoIgnoreNextPopRef.current = true;
       window.history.back();
     } else {
       memoSelectionHistoryArmedRef.current = false;
     }
+  };
+
+  const enterMemoArchives = () => {
+    if (showMemoArchivedRef.current) return;
+    if (typeof window !== 'undefined' && !window.history.state?.memoArchive) {
+      window.history.pushState({ ...(window.history.state || {}), memoArchive: true }, '', window.location.href);
+    }
+    showMemoArchivedRef.current = true;
+    setShowMemoArchived(true);
+    setActiveMemoFolderId(null);
+    setMemoSearch('');
+  };
+
+  const leaveMemoArchives = (consumeHistory = true) => {
+    showMemoArchivedRef.current = false;
+    setShowMemoArchived(false);
+    setActiveMemoFolderId(null);
+    setMemoSearch('');
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchive) {
+      window.history.back();
+    }
+  };
+
+  const createMemoFolder = async () => {
+    const name = memoFolderName.trim();
+    if (!name) return;
+    const { error } = await supabase.from('memo_folders').insert([{ name }]);
+    if (error) {
+      showAppMessage('Erreur lors de la création du dossier : ' + error.message);
+      return;
+    }
+    setMemoFolderName('');
+    setShowMemoFolderCreate(false);
+    await fetchMemoFolders();
+  };
+
+  const moveSelectedMemosToFolder = async (folderId: string | null) => {
+    const ids = Array.from(selectedMemoIdsRef.current);
+    if (!ids.length) return;
+    const { error } = await supabase
+      .from('memo_notes')
+      .update({ archive_folder_id: folderId, updated_at: new Date().toISOString() })
+      .in('id', ids);
+    if (error) {
+      showAppMessage('Erreur lors du déplacement vers le dossier : ' + error.message);
+      return;
+    }
+    setShowMemoMoveFolder(false);
+    clearMemoSelection();
+    await fetchMemos();
+  };
+
+  const deleteMemoFolder = (folder: MemoFolder) => {
+    requestAppConfirmation({
+      title: 'Supprimer ce dossier ?',
+      message: `Le dossier « ${folder.name} » sera supprimé. Les notes resteront dans les archives, sans dossier.`,
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('memo_folders').delete().eq('id', folder.id);
+        if (error) {
+          showAppMessage('Erreur lors de la suppression du dossier : ' + error.message);
+          return;
+        }
+        if (activeMemoFolderId === folder.id) setActiveMemoFolderId(null);
+        await Promise.all([fetchMemoFolders(), fetchMemos()]);
+      },
+    });
   };
 
   const selectMemo = (id: string) => {
@@ -2890,17 +3031,20 @@ export default function Home() {
     setMemoNewItem('');
   };
 
-  const saveMemo = async () => {
+  const persistMemoDraft = async () => {
     const title = memoDraftTitle.trim();
     const content = memoDraftContent.trim();
+    const pendingItem = memoDraftType === 'list' ? memoNewItem.trim() : '';
     const items = memoDraftType === 'list'
-      ? memoDraftItems.map(item => ({ ...item, text: item.text.trim() })).filter(item => item.text)
+      ? [
+          ...memoDraftItems.map(item => ({ ...item, text: item.text.trim() })).filter(item => item.text),
+          ...(pendingItem ? [{ id: crypto.randomUUID(), text: pendingItem, completed: false }] : []),
+        ]
       : [];
 
-    if (!title && !content && items.length === 0) {
-      showAppMessage('Ajoute un titre, du texte ou au moins un élément avant de sauvegarder.');
-      return;
-    }
+    // Une nouvelle note totalement vide est simplement abandonnée. Une note existante
+    // peut en revanche être vidée volontairement et la modification sera enregistrée.
+    if (!editingMemoId && !title && !content && items.length === 0) return true;
 
     setLoading(true);
     try {
@@ -2924,21 +3068,27 @@ export default function Home() {
 
       const query = editingMemoId
         ? supabase.from('memo_notes').update(payload).eq('id', editingMemoId)
-        : supabase.from('memo_notes').insert([{ ...payload, archived: false }]);
+        : supabase.from('memo_notes').insert([{ ...payload, archived: false, archive_folder_id: null }]);
 
       const { error } = await query;
       if (error) throw error;
 
-      closeMemoEditor(true);
+      if (pendingItem) setMemoNewItem('');
       await fetchMemos();
+      return true;
     } catch (error: any) {
       showAppMessage('Erreur lors de la sauvegarde du mémo : ' + (error?.message || 'erreur inconnue'));
+      return false;
     } finally {
       setLoading(false);
     }
   };
 
-  const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items' | 'sort_order'>>) => {
+  // Le gestionnaire du bouton Retour est enregistré une seule fois ; cette ref lui
+  // donne toujours accès à la version courante du brouillon à sauvegarder.
+  memoEditorAutoSaveRef.current = persistMemoDraft;
+
+  const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items' | 'sort_order' | 'archive_folder_id'>>) => {
     const currentMemo = memoEntriesRef.current.find(memo => memo.id === id);
     const nextPayload: Partial<MemoEntry> = { ...payload };
 
@@ -2949,6 +3099,9 @@ export default function Home() {
       const nextPinned = typeof payload.pinned === 'boolean' ? payload.pinned : currentMemo.pinned;
       const nextArchived = typeof payload.archived === 'boolean' ? payload.archived : currentMemo.archived;
       nextPayload.sort_order = nextMemoSortOrder(nextPinned, nextArchived, id);
+      if (typeof payload.archived === 'boolean' && payload.archived !== currentMemo.archived) {
+        nextPayload.archive_folder_id = null;
+      }
     }
 
     const { error } = await supabase
@@ -3084,6 +3237,7 @@ export default function Home() {
       nextOrderByPinned.set(memo.pinned, order + 1);
       return supabase.from('memo_notes').update({
         archived: targetArchived,
+        archive_folder_id: null,
         sort_order: order,
         updated_at: now,
       }).eq('id', memo.id);
@@ -4996,12 +5150,23 @@ export default function Home() {
   const normalizedMemoSearch = memoSearch.trim().toLocaleLowerCase('fr-FR');
   const visibleMemos = memoEntries.filter(memo => {
     if (memo.archived !== showMemoArchived) return false;
+    if (showMemoArchived) {
+      if (activeMemoFolderId) {
+        if (memo.archive_folder_id !== activeMemoFolderId) return false;
+      } else if (memo.archive_folder_id) {
+        return false;
+      }
+    }
     if (!normalizedMemoSearch) return true;
     const searchable = [memo.title, memo.content, ...memo.items.map(item => item.text)]
       .join(' ')
       .toLocaleLowerCase('fr-FR');
     return searchable.includes(normalizedMemoSearch);
   });
+  const activeMemoFolder = memoFolders.find(folder => folder.id === activeMemoFolderId) || null;
+  const memoFolderCounts = new Map(
+    memoFolders.map(folder => [folder.id, memoEntries.filter(memo => memo.archived && memo.archive_folder_id === folder.id).length])
+  );
   const pinnedMemos = visibleMemos
     .filter(memo => memo.pinned)
     .sort((a, b) => a.sort_order - b.sort_order);
@@ -5955,6 +6120,17 @@ export default function Home() {
               >
                 📌
               </button>
+              {showMemoArchived && (
+                <button
+                  type="button"
+                  onClick={() => setShowMemoMoveFolder(true)}
+                  className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
+                  aria-label="Déplacer dans un dossier"
+                  title="Déplacer dans un dossier"
+                >
+                  📁
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void setSelectedMemosArchived()}
@@ -5990,13 +6166,69 @@ export default function Home() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowMemoArchived(prev => !prev)}
+                onClick={() => showMemoArchived ? leaveMemoArchives(true) : enterMemoArchives()}
                 className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
               >
                 {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
               </button>
             </div>
           </div>
+
+          {showMemoArchived && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  {activeMemoFolder ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setActiveMemoFolderId(null)}
+                        className="w-9 h-9 rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] text-[#665E53] font-black flex items-center justify-center"
+                        title="Retour aux archives"
+                      >←</button>
+                      <span className="font-black text-sm truncate">📁 {activeMemoFolder.name}</span>
+                    </>
+                  ) : (
+                    <span className="font-black text-sm">Dossiers d’archives</span>
+                  )}
+                </div>
+                {!activeMemoFolder && (
+                  <button
+                    type="button"
+                    onClick={() => { setMemoFolderName(''); setShowMemoFolderCreate(true); }}
+                    className="h-9 px-3 rounded-xl bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-xs font-black"
+                  >＋ Dossier</button>
+                )}
+              </div>
+
+              {!activeMemoFolder && memoFolders.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                  {memoFolders.map(folder => (
+                    <div key={folder.id} className="relative group">
+                      <button
+                        type="button"
+                        onClick={() => { setActiveMemoFolderId(folder.id); setMemoSearch(''); }}
+                        className="w-full min-h-[72px] text-left rounded-2xl bg-[#EEE8DD] hover:bg-[#E7DFD2] border border-[#D9D0C2] px-3 py-2.5 pr-9 shadow-sm"
+                      >
+                        <div className="font-black text-xs truncate">📁 {folder.name}</div>
+                        <div className="text-[10px] font-bold opacity-55 mt-1">{memoFolderCounts.get(folder.id) || 0} note{(memoFolderCounts.get(folder.id) || 0) > 1 ? 's' : ''}</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); deleteMemoFolder(folder); }}
+                        className="absolute right-2 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-[#F0DDD7] text-[11px] flex items-center justify-center"
+                        title="Supprimer le dossier"
+                      >🗑</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!activeMemoFolder && memoFolders.length > 0 && (
+                <div className="text-[10px] font-black uppercase tracking-[0.12em] text-[#82796C] mb-2 px-1">Sans dossier</div>
+              )}
+            </div>
+          )}
 
           {!showMemoArchived && (
             <div className="flex items-center justify-center mb-3 h-12">
@@ -6015,7 +6247,7 @@ export default function Home() {
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
               <div className="text-4xl mb-3">{showMemoArchived ? '📦' : '🗒️'}</div>
-              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? 'Aucune note archivée' : 'Aucun mémo pour le moment'}</p>
+              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? (activeMemoFolder ? 'Ce dossier est vide' : memoFolders.length ? 'Aucune note sans dossier' : 'Aucune note archivée') : 'Aucun mémo pour le moment'}</p>
               {!memoSearch && !showMemoArchived && <p className="text-xs font-semibold mt-1">Crée une note, un mémo ou une liste que tu pourras garder et réutiliser.</p>}
             </div>
           ) : (
@@ -6089,6 +6321,44 @@ export default function Home() {
               );
             })()}
           </DragOverlay>
+
+          {showMemoFolderCreate && (
+            <div className="fixed inset-0 z-[13020] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemoFolderCreate(false)}>
+              <div className="w-full max-w-sm rounded-[24px] bg-[#F7F4ED] border border-[#E0D8CB] shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
+                <h3 className="font-black text-base text-[#4B5843] mb-3">Nouveau dossier</h3>
+                <input
+                  type="text"
+                  value={memoFolderName}
+                  onChange={(e) => setMemoFolderName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void createMemoFolder(); } }}
+                  placeholder="Nom du dossier"
+                  className="w-full bg-white border border-[#DED5C8] rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                />
+                <div className="flex gap-2 mt-4">
+                  <button type="button" onClick={() => setShowMemoFolderCreate(false)} className="flex-1 py-2.5 rounded-xl bg-white border border-[#DED5C8] text-xs font-black">Annuler</button>
+                  <button type="button" onClick={() => void createMemoFolder()} className="flex-1 py-2.5 rounded-xl bg-[#819076] text-white text-xs font-black">Créer</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showMemoMoveFolder && (
+            <div className="fixed inset-0 z-[13010] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemoMoveFolder(false)}>
+              <div className="w-full max-w-sm rounded-[24px] bg-[#F7F4ED] border border-[#E0D8CB] shadow-2xl p-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <h3 className="font-black text-base text-[#4B5843]">Déplacer vers…</h3>
+                  <button type="button" onClick={() => setShowMemoMoveFolder(false)} className="w-8 h-8 rounded-full bg-white border border-[#DED5C8] font-black">×</button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button type="button" onClick={() => void moveSelectedMemosToFolder(null)} className="w-full text-left rounded-xl bg-white border border-[#DED5C8] px-3 py-3 text-sm font-black">📄 Sans dossier</button>
+                  {memoFolders.map(folder => (
+                    <button key={folder.id} type="button" onClick={() => void moveSelectedMemosToFolder(folder.id)} className="w-full text-left rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] px-3 py-3 text-sm font-black">📁 {folder.name}</button>
+                  ))}
+                  <button type="button" onClick={() => { setShowMemoMoveFolder(false); setMemoFolderName(''); setShowMemoFolderCreate(true); }} className="w-full text-left rounded-xl bg-[#D8DEC9] border border-[#C8D0B8] px-3 py-3 text-sm font-black text-[#394433]">＋ Nouveau dossier</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {memoEditorOpen && (
             <div
@@ -6233,7 +6503,13 @@ export default function Home() {
                     <div className="mt-4 grid grid-cols-[1fr_auto_auto] gap-2">
                       <button
                         type="button"
-                        onClick={() => { closeMemoEditor(true); transferMemoToTasks(originalMemo); }}
+                        onClick={async () => {
+                          const saved = await persistMemoDraft();
+                          if (!saved) return;
+                          const latestMemo = memoEntriesRef.current.find(memo => memo.id === originalMemo.id) || originalMemo;
+                          await closeMemoEditor(true, false);
+                          transferMemoToTasks(latestMemo);
+                        }}
                         className="min-w-0 py-2.5 px-3 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-[11px] font-black truncate"
                       >
                         → Envoyer vers Tâches &amp; Rappels
@@ -6241,7 +6517,9 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={async () => {
-                          closeMemoEditor(true);
+                          const saved = await persistMemoDraft();
+                          if (!saved) return;
+                          await closeMemoEditor(true, false);
                           await updateMemo(originalMemo.id, { archived: !originalMemo.archived });
                         }}
                         className="w-10 h-10 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-sm font-black"
@@ -6249,7 +6527,7 @@ export default function Home() {
                       >{originalMemo.archived ? '↩' : '📦'}</button>
                       <button
                         type="button"
-                        onClick={() => { closeMemoEditor(true); deleteMemo(originalMemo); }}
+                        onClick={async () => { await closeMemoEditor(true, false); deleteMemo(originalMemo); }}
                         className="w-10 h-10 rounded-xl bg-white/55 hover:bg-[#F0DDD7] border border-black/10 text-sm font-black"
                         title="Supprimer"
                       >🗑</button>
@@ -6257,18 +6535,8 @@ export default function Home() {
                   );
                 })()}
 
-                <div className="flex gap-2 mt-5">
-                  <button
-                    type="button"
-                    onClick={() => closeMemoEditor(true)}
-                    className="flex-1 py-3 rounded-xl bg-white/45 hover:bg-white/70 border border-black/10 text-xs font-black"
-                  >Annuler</button>
-                  <button
-                    type="button"
-                    onClick={() => void saveMemo()}
-                    disabled={loading}
-                    className="flex-1 py-3 rounded-xl bg-[#819076] hover:bg-[#74836A] text-white text-xs font-black shadow-sm disabled:opacity-50"
-                  >{loading ? 'Enregistrement…' : editingMemoId ? 'Enregistrer' : 'Créer'}</button>
+                <div className="mt-4 text-center text-[10px] font-bold opacity-45">
+                  {loading ? 'Enregistrement…' : 'Sauvegarde automatique à la fermeture'}
                 </div>
               </div>
             </div>
