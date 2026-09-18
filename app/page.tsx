@@ -357,15 +357,6 @@ interface DrawNoteData {
 }
 
 
-const drawMemoColorClasses = (color: MemoColor) => ({
-  sage: 'bg-[#E9EEE2] border-[#C8D2BC] text-[#3E4A37]',
-  sand: 'bg-[#F4EBDD] border-[#DDCCB4] text-[#5C4C3E]',
-  rose: 'bg-[#F3E3DF] border-[#DEC0BA] text-[#654842]',
-  blue: 'bg-[#E3EBEF] border-[#C0D0D8] text-[#405660]',
-  lavender: 'bg-[#ECE6F1] border-[#D1C3DC] text-[#554861]',
-  white: 'bg-white border-[#DED8CE] text-[#4A4741]',
-}[color]);
-
 const EMPTY_DRAW_NOTE: DrawNoteData = { version: 1, width: 1000, height: 1400, objects: [] };
 
 const normalizeDrawPoint = (point: any): DrawPoint | null => {
@@ -514,14 +505,16 @@ type DrawEditorProps = {
   initialColor: MemoColor;
   folders: MemoFolder[];
   onSave: (payload: { title: string; archived: boolean; archiveFolderId: string | null; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
+  onDelete?: () => void;
+  registerAutoSave: (handler: () => Promise<boolean>) => void;
   onClose: () => void;
 };
 
-function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArchiveFolderId, initialColor, folders, onSave, onClose }: DrawEditorProps) {
+function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArchiveFolderId, initialColor, folders, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
   const [title, setTitle] = useState(initialTitle);
   const [archived, setArchived] = useState(initialArchived);
   const [archiveFolderId, setArchiveFolderId] = useState<string | null>(initialArchiveFolderId);
-  const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
+  const memoColor = initialColor;
   const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
   const [tool, setTool] = useState<DrawTool | null>('pen');
   const [strokeWidth, setStrokeWidth] = useState<DrawStrokeWidth>(4);
@@ -764,14 +757,24 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
     if (tool === 'text' && selectedTextId) updateSelectedText({ color });
   };
 
-  const save = async () => {
+  const save = async (closeAfterSave = true) => {
     setSaving(true);
     try {
       const ok = await onSave({ title: title.trim(), archived, archiveFolderId: archived ? archiveFolderId : null, color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
-      if (ok) onClose();
+      if (ok && closeAfterSave) onClose();
+      return ok;
     } finally {
       setSaving(false);
     }
+  };
+
+  useEffect(() => {
+    registerAutoSave(() => save(false));
+  }, [title, archived, archiveFolderId, memoColor, objects]);
+
+  const saveAndClose = async () => {
+    if (saving) return;
+    await save(true);
   };
 
   const shapeButtons: Array<{ tool: DrawTool; label: string; title: string }> = [
@@ -787,15 +790,16 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
     <div className="fixed inset-0 z-[15000] bg-[#EDE9E1] flex flex-col select-none">
       <div className="bg-[#F8F5EF] border-b border-[#D8D0C5] shadow-sm px-3 py-2 flex flex-col gap-2 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onClose} className="w-10 h-10 rounded-full bg-white border border-[#DDD5C9] font-black text-lg">←</button>
+          <button type="button" onClick={() => void saveAndClose()} className="w-10 h-10 rounded-full bg-white border border-[#DDD5C9] font-black text-lg flex-shrink-0" title="Enregistrer et fermer">←</button>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titre du dessin" className="min-w-0 flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-sm font-black focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" />
           <button
             type="button"
             onClick={() => { setArchived(value => { const next = !value; if (!next) setArchiveFolderId(null); return next; }); }}
-            className={`w-10 h-10 rounded-xl border text-lg ${archived ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`}
-            title={archived ? 'Retirer des archives' : 'Archiver ce DrawNote'}
-          >{archived ? '↩' : '📦'}</button>
-          <button type="button" onClick={() => void save()} disabled={saving} className="px-3 h-10 rounded-xl bg-[#6F7B64] text-white text-xs font-black disabled:opacity-50">{saving ? '…' : 'Enregistrer'}</button>
+            className={`h-10 px-2.5 rounded-xl border text-[10px] leading-tight font-black flex-shrink-0 ${archived ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`}
+            title={archived ? 'Déplacer vers les notes actives' : 'Archiver ce DrawNote'}
+          >{archived ? '📝 Notes actives' : '📦 Archiver'}</button>
+          {onDelete && <button type="button" onClick={onDelete} className="w-10 h-10 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0" title="Supprimer ce DrawNote">🗑</button>}
+          <button type="button" onClick={() => void saveAndClose()} disabled={saving} className="px-3 h-10 rounded-xl bg-[#6F7B64] text-white text-xs font-black disabled:opacity-50 flex-shrink-0">{saving ? '…' : 'Enregistrer'}</button>
         </div>
 
         {archived && (
@@ -850,7 +854,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
         {selectedText && (
           <div className="flex items-center gap-2 overflow-x-auto">
-            <input value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
+            <input autoFocus value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
             <div className="flex items-center gap-1 flex-shrink-0">
               {DRAW_COLORS.map(color => (
                 <button key={color} type="button" onClick={() => { setToolColors(current => ({ ...current, text: color })); updateSelectedText({ color }); }} className={`w-7 h-7 rounded-full border-2 ${selectedText.color === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`} style={{ backgroundColor: color, borderColor: '#fff' }} />
@@ -878,7 +882,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
             {objects.map(object => {
               const selected = object.type === 'text' && object.id === selectedTextId;
               return (
-                <g key={object.id} onPointerDown={object.type === 'text' && tool === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
+                <g key={object.id} onPointerDown={object.type === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
                   <DrawingObjectSvg object={object} selected={selected} />
                 </g>
               );
@@ -910,12 +914,6 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
         <div className="text-[10px] font-bold text-[#81786C] truncate">
           {!tool ? 'Aucun outil sélectionné : pince avec deux doigts pour zoomer/dézoomer.' : tool === 'pen' ? 'Dessine à main levée. Retouche Stylo pour le désélectionner.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer. ↶ retire le dernier point.' : tool === 'text' ? 'Touche la feuille pour ajouter du texte.' : 'Glisse sur la feuille pour créer la forme. Retouche l’outil pour le désélectionner.'}
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-black text-[#81786C] mr-0.5">Fond</span>
-          {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
-            <button key={color} type="button" onClick={() => setMemoColor(color)} aria-label={`Couleur de la carte ${color}`} className={`w-6 h-6 rounded-full border-2 ${drawMemoColorClasses(color).split(' ').slice(0, 2).join(' ')} ${memoColor === color ? 'ring-2 ring-black/20 ring-offset-1' : ''}`} />
-          ))}
-        </div>
       </div>
     </div>
   );
@@ -946,6 +944,7 @@ export default function Home() {
   const [showMemoArchived, setShowMemoArchived] = useState(false);
   const showMemoArchivedRef = useRef(false);
   const [activeMemoFolderId, setActiveMemoFolderId] = useState<string | null>(null);
+  const activeMemoFolderIdRef = useRef<string | null>(null);
   const [showMemoFolderCreate, setShowMemoFolderCreate] = useState(false);
   const [memoFolderName, setMemoFolderName] = useState('');
   const [showMemoMoveFolder, setShowMemoMoveFolder] = useState(false);
@@ -973,6 +972,7 @@ export default function Home() {
     drawing: DrawNoteData;
   }>(() => ({ sessionKey: 'initial', memoId: null, title: '', archived: false, archiveFolderId: null, color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
   const drawEditorOpenRef = useRef(false);
+  const drawEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
   const memoSelectionHistoryArmedRef = useRef(false);
@@ -1979,11 +1979,19 @@ export default function Home() {
         return;
       }
 
-      // Retour Android : DrawNote se ferme d'abord, puis l'éditeur de mémo,
-      // puis la sélection, puis les Archives. On ne quitte l'application qu'après.
+      // Retour Android : DrawNote se sauvegarde et se ferme d'abord, puis l'éditeur
+      // de mémo, la sélection, le dossier d'archives et enfin les Archives.
       if (drawEditorOpenRef.current) {
-        drawEditorOpenRef.current = false;
-        setDrawEditorOpen(false);
+        void drawEditorAutoSaveRef.current().then((saved) => {
+          if (!saved) {
+            if (typeof window !== 'undefined' && !window.history.state?.drawEditor) {
+              window.history.pushState({ ...(window.history.state || {}), drawEditor: true }, '', window.location.href);
+            }
+            return;
+          }
+          drawEditorOpenRef.current = false;
+          setDrawEditorOpen(false);
+        });
         return;
       }
 
@@ -2006,6 +2014,13 @@ export default function Home() {
         selectedMemoIdsRef.current = new Set();
         setSelectedMemoIds(new Set());
         memoSelectionHistoryArmedRef.current = false;
+        return;
+      }
+
+      if (activeMemoFolderIdRef.current) {
+        activeMemoFolderIdRef.current = null;
+        setActiveMemoFolderId(null);
+        setMemoSearch('');
         return;
       }
 
@@ -2463,12 +2478,17 @@ export default function Home() {
   }, [showMemoArchived]);
 
   useEffect(() => {
+    activeMemoFolderIdRef.current = activeMemoFolderId;
+  }, [activeMemoFolderId]);
+
+  useEffect(() => {
     if (mainMode !== 'memos') {
       selectedMemoIdsRef.current = new Set();
       setSelectedMemoIds(prev => prev.size ? new Set() : prev);
       memoSelectionHistoryArmedRef.current = false;
       showMemoArchivedRef.current = false;
       setShowMemoArchived(false);
+      activeMemoFolderIdRef.current = null;
       setActiveMemoFolderId(null);
     }
   }, [mainMode]);
@@ -3651,9 +3671,29 @@ export default function Home() {
     setMemoSearch('');
   };
 
+  const enterMemoArchiveFolder = (folderId: string) => {
+    if (typeof window !== 'undefined' && !window.history.state?.memoArchiveFolder) {
+      window.history.pushState({ ...(window.history.state || {}), memoArchiveFolder: true }, '', window.location.href);
+    }
+    activeMemoFolderIdRef.current = folderId;
+    setActiveMemoFolderId(folderId);
+    setMemoSearch('');
+  };
+
+  const leaveMemoArchiveFolder = (consumeHistory = true) => {
+    activeMemoFolderIdRef.current = null;
+    setActiveMemoFolderId(null);
+    setMemoSearch('');
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchiveFolder) {
+      memoIgnoreNextPopRef.current = true;
+      window.history.back();
+    }
+  };
+
   const leaveMemoArchives = (consumeHistory = true) => {
     showMemoArchivedRef.current = false;
     setShowMemoArchived(false);
+    activeMemoFolderIdRef.current = null;
     setActiveMemoFolderId(null);
     setMemoSearch('');
     if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchive) {
@@ -3834,6 +3874,7 @@ export default function Home() {
     setLoading(true);
     try {
       const currentId = drawEditorSeed.memoId;
+      if (!currentId && !payload.title.trim() && normalizeDrawNoteData(payload.drawing).objects.length === 0) return true;
       const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
       const pinned = existingMemo?.pinned ?? false;
       const archived = payload.archived;
@@ -4088,6 +4129,23 @@ export default function Home() {
   const setSelectedMemosArchived = async () => {
     const selected = getSelectedMemos();
     if (!selected.length) return;
+
+    // Dans un dossier archivé, cette action sort les notes du dossier sans les
+    // réactiver : elles restent visibles dans Archives > Sans dossier.
+    if (showMemoArchived && activeMemoFolderId) {
+      const now = new Date().toISOString();
+      const results = await Promise.all(selected.map(memo => supabase.from('memo_notes').update({
+        archived: true,
+        archive_folder_id: null,
+        sort_order: nextMemoSortOrder(memo.pinned, true, memo.id, null),
+        updated_at: now,
+      }).eq('id', memo.id)));
+      const error = results.find(result => result.error)?.error;
+      if (error) showAppMessage('Erreur lors de la sortie du dossier : ' + error.message);
+      clearMemoSelection();
+      await fetchMemos();
+      return;
+    }
     const selectedIds = new Set(selected.map(memo => memo.id));
     const targetArchived = !showMemoArchived;
     const now = new Date().toISOString();
@@ -7069,10 +7127,10 @@ export default function Home() {
                 type="button"
                 onClick={() => void setSelectedMemosArchived()}
                 className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
-                aria-label={showMemoArchived ? 'Restaurer' : 'Archiver'}
-                title={showMemoArchived ? 'Restaurer' : 'Archiver'}
+                aria-label={showMemoArchived ? (activeMemoFolder ? 'Sortir du dossier' : 'Déplacer vers les notes actives') : 'Archiver'}
+                title={showMemoArchived ? (activeMemoFolder ? 'Sortir du dossier en restant dans les archives' : 'Déplacer vers les notes actives') : 'Archiver'}
               >
-                {showMemoArchived ? '↩️' : '📦'}
+                {showMemoArchived ? (activeMemoFolder ? '📤' : '📝') : '📦'}
               </button>
               <button
                 type="button"
@@ -7103,7 +7161,7 @@ export default function Home() {
                 onClick={() => showMemoArchived ? leaveMemoArchives(true) : enterMemoArchives()}
                 className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
               >
-                {showMemoArchived ? '↩ Actifs' : '📦 Archives'}
+                {showMemoArchived ? '↩ Notes actives' : '📦 Archives'}
               </button>
             </div>
           </div>
@@ -7116,7 +7174,7 @@ export default function Home() {
                     <>
                       <button
                         type="button"
-                        onClick={() => setActiveMemoFolderId(null)}
+                        onClick={() => leaveMemoArchiveFolder(true)}
                         className="w-9 h-9 rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] text-[#665E53] font-black flex items-center justify-center"
                         title="Retour aux archives"
                       >←</button>
@@ -7143,7 +7201,7 @@ export default function Home() {
                       folder={folder}
                       count={memoFolderCounts.get(folder.id) || 0}
                       hovering={memoFolderDragHoverId === folder.id}
-                      onOpen={() => { setActiveMemoFolderId(folder.id); setMemoSearch(''); }}
+                      onOpen={() => enterMemoArchiveFolder(folder.id)}
                       onRename={() => void renameMemoFolder(folder)}
                       onDelete={() => deleteMemoFolder(folder)}
                     />
@@ -7428,10 +7486,10 @@ export default function Home() {
                     type="button"
                     onClick={() => setMemoDraftArchived(value => { const next = !value; if (!next) setMemoDraftArchiveFolderId(null); return next; })}
                     aria-pressed={memoDraftArchived}
-                    aria-label={memoDraftArchived ? 'Retirer des archives' : 'Archiver cette note'}
-                    title={memoDraftArchived ? 'Retirer des archives' : 'Archiver'}
+                    aria-label={memoDraftArchived ? 'Déplacer vers les notes actives' : 'Archiver cette note'}
+                    title={memoDraftArchived ? 'Déplacer vers les notes actives' : 'Archiver'}
                     className={`h-10 px-3 rounded-xl text-xs font-black border flex items-center justify-center gap-1.5 transition-all active:scale-95 ${memoDraftArchived ? 'bg-[#819076] text-white border-[#74836A] shadow-sm' : 'bg-white/35 border-black/5 hover:bg-white/65'}`}
-                  >{memoDraftArchived ? '↩ Actif' : '📦 Archiver'}</button>
+                  >{memoDraftArchived ? '📝 Déplacer vers notes actives' : '📦 Archiver'}</button>
 
                   <div className="flex items-center gap-1.5">
                     {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
@@ -7506,6 +7564,17 @@ export default function Home() {
               initialColor={drawEditorSeed.color}
               folders={memoFolders}
               onSave={saveDrawMemo}
+              registerAutoSave={(handler) => { drawEditorAutoSaveRef.current = handler; }}
+              onDelete={() => {
+                if (!drawEditorSeed.memoId) {
+                  closeDrawEditor(true);
+                  return;
+                }
+                const memo = memoEntriesRef.current.find(item => item.id === drawEditorSeed.memoId);
+                if (!memo) return;
+                closeDrawEditor(true);
+                deleteMemo(memo);
+              }}
               onClose={() => closeDrawEditor(true)}
             />
           )}
@@ -8454,7 +8523,7 @@ export default function Home() {
             <>
               <div className="flex items-center justify-between mb-6 w-full gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-                  <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-[#C8D2BC] text-[#35412F]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📂 Actif</button>
+                  <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-[#C8D2BC] text-[#35412F]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📂 Actives</button>
                   {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-[#E6D8AE] text-[#66562F]' : 'bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]'}`}>💤 Masqué</button>}
                   <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-[#E2D6C7] text-[#59493B]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📦 Archives</button>
                 </div>
