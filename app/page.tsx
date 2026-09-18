@@ -256,6 +256,48 @@ function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: b
 }
 
 
+function MemoArchiveFolderDroppable({ folder, hovering, onOpen, onRename, onDelete, count }: {
+  folder: MemoFolder;
+  hovering: boolean;
+  onOpen: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  count: number;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: `memo-folder:${folder.id}` });
+  const activeHover = hovering || isOver;
+  return (
+    <div
+      ref={setNodeRef}
+      data-memo-folder-id={folder.id}
+      className={`relative group rounded-2xl transition-all ${activeHover ? 'ring-2 ring-[#819076] ring-offset-2 scale-[1.02]' : ''}`}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`w-full min-h-[72px] text-left rounded-2xl border px-3 py-2.5 pr-[72px] shadow-sm transition-colors ${activeHover ? 'bg-[#D8DEC9] border-[#B9C5AC]' : 'bg-[#EEE8DD] hover:bg-[#E7DFD2] border-[#D9D0C2]'}`}
+      >
+        <div className="font-black text-xs truncate">📁 {folder.name}</div>
+        <div className="text-[10px] font-bold opacity-55 mt-1">{count} note{count > 1 ? 's' : ''}</div>
+        {activeHover && <div className="text-[9px] font-black text-[#4B5843] mt-1">Relâche pour classer ici</div>}
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onRename(); }}
+        className="absolute right-10 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-white text-[11px] flex items-center justify-center"
+        title="Renommer le dossier"
+      >✎</button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        className="absolute right-2 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-[#F0DDD7] text-[11px] flex items-center justify-center"
+        title="Supprimer le dossier"
+      >🗑</button>
+    </div>
+  );
+}
+
+
 type PlanningDndCardProps = {
   template: PlanningTemplate;
   disabled?: boolean;
@@ -295,6 +337,7 @@ type DrawPoint = { x: number; y: number };
 type DrawStrokeWidth = 2 | 4 | 7 | 10;
 type DrawTool = 'pen' | 'line' | 'dimension' | 'rect' | 'ellipse' | 'triangle' | 'polygon' | 'text';
 type DrawColor = '#202124' | '#B85D55' | '#4D6F8C' | '#5E7B59' | '#8A684B';
+const DRAW_COLORS: DrawColor[] = ['#202124', '#B85D55', '#4D6F8C', '#5E7B59', '#8A684B'];
 
 type DrawObject =
   | { id: string; type: 'path'; points: DrawPoint[]; stroke: string; strokeWidth: number }
@@ -466,22 +509,35 @@ function DrawingPreview({ data, className = '' }: { data: DrawNoteData; classNam
 type DrawEditorProps = {
   initialData: DrawNoteData;
   initialTitle: string;
-  initialPinned: boolean;
+  initialArchived: boolean;
+  initialArchiveFolderId: string | null;
   initialColor: MemoColor;
-  onSave: (payload: { title: string; pinned: boolean; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
+  folders: MemoFolder[];
+  onSave: (payload: { title: string; archived: boolean; archiveFolderId: string | null; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
   onClose: () => void;
 };
 
-function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor, onSave, onClose }: DrawEditorProps) {
+function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArchiveFolderId, initialColor, folders, onSave, onClose }: DrawEditorProps) {
   const [title, setTitle] = useState(initialTitle);
-  const [pinned, setPinned] = useState(initialPinned);
+  const [archived, setArchived] = useState(initialArchived);
+  const [archiveFolderId, setArchiveFolderId] = useState<string | null>(initialArchiveFolderId);
   const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
   const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
-  const [tool, setTool] = useState<DrawTool>('pen');
+  const [tool, setTool] = useState<DrawTool | null>('pen');
   const [strokeWidth, setStrokeWidth] = useState<DrawStrokeWidth>(4);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
-  const [textColor, setTextColor] = useState<DrawColor>('#202124');
+  const [toolColors, setToolColors] = useState<Record<DrawTool, DrawColor>>({
+    pen: '#202124',
+    line: '#202124',
+    dimension: '#202124',
+    rect: '#202124',
+    ellipse: '#202124',
+    triangle: '#202124',
+    polygon: '#202124',
+    text: '#202124',
+  });
   const [polygonDraft, setPolygonDraft] = useState<DrawPoint[]>([]);
+  const [polygonRedoPoints, setPolygonRedoPoints] = useState<DrawPoint[]>([]);
   const [undoStack, setUndoStack] = useState<DrawObject[][]>([]);
   const [redoStack, setRedoStack] = useState<DrawObject[][]>([]);
   const [saving, setSaving] = useState(false);
@@ -499,22 +555,34 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
     setRedoStack([]);
   };
   const undo = () => {
+    // Tant qu'un polygone est en cours, Annuler retire seulement son dernier point.
+    if (polygonDraft.length > 0) {
+      const lastPoint = polygonDraft[polygonDraft.length - 1];
+      setPolygonDraft(current => current.slice(0, -1));
+      setPolygonRedoPoints(current => [...current, lastPoint]);
+      return;
+    }
     if (!undoStack.length) return;
     const previous = undoStack[undoStack.length - 1];
     setRedoStack(stack => [...stack, snapshot(objects)]);
     setObjects(snapshot(previous));
     setUndoStack(stack => stack.slice(0, -1));
     setSelectedTextId(null);
-    setPolygonDraft([]);
   };
   const redo = () => {
+    // Rétablit aussi point par point un polygone en cours.
+    if (polygonRedoPoints.length > 0) {
+      const point = polygonRedoPoints[polygonRedoPoints.length - 1];
+      setPolygonDraft(current => [...current, point]);
+      setPolygonRedoPoints(current => current.slice(0, -1));
+      return;
+    }
     if (!redoStack.length) return;
     const next = redoStack[redoStack.length - 1];
     setUndoStack(stack => [...stack, snapshot(objects)]);
     setObjects(snapshot(next));
     setRedoStack(stack => stack.slice(0, -1));
     setSelectedTextId(null);
-    setPolygonDraft([]);
   };
 
   const toSvgPoint = (clientX: number, clientY: number): DrawPoint => {
@@ -556,15 +624,24 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
   const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
     if (event.button !== 0 && event.pointerType === 'mouse') return;
     const point = toSvgPoint(event.clientX, event.clientY);
+
+    // Aucun outil actif : la feuille redevient une zone de navigation/zoom.
+    if (!tool) {
+      setSelectedTextId(null);
+      return;
+    }
+
     if (tool === 'polygon') {
       event.preventDefault();
       if (polygonDraft.length >= 3 && Math.hypot(point.x - polygonDraft[0].x, point.y - polygonDraft[0].y) < 35) {
         const before = snapshot();
-        setObjects(current => [...current, { id: crypto.randomUUID(), type: 'polygon', points: polygonDraft, stroke: '#202124', strokeWidth }]);
+        setObjects(current => [...current, { id: crypto.randomUUID(), type: 'polygon', points: polygonDraft, stroke: toolColors.polygon, strokeWidth }]);
         setPolygonDraft([]);
+        setPolygonRedoPoints([]);
         pushHistory(before);
       } else {
         setPolygonDraft(current => [...current, point]);
+        setPolygonRedoPoints([]);
       }
       return;
     }
@@ -572,7 +649,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
       event.preventDefault();
       const before = snapshot();
       const id = crypto.randomUUID();
-      setObjects(current => [...current, { id, type: 'text', x: point.x, y: point.y, text: 'Texte', color: textColor, fontSize: 42 }]);
+      setObjects(current => [...current, { id, type: 'text', x: point.x, y: point.y, text: 'Texte', color: toolColors.text, fontSize: 42 }]);
       setSelectedTextId(id);
       pushHistory(before);
       return;
@@ -583,9 +660,9 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
     const before = snapshot();
     const id = crypto.randomUUID();
     let object: DrawObject;
-    if (tool === 'pen') object = { id, type: 'path', points: [point, point], stroke: '#202124', strokeWidth };
-    else if (tool === 'line' || tool === 'dimension') object = { id, type: tool, x1: point.x, y1: point.y, x2: point.x, y2: point.y, stroke: '#202124', strokeWidth };
-    else object = { id, type: tool, x: point.x, y: point.y, width: 0, height: 0, stroke: '#202124', strokeWidth };
+    if (tool === 'pen') object = { id, type: 'path', points: [point, point], stroke: toolColors.pen, strokeWidth };
+    else if (tool === 'line' || tool === 'dimension') object = { id, type: tool, x1: point.x, y1: point.y, x2: point.x, y2: point.y, stroke: toolColors[tool], strokeWidth };
+    else object = { id, type: tool, x: point.x, y: point.y, width: 0, height: 0, stroke: toolColors[tool], strokeWidth };
     setObjects(current => [...current, object]);
     interactionRef.current = { kind: 'draw', id, tool, start: point, before };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -663,10 +740,34 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
     pushHistory(before);
   };
 
+  const toggleTool = (nextTool: DrawTool) => {
+    // Retoucher l'outil déjà actif le désélectionne : on peut alors pincer pour zoomer.
+    if (tool === nextTool) {
+      setTool(null);
+      setSelectedTextId(null);
+      return;
+    }
+
+    // Un polygone mis temporairement en pause (outil désélectionné) conserve ses points.
+    // En revanche, choisir un autre outil abandonne son brouillon.
+    if (tool === 'polygon' && nextTool !== 'polygon') {
+      setPolygonDraft([]);
+      setPolygonRedoPoints([]);
+    }
+    setTool(nextTool);
+    if (nextTool !== 'text') setSelectedTextId(null);
+  };
+
+  const changeToolColor = (color: DrawColor) => {
+    if (!tool) return;
+    setToolColors(current => ({ ...current, [tool]: color }));
+    if (tool === 'text' && selectedTextId) updateSelectedText({ color });
+  };
+
   const save = async () => {
     setSaving(true);
     try {
-      const ok = await onSave({ title: title.trim(), pinned, color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
+      const ok = await onSave({ title: title.trim(), archived, archiveFolderId: archived ? archiveFolderId : null, color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
       if (ok) onClose();
     } finally {
       setSaving(false);
@@ -688,25 +789,59 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
         <div className="flex items-center gap-2">
           <button type="button" onClick={onClose} className="w-10 h-10 rounded-full bg-white border border-[#DDD5C9] font-black text-lg">←</button>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titre du dessin" className="min-w-0 flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-sm font-black focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" />
-          <button type="button" onClick={() => setPinned(value => !value)} className={`w-10 h-10 rounded-xl border text-lg ${pinned ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`} title={pinned ? 'Désépingler' : 'Épingler'}>📌</button>
+          <button
+            type="button"
+            onClick={() => { setArchived(value => { const next = !value; if (!next) setArchiveFolderId(null); return next; }); }}
+            className={`w-10 h-10 rounded-xl border text-lg ${archived ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`}
+            title={archived ? 'Retirer des archives' : 'Archiver ce DrawNote'}
+          >{archived ? '↩' : '📦'}</button>
           <button type="button" onClick={() => void save()} disabled={saving} className="px-3 h-10 rounded-xl bg-[#6F7B64] text-white text-xs font-black disabled:opacity-50">{saving ? '…' : 'Enregistrer'}</button>
         </div>
 
+        {archived && (
+          <div className="flex items-center gap-2 rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] px-2.5 py-2">
+            <span className="text-[10px] font-black text-[#665E53] flex-shrink-0">📁 Dossier</span>
+            <select
+              value={archiveFolderId || ''}
+              onChange={(e) => setArchiveFolderId(e.target.value || null)}
+              className="min-w-0 flex-1 bg-white border border-[#D9D0C2] rounded-lg px-2 py-1.5 text-xs font-bold text-[#4A463F]"
+            >
+              <option value="">Sans dossier</option>
+              {folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+            </select>
+          </div>
+        )}
+
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          <button type="button" onClick={() => setTool('pen')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'pen' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>✎ Stylo</button>
+          <button type="button" onClick={() => toggleTool('pen')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'pen' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>✎ Stylo</button>
           <div className="flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] p-1 flex-shrink-0">
             {([2, 4, 7, 10] as DrawStrokeWidth[]).map(width => (
               <button key={width} type="button" onClick={() => setStrokeWidth(width)} className={`w-8 h-7 rounded-lg flex items-center justify-center ${strokeWidth === width ? 'bg-[#E4E8DB]' : ''}`} title={`Épaisseur ${width}`}>
-                <span className="block rounded-full bg-[#202124]" style={{ width: Math.min(22, 8 + width), height: Math.max(2, width / 1.3) }} />
+                <span className="block rounded-full" style={{ width: Math.min(22, 8 + width), height: Math.max(2, width / 1.3), backgroundColor: tool ? toolColors[tool] : '#202124' }} />
               </button>
             ))}
           </div>
           {shapeButtons.map(button => (
-            <button key={button.tool} type="button" onClick={() => { setTool(button.tool); if (button.tool !== 'polygon') setPolygonDraft([]); }} title={button.title} className={`w-9 h-9 rounded-xl text-lg font-black border flex-shrink-0 ${tool === button.tool ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>{button.label}</button>
+            <button key={button.tool} type="button" onClick={() => toggleTool(button.tool)} title={button.title} className={`w-9 h-9 rounded-xl text-lg font-black border flex-shrink-0 ${tool === button.tool ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>{button.label}</button>
           ))}
-          <button type="button" onClick={() => { setTool('text'); setPolygonDraft([]); }} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'text' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>T Texte</button>
-          <button type="button" onClick={undo} disabled={!undoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Annuler">↶</button>
-          <button type="button" onClick={redo} disabled={!redoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Rétablir">↷</button>
+          <button type="button" onClick={() => toggleTool('text')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'text' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>T Texte</button>
+
+          <div className={`flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] px-1.5 py-1 flex-shrink-0 ${!tool ? 'opacity-45' : ''}`} title={tool ? 'Couleur de cet outil' : 'Sélectionne un outil pour choisir sa couleur'}>
+            {DRAW_COLORS.map(color => (
+              <button
+                key={color}
+                type="button"
+                disabled={!tool}
+                onClick={() => changeToolColor(color)}
+                aria-label={`Couleur du tracé ${color}`}
+                className={`w-6 h-6 rounded-full border-2 disabled:cursor-default ${tool && toolColors[tool] === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`}
+                style={{ backgroundColor: color, borderColor: '#fff' }}
+              />
+            ))}
+          </div>
+
+          <button type="button" onClick={undo} disabled={!polygonDraft.length && !undoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Annuler">↶</button>
+          <button type="button" onClick={redo} disabled={!polygonRedoPoints.length && !redoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Rétablir">↷</button>
         </div>
 
         {tool === 'polygon' && polygonDraft.length > 0 && (
@@ -717,8 +852,8 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
           <div className="flex items-center gap-2 overflow-x-auto">
             <input value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
             <div className="flex items-center gap-1 flex-shrink-0">
-              {(['#202124', '#B85D55', '#4D6F8C', '#5E7B59', '#8A684B'] as DrawColor[]).map(color => (
-                <button key={color} type="button" onClick={() => { setTextColor(color); updateSelectedText({ color }); }} className={`w-7 h-7 rounded-full border-2 ${selectedText.color === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`} style={{ backgroundColor: color, borderColor: '#fff' }} />
+              {DRAW_COLORS.map(color => (
+                <button key={color} type="button" onClick={() => { setToolColors(current => ({ ...current, text: color })); updateSelectedText({ color }); }} className={`w-7 h-7 rounded-full border-2 ${selectedText.color === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`} style={{ backgroundColor: color, borderColor: '#fff' }} />
               ))}
             </div>
             <button type="button" onClick={removeSelectedText} className="w-9 h-9 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0">🗑</button>
@@ -732,7 +867,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
             ref={svgRef}
             viewBox="0 0 1000 1400"
             className="block w-full h-auto bg-white"
-            style={{ touchAction: 'none' }}
+            style={{ touchAction: tool ? 'none' : 'pan-x pan-y pinch-zoom' }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={finishInteraction}
@@ -743,15 +878,15 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
             {objects.map(object => {
               const selected = object.type === 'text' && object.id === selectedTextId;
               return (
-                <g key={object.id} onPointerDown={object.type === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
+                <g key={object.id} onPointerDown={object.type === 'text' && tool === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
                   <DrawingObjectSvg object={object} selected={selected} />
                 </g>
               );
             })}
             {polygonDraft.length > 0 && (
-              <g fill="none" stroke="#202124" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+              <g fill="none" stroke={toolColors.polygon} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
                 <polyline points={polygonDraft.map(point => `${point.x},${point.y}`).join(' ')} />
-                {polygonDraft.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r={index === 0 ? 14 : 8} fill={index === 0 ? '#D8DEC9' : '#202124'} stroke="#202124" strokeWidth="2" />)}
+                {polygonDraft.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r={index === 0 ? 14 : 8} fill={index === 0 ? '#D8DEC9' : toolColors.polygon} stroke={toolColors.polygon} strokeWidth="2" />)}
               </g>
             )}
             {selectedText && selectedTextBounds && (
@@ -773,9 +908,10 @@ function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor
 
       <div className="bg-[#F8F5EF] border-t border-[#D8D0C5] px-3 py-2 flex items-center justify-between gap-2 flex-shrink-0">
         <div className="text-[10px] font-bold text-[#81786C] truncate">
-          {tool === 'pen' ? 'Dessine à main levée.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer.' : tool === 'text' ? 'Touche la feuille pour ajouter du texte.' : 'Glisse sur la feuille pour créer la forme.'}
+          {!tool ? 'Aucun outil sélectionné : pince avec deux doigts pour zoomer/dézoomer.' : tool === 'pen' ? 'Dessine à main levée. Retouche Stylo pour le désélectionner.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer. ↶ retire le dernier point.' : tool === 'text' ? 'Touche la feuille pour ajouter du texte.' : 'Glisse sur la feuille pour créer la forme. Retouche l’outil pour le désélectionner.'}
         </div>
         <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-black text-[#81786C] mr-0.5">Fond</span>
           {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
             <button key={color} type="button" onClick={() => setMemoColor(color)} aria-label={`Couleur de la carte ${color}`} className={`w-6 h-6 rounded-full border-2 ${drawMemoColorClasses(color).split(' ').slice(0, 2).join(' ')} ${memoColor === color ? 'ring-2 ring-black/20 ring-offset-1' : ''}`} />
           ))}
@@ -813,6 +949,8 @@ export default function Home() {
   const [showMemoFolderCreate, setShowMemoFolderCreate] = useState(false);
   const [memoFolderName, setMemoFolderName] = useState('');
   const [showMemoMoveFolder, setShowMemoMoveFolder] = useState(false);
+  const [showMemosHelp, setShowMemosHelp] = useState(false);
+  const [memoFolderDragHoverId, setMemoFolderDragHoverId] = useState<string | null>(null);
   const [memoEditorOpen, setMemoEditorOpen] = useState(false);
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
   const [memoDraftType, setMemoDraftType] = useState<'text' | 'list'>('text');
@@ -822,15 +960,18 @@ export default function Home() {
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const [memoDraftArchived, setMemoDraftArchived] = useState(false);
+  const [memoDraftArchiveFolderId, setMemoDraftArchiveFolderId] = useState<string | null>(null);
   const [drawEditorOpen, setDrawEditorOpen] = useState(false);
   const [drawEditorSeed, setDrawEditorSeed] = useState<{
     sessionKey: string;
     memoId: string | null;
     title: string;
-    pinned: boolean;
+    archived: boolean;
+    archiveFolderId: string | null;
     color: MemoColor;
     drawing: DrawNoteData;
-  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', pinned: false, color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
+  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', archived: false, archiveFolderId: null, color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
   const drawEditorOpenRef = useRef(false);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
@@ -1481,7 +1622,11 @@ export default function Home() {
   // ==========================================
   useEffect(() => {
     const preventNativeZoom = (e: TouchEvent) => {
-      if (e.touches.length > 1) {
+      if (e.touches.length <= 1) return;
+      const target = e.target as Node | null;
+      // Le planning possède son propre zoom 2 axes. On ne bloque donc le pinch natif
+      // que dans sa grille, afin que DrawNote puisse zoomer quand aucun outil n'est actif.
+      if (gridRef.current && target && gridRef.current.contains(target)) {
         e.preventDefault();
       }
     };
@@ -2424,9 +2569,9 @@ export default function Home() {
     return columns;
   };
 
-  const nextMemoSortOrder = (pinned: boolean, archived: boolean, excludeId?: string) => {
+  const nextMemoSortOrder = (pinned: boolean, archived: boolean, excludeId?: string, archiveFolderId: string | null = null) => {
     const orders = memoEntriesRef.current
-      .filter(memo => memo.id !== excludeId && memo.pinned === pinned && memo.archived === archived)
+      .filter(memo => memo.id !== excludeId && memo.pinned === pinned && memo.archived === archived && (memo.archive_folder_id || null) === archiveFolderId)
       .map(memo => Number.isFinite(memo.sort_order) ? memo.sort_order : 0);
     return orders.length ? Math.max(...orders) + 1 : 0;
   };
@@ -2964,7 +3109,9 @@ export default function Home() {
     const sourceId = String(event.active.id);
     const overId = event.over ? String(event.over.id) : '';
     setMemoTrashHover(overId === 'memo-trash');
-    if (!overId || overId === 'memo-trash' || overId === sourceId) return;
+    const folderHoverId = overId.startsWith('memo-folder:') ? overId.slice('memo-folder:'.length) : null;
+    setMemoFolderDragHoverId(folderHoverId);
+    if (!overId || overId === 'memo-trash' || overId === sourceId || folderHoverId) return;
 
     const source = memoEntriesRef.current.find(item => item.id === sourceId);
     const target = memoEntriesRef.current.find(item => item.id === overId);
@@ -2981,6 +3128,7 @@ export default function Home() {
   const resetMemoDndUi = () => {
     setDraggingMemoId(null);
     setMemoTrashHover(false);
+    setMemoFolderDragHoverId(null);
     setMemoDndMoved(false);
     memoDndMovedRef.current = false;
     memoDndSessionRef.current = null;
@@ -3007,6 +3155,25 @@ export default function Home() {
         || session?.originalEntries.find(item => item.id === sourceId);
       resetMemoDndUi();
       if (memo) void deleteMemoImmediately(memo);
+      return;
+    }
+
+    if (overId.startsWith('memo-folder:')) {
+      const folderId = overId.slice('memo-folder:'.length);
+      const memo = memoEntriesRef.current.find(item => item.id === sourceId)
+        || session?.originalEntries.find(item => item.id === sourceId);
+      resetMemoDndUi();
+      if (memo?.archived && folderId) {
+        const sortOrder = nextMemoSortOrder(memo.pinned, true, memo.id, folderId);
+        void (async () => {
+          const { error } = await supabase
+            .from('memo_notes')
+            .update({ archive_folder_id: folderId, sort_order: sortOrder, updated_at: new Date().toISOString() })
+            .eq('id', memo.id);
+          if (error) showAppMessage('Erreur lors du classement dans le dossier : ' + error.message);
+          await fetchMemos();
+        })();
+      }
       return;
     }
 
@@ -3507,6 +3674,24 @@ export default function Home() {
     await fetchMemoFolders();
   };
 
+  const renameMemoFolder = async (folder: MemoFolder) => {
+    const value = await askAppPrompt({
+      title: 'Renommer le dossier',
+      message: 'Choisis le nouveau nom du dossier d’archives.',
+      defaultValue: folder.name,
+      placeholder: 'Nom du dossier',
+      confirmLabel: 'Renommer',
+    });
+    const name = value?.trim();
+    if (!name || name === folder.name) return;
+    const { error } = await supabase.from('memo_folders').update({ name }).eq('id', folder.id);
+    if (error) {
+      showAppMessage('Erreur lors du renommage du dossier : ' + error.message);
+      return;
+    }
+    await fetchMemoFolders();
+  };
+
   const moveSelectedMemosToFolder = async (folderId: string | null) => {
     const ids = Array.from(selectedMemoIdsRef.current);
     if (!ids.length) return;
@@ -3591,6 +3776,8 @@ export default function Home() {
     setMemoNewItem('');
     setMemoDraftColor('sage');
     setMemoDraftPinned(false);
+    setMemoDraftArchived(false);
+    setMemoDraftArchiveFolderId(null);
   };
 
   const openNewMemo = (type: 'text' | 'list') => {
@@ -3606,7 +3793,8 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: target?.id || null,
       title: target?.title || '',
-      pinned: target?.pinned || false,
+      archived: target?.archived || false,
+      archiveFolderId: target?.archive_folder_id || null,
       color: target?.color || 'sage',
       drawing: target ? normalizeDrawNoteData(target.drawing_data) : { ...EMPTY_DRAW_NOTE, objects: [] },
     });
@@ -3633,7 +3821,8 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: null,
       title: memoDraftTitle.trim(),
-      pinned: memoDraftPinned,
+      archived: memoDraftArchived,
+      archiveFolderId: memoDraftArchived ? memoDraftArchiveFolderId : null,
       color: memoDraftColor,
       drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
@@ -3641,16 +3830,18 @@ export default function Home() {
     setDrawEditorOpen(true);
   };
 
-  const saveDrawMemo = async (payload: { title: string; pinned: boolean; color: MemoColor; drawing: DrawNoteData }) => {
+  const saveDrawMemo = async (payload: { title: string; archived: boolean; archiveFolderId: string | null; color: MemoColor; drawing: DrawNoteData }) => {
     setLoading(true);
     try {
       const currentId = drawEditorSeed.memoId;
       const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
-      const archived = existingMemo?.archived ?? false;
-      const keepExistingOrder = existingMemo && existingMemo.pinned === payload.pinned;
-      const sortOrder = keepExistingOrder
+      const pinned = existingMemo?.pinned ?? false;
+      const archived = payload.archived;
+      const archiveFolderId = archived ? payload.archiveFolderId : null;
+      const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === archived && (existingMemo.archive_folder_id || null) === archiveFolderId);
+      const sortOrder = keepExistingOrder && existingMemo
         ? existingMemo.sort_order
-        : nextMemoSortOrder(payload.pinned, archived, currentId || undefined);
+        : nextMemoSortOrder(pinned, archived, currentId || undefined, archiveFolderId);
       const dbPayload = {
         title: payload.title,
         content: '',
@@ -3659,14 +3850,16 @@ export default function Home() {
         is_drawing: true,
         drawing_data: normalizeDrawNoteData(payload.drawing),
         color: payload.color,
-        pinned: payload.pinned,
+        pinned,
+        archived,
+        archive_folder_id: archiveFolderId,
         sort_order: sortOrder,
         updated_at: new Date().toISOString(),
       };
 
       const query = currentId
         ? supabase.from('memo_notes').update(dbPayload).eq('id', currentId)
-        : supabase.from('memo_notes').insert([{ ...dbPayload, archived: false, archive_folder_id: null }]);
+        : supabase.from('memo_notes').insert([dbPayload]);
       const { error } = await query;
       if (error) throw error;
       await fetchMemos();
@@ -3688,6 +3881,8 @@ export default function Home() {
     setMemoNewItem('');
     setMemoDraftColor(memo.color);
     setMemoDraftPinned(memo.pinned);
+    setMemoDraftArchived(memo.archived);
+    setMemoDraftArchiveFolderId(memo.archive_folder_id);
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
@@ -3718,11 +3913,13 @@ export default function Home() {
     setLoading(true);
     try {
       const existingMemo = editingMemoId ? memoEntriesRef.current.find(memo => memo.id === editingMemoId) : null;
-      const targetArchived = existingMemo?.archived ?? false;
-      const keepExistingOrder = existingMemo && existingMemo.pinned === memoDraftPinned;
-      const sortOrder = keepExistingOrder
+      const pinned = existingMemo?.pinned ?? false;
+      const targetArchived = memoDraftArchived;
+      const targetArchiveFolderId = targetArchived ? memoDraftArchiveFolderId : null;
+      const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === targetArchived && (existingMemo.archive_folder_id || null) === targetArchiveFolderId);
+      const sortOrder = keepExistingOrder && existingMemo
         ? existingMemo.sort_order
-        : nextMemoSortOrder(memoDraftPinned, targetArchived, editingMemoId || undefined);
+        : nextMemoSortOrder(pinned, targetArchived, editingMemoId || undefined, targetArchiveFolderId);
 
       const payload = {
         title,
@@ -3730,14 +3927,16 @@ export default function Home() {
         memo_type: memoDraftType,
         items,
         color: memoDraftColor,
-        pinned: memoDraftPinned,
+        pinned,
+        archived: targetArchived,
+        archive_folder_id: targetArchiveFolderId,
         sort_order: sortOrder,
         updated_at: new Date().toISOString(),
       };
 
       const query = editingMemoId
         ? supabase.from('memo_notes').update(payload).eq('id', editingMemoId)
-        : supabase.from('memo_notes').insert([{ ...payload, archived: false, archive_folder_id: null }]);
+        : supabase.from('memo_notes').insert([payload]);
 
       const { error } = await query;
       if (error) throw error;
@@ -3767,8 +3966,9 @@ export default function Home() {
     )) {
       const nextPinned = typeof payload.pinned === 'boolean' ? payload.pinned : currentMemo.pinned;
       const nextArchived = typeof payload.archived === 'boolean' ? payload.archived : currentMemo.archived;
-      nextPayload.sort_order = nextMemoSortOrder(nextPinned, nextArchived, id);
-      if (typeof payload.archived === 'boolean' && payload.archived !== currentMemo.archived) {
+      const nextFolderId = !nextArchived ? null : (typeof payload.archive_folder_id === 'string' ? payload.archive_folder_id : currentMemo.archive_folder_id);
+      nextPayload.sort_order = nextMemoSortOrder(nextPinned, nextArchived, id, nextFolderId || null);
+      if (typeof payload.archived === 'boolean' && payload.archived !== currentMemo.archived && !nextArchived) {
         nextPayload.archive_folder_id = null;
       }
     }
@@ -6834,7 +7034,13 @@ export default function Home() {
             >
               Notes, Mémos &amp; Listes
             </h1>
-            <div />
+            <button
+              type="button"
+              onClick={() => setShowMemosHelp(true)}
+              className="justify-self-end w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm"
+              aria-label="Aide Notes, Mémos & Listes"
+              title="Comment ça fonctionne ?"
+            >?</button>
           </div>
 
           {selectedMemoIds.size > 0 && (
@@ -6932,22 +7138,15 @@ export default function Home() {
               {!activeMemoFolder && memoFolders.length > 0 && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
                   {memoFolders.map(folder => (
-                    <div key={folder.id} className="relative group">
-                      <button
-                        type="button"
-                        onClick={() => { setActiveMemoFolderId(folder.id); setMemoSearch(''); }}
-                        className="w-full min-h-[72px] text-left rounded-2xl bg-[#EEE8DD] hover:bg-[#E7DFD2] border border-[#D9D0C2] px-3 py-2.5 pr-9 shadow-sm"
-                      >
-                        <div className="font-black text-xs truncate">📁 {folder.name}</div>
-                        <div className="text-[10px] font-bold opacity-55 mt-1">{memoFolderCounts.get(folder.id) || 0} note{(memoFolderCounts.get(folder.id) || 0) > 1 ? 's' : ''}</div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); deleteMemoFolder(folder); }}
-                        className="absolute right-2 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-[#F0DDD7] text-[11px] flex items-center justify-center"
-                        title="Supprimer le dossier"
-                      >🗑</button>
-                    </div>
+                    <MemoArchiveFolderDroppable
+                      key={folder.id}
+                      folder={folder}
+                      count={memoFolderCounts.get(folder.id) || 0}
+                      hovering={memoFolderDragHoverId === folder.id}
+                      onOpen={() => { setActiveMemoFolderId(folder.id); setMemoSearch(''); }}
+                      onRename={() => void renameMemoFolder(folder)}
+                      onDelete={() => deleteMemoFolder(folder)}
+                    />
                   ))}
                 </div>
               )}
@@ -7045,8 +7244,8 @@ export default function Home() {
                       ))}
                     </div>
                   )}
-                  <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : 'bg-[#4B5843]'}`}>
-                    {memoTrashHover ? 'Relâche pour supprimer' : 'Relâche pour placer'}
+                  <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : memoFolderDragHoverId ? 'bg-[#6F7B64]' : 'bg-[#4B5843]'}`}>
+                    {memoTrashHover ? 'Relâche pour supprimer' : memoFolderDragHoverId ? `Relâche pour classer dans ${memoFolders.find(folder => folder.id === memoFolderDragHoverId)?.name || 'ce dossier'}` : 'Relâche pour placer'}
                   </div>
                 </div>
               );
@@ -7086,6 +7285,26 @@ export default function Home() {
                     <button key={folder.id} type="button" onClick={() => void moveSelectedMemosToFolder(folder.id)} className="w-full text-left rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] px-3 py-3 text-sm font-black">📁 {folder.name}</button>
                   ))}
                   <button type="button" onClick={() => { setShowMemoMoveFolder(false); setMemoFolderName(''); setShowMemoFolderCreate(true); }} className="w-full text-left rounded-xl bg-[#D8DEC9] border border-[#C8D0B8] px-3 py-3 text-sm font-black text-[#394433]">＋ Nouveau dossier</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showMemosHelp && (
+            <div className="fixed inset-0 z-[13030] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemosHelp(false)}>
+              <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <h2 className="text-lg font-black text-[#46513F]">Notes, Mémos &amp; Listes</h2>
+                  <button type="button" onClick={() => setShowMemosHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+                </div>
+                <div className="space-y-3 text-sm leading-relaxed text-[#655E54]">
+                  <p><strong>＋ Créer :</strong> ajoute une note, une liste réutilisable ou un DrawNote.</p>
+                  <p><strong>📌 Épingler :</strong> fais un appui long sur une carte sans la déplacer, puis touche l’épingle dans la barre d’actions. L’épinglement n’est volontairement pas proposé pendant la création.</p>
+                  <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre.</p>
+                  <p><strong>📦 Archiver :</strong> une note peut être archivée dès sa création. Si tu as créé des dossiers d’archives, tu peux choisir immédiatement dans lequel la ranger.</p>
+                  <p><strong>📁 Dossiers d’archives :</strong> dans Archives, crée et renomme des dossiers. Depuis « Sans dossier », fais glisser une note archivée directement sur un dossier pour la classer. Tu peux aussi utiliser la sélection multiple puis l’icône dossier.</p>
+                  <p><strong>→ Tâches &amp; Rappels :</strong> transforme une note ou les éléments non cochés d’une liste en tâche sans supprimer le mémo d’origine.</p>
+                  <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. Le bouton 📦 permet d’archiver directement le dessin et de choisir son dossier.</p>
                 </div>
               </div>
             </div>
@@ -7207,12 +7426,12 @@ export default function Home() {
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                   <button
                     type="button"
-                    onClick={() => setMemoDraftPinned(prev => !prev)}
-                    aria-pressed={memoDraftPinned}
-                    aria-label={memoDraftPinned ? 'Désépingler la note' : 'Épingler la note'}
-                    title={memoDraftPinned ? 'Désépingler' : 'Épingler'}
-                    className={`w-10 h-10 rounded-xl text-lg font-black border flex items-center justify-center transition-all active:scale-95 ${memoDraftPinned ? 'bg-[#819076] text-white border-[#74836A] shadow-sm' : 'bg-white/35 border-black/5 hover:bg-white/65'}`}
-                  >📌</button>
+                    onClick={() => setMemoDraftArchived(value => { const next = !value; if (!next) setMemoDraftArchiveFolderId(null); return next; })}
+                    aria-pressed={memoDraftArchived}
+                    aria-label={memoDraftArchived ? 'Retirer des archives' : 'Archiver cette note'}
+                    title={memoDraftArchived ? 'Retirer des archives' : 'Archiver'}
+                    className={`h-10 px-3 rounded-xl text-xs font-black border flex items-center justify-center gap-1.5 transition-all active:scale-95 ${memoDraftArchived ? 'bg-[#819076] text-white border-[#74836A] shadow-sm' : 'bg-white/35 border-black/5 hover:bg-white/65'}`}
+                  >{memoDraftArchived ? '↩ Actif' : '📦 Archiver'}</button>
 
                   <div className="flex items-center gap-1.5">
                     {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
@@ -7227,11 +7446,26 @@ export default function Home() {
                   </div>
                 </div>
 
+                {memoDraftArchived && (
+                  <div className="mt-3 rounded-2xl bg-white/45 border border-black/10 p-3">
+                    <div className="text-[10px] font-black uppercase tracking-[0.12em] opacity-55 mb-2">Classer dans les archives</div>
+                    <select
+                      value={memoDraftArchiveFolderId || ''}
+                      onChange={(e) => setMemoDraftArchiveFolderId(e.target.value || null)}
+                      className="w-full bg-white/80 border border-black/10 rounded-xl px-3 py-2.5 text-sm font-bold text-[#4A463F]"
+                    >
+                      <option value="">Sans dossier</option>
+                      {memoFolders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                    </select>
+                    {memoFolders.length === 0 && <p className="text-[10px] font-semibold opacity-55 mt-2">Tu peux créer des dossiers depuis l’écran Archives.</p>}
+                  </div>
+                )}
+
                 {editingMemoId && (() => {
                   const originalMemo = memoEntries.find(memo => memo.id === editingMemoId);
                   if (!originalMemo) return null;
                   return (
-                    <div className="mt-4 grid grid-cols-[1fr_auto_auto] gap-2">
+                    <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
                       <button
                         type="button"
                         onClick={async () => {
@@ -7245,17 +7479,6 @@ export default function Home() {
                       >
                         → Envoyer vers Tâches &amp; Rappels
                       </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const saved = await persistMemoDraft();
-                          if (!saved) return;
-                          await closeMemoEditor(true, false);
-                          await updateMemo(originalMemo.id, { archived: !originalMemo.archived });
-                        }}
-                        className="w-10 h-10 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-sm font-black"
-                        title={originalMemo.archived ? 'Désarchiver' : 'Archiver'}
-                      >{originalMemo.archived ? '↩' : '📦'}</button>
                       <button
                         type="button"
                         onClick={async () => { await closeMemoEditor(true, false); deleteMemo(originalMemo); }}
@@ -7278,8 +7501,10 @@ export default function Home() {
               key={drawEditorSeed.sessionKey}
               initialData={drawEditorSeed.drawing}
               initialTitle={drawEditorSeed.title}
-              initialPinned={drawEditorSeed.pinned}
+              initialArchived={drawEditorSeed.archived}
+              initialArchiveFolderId={drawEditorSeed.archiveFolderId}
               initialColor={drawEditorSeed.color}
+              folders={memoFolders}
               onSave={saveDrawMemo}
               onClose={() => closeDrawEditor(true)}
             />
