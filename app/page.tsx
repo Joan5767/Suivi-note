@@ -1796,12 +1796,15 @@ export default function Home() {
   const detachMemoWindowListeners = () => {
     const listeners = memoWindowListenersRef.current;
     if (!listeners) return;
-    window.removeEventListener('pointermove', listeners.move);
-    window.removeEventListener('pointerup', listeners.up);
-    window.removeEventListener('pointercancel', listeners.cancel);
-    window.removeEventListener('touchmove', listeners.touchMove);
-    window.removeEventListener('touchend', listeners.touchEnd);
-    window.removeEventListener('touchcancel', listeners.touchCancel);
+    // Capture au niveau document : plus fiable sur Android qu'un listener posé
+    // seulement après l'activation du drag. Les événements restent suivis même
+    // lorsque le navigateur annule le PointerEvent natif.
+    document.removeEventListener('pointermove', listeners.move, true);
+    document.removeEventListener('pointerup', listeners.up, true);
+    document.removeEventListener('pointercancel', listeners.cancel, true);
+    document.removeEventListener('touchmove', listeners.touchMove, true);
+    document.removeEventListener('touchend', listeners.touchEnd, true);
+    document.removeEventListener('touchcancel', listeners.touchCancel, true);
     memoWindowListenersRef.current = null;
   };
 
@@ -1966,6 +1969,9 @@ export default function Home() {
     memoDragRef.current = null;
     detachMemoWindowListeners();
     if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
+    try {
+      if (drag.element.hasPointerCapture?.(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId);
+    } catch (_) {}
     if (drag.active) {
       preventDefault?.();
       stopPropagation?.();
@@ -2011,61 +2017,107 @@ export default function Home() {
 
   const attachMemoWindowListeners = () => {
     detachMemoWindowListeners();
+
     const move = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (!drag || drag.pointerCancelled) return;
-      // Sur mobile, les TouchEvents deviennent la source principale dès que le
-      // drag est actif. Cela évite les pointercancel intempestifs d'Android.
+      if (!drag) return;
+
+      // Sur écran tactile on s'appuie sur TouchEvent, installé dès pointerdown.
+      // Le navigateur peut envoyer pointercancel lorsqu'il envisage un scroll ;
+      // ce PointerEvent ne doit donc jamais piloter le drag tactile.
       if (drag.pointerType === 'touch') return;
+
+      if (!drag.active) return;
       processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     };
+
     const up = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (!drag || drag.pointerCancelled) return;
+      if (!drag) return;
       if (drag.pointerType === 'touch') return;
-      finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
+      if (drag.active) finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
+      else cancelMemoLongPress(event.pointerId);
     };
+
     const cancel = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (drag?.active && drag.pointerId === event.pointerId && drag.pointerType === 'touch') {
-        // Ne termine pas le drag ici : Android peut annuler le PointerEvent
-        // pendant un mouvement vertical. Le TouchEvent continue, lui.
-        drag.pointerCancelled = true;
+      if (!drag) return;
+
+      if (drag.pointerType === 'touch') {
+        // Très important : ne PAS marquer le drag comme annulé. Android peut
+        // émettre pointercancel au début d'un mouvement vertical alors que les
+        // TouchEvents continuent normalement jusqu'à touchend.
+        if (!drag.active) {
+          clearMemoLongPressTimer();
+        }
         return;
       }
-      cancelMemoLongPress(event.pointerId);
+
+      if (drag.active) finishMemoDrag(event.pointerId);
+      else cancelMemoLongPress(event.pointerId);
     };
+
     const touchMove = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag?.active || drag.pointerType !== 'touch' || event.touches.length === 0) return;
-      if (event.cancelable) event.preventDefault();
+      if (!drag || drag.pointerType !== 'touch' || event.touches.length === 0) return;
       const touch = event.touches[0];
+      drag.lastX = touch.clientX;
+      drag.lastY = touch.clientY;
+
+      if (!drag.active) {
+        const distance = Math.hypot(touch.clientX - drag.startX, touch.clientY - drag.startY);
+        const heldFor = performance.now() - drag.pressStartedAt;
+
+        // Même si le PointerEvent a été annulé par Android, le TouchEvent peut
+        // encore déclencher le drag après l'appui long.
+        if (distance > 10 && heldFor >= 115) {
+          clearMemoLongPressTimer();
+          activateMemoDrag(drag);
+        } else if (distance > 56 && heldFor < 115) {
+          // Geste de scroll volontaire avant l'appui long : on abandonne sans
+          // empêcher le défilement natif.
+          cancelMemoLongPress(drag.pointerId);
+          return;
+        } else {
+          return;
+        }
+      }
+
+      if (event.cancelable) event.preventDefault();
       processMemoDragMove(touch.clientX, touch.clientY, drag.pointerId);
     };
+
     const touchEnd = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag?.active || drag.pointerType !== 'touch') return;
-      if (event.cancelable) event.preventDefault();
-      finishMemoDrag(drag.pointerId);
+      if (!drag || drag.pointerType !== 'touch') return;
+      if (event.cancelable && drag.active) event.preventDefault();
+      if (drag.active) finishMemoDrag(drag.pointerId);
+      else cancelMemoLongPress(drag.pointerId);
     };
+
     const touchCancel = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag) return;
-      // Un touchcancel ne doit jamais laisser une carte flottante bloquée.
-      if (drag.active && drag.pointerType === 'touch') {
-        if (event.cancelable) event.preventDefault();
-        finishMemoDrag(drag.pointerId);
-        return;
-      }
-      cancelMemoLongPress(drag.pointerId);
+      if (!drag || drag.pointerType !== 'touch') return;
+
+      // Un vrai touchcancel doit toujours nettoyer l'état. S'il survient pendant
+      // un drag, on valide la dernière position connue plutôt que de laisser la
+      // carte fantôme figée à l'écran.
+      if (event.cancelable && drag.active) event.preventDefault();
+      if (drag.active) finishMemoDrag(drag.pointerId);
+      else cancelMemoLongPress(drag.pointerId);
     };
+
     memoWindowListenersRef.current = { move, up, cancel, touchMove, touchEnd, touchCancel };
-    window.addEventListener('pointermove', move, { passive: false });
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', cancel);
-    window.addEventListener('touchmove', touchMove, { passive: false });
-    window.addEventListener('touchend', touchEnd, { passive: false });
-    window.addEventListener('touchcancel', touchCancel);
+
+    // Installés en phase capture et, pour le tactile, dès le pointerdown. Ainsi
+    // touchend/touchcancel sont reçus même si un composant React ou Android
+    // interrompt la chaîne de PointerEvents.
+    document.addEventListener('pointermove', move, { passive: false, capture: true });
+    document.addEventListener('pointerup', up, { capture: true });
+    document.addEventListener('pointercancel', cancel, { capture: true });
+    document.addEventListener('touchmove', touchMove, { passive: false, capture: true });
+    document.addEventListener('touchend', touchEnd, { passive: false, capture: true });
+    document.addEventListener('touchcancel', touchCancel, { passive: false, capture: true });
   };
 
   const activateMemoDrag = (drag: NonNullable<typeof memoDragRef.current>) => {
@@ -2088,7 +2140,7 @@ export default function Home() {
     drag.layoutLockedUntil = 0;
     drag.slots = captureMemoSlots(drag);
     setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-    attachMemoWindowListeners();
+    if (!memoWindowListenersRef.current) attachMemoWindowListeners();
     if ('vibrate' in navigator) navigator.vibrate(16);
   };
 
@@ -2132,6 +2184,11 @@ export default function Home() {
 
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 
+    // Sur mobile les listeners TouchEvent doivent exister AVANT le premier
+    // mouvement. Les installer uniquement après 180 ms était la cause principale
+    // des drags qui restaient bloqués lorsque Android prenait le geste pour un scroll.
+    if (e.pointerType === 'touch') attachMemoWindowListeners();
+
     memoLongPressTimerRef.current = window.setTimeout(() => {
       const drag = memoDragRef.current;
       if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
@@ -2143,6 +2200,10 @@ export default function Home() {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
 
+    // Sur tactile, un seul moteur doit piloter le geste : les TouchEvents natifs
+    // installés en capture. Mélanger PointerEvent + TouchEvent créait des fins de
+    // drag concurrentes et des cartes fantômes figées.
+    if (drag.pointerType === 'touch') return;
     if (drag.active) return;
 
     drag.lastX = e.clientX;
@@ -2170,10 +2231,15 @@ export default function Home() {
   const endMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
-    if (drag.active) return; // le listener window termine le drag
+    if (drag.pointerType === 'touch') {
+      // touchend (capture document) est la source de vérité sur mobile.
+      return;
+    }
+    if (drag.active) return;
     clearMemoLongPressTimer();
     try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
     memoDragRef.current = null;
+    detachMemoWindowListeners();
   };
 
   const cancelMemoLongPress = (pointerId?: number) => {
@@ -4810,7 +4876,11 @@ export default function Home() {
         onPointerDown={(e) => beginMemoLongPress(e, memo)}
         onPointerMove={moveMemoLongPress}
         onPointerUp={endMemoLongPress}
-        onPointerCancel={(e) => cancelMemoLongPress(e.pointerId)}
+        onPointerCancel={(e) => {
+          // Android peut annuler le PointerEvent pendant un drag vertical.
+          // Le TouchEvent global continue et terminera proprement le geste.
+          if (e.pointerType !== 'touch') cancelMemoLongPress(e.pointerId);
+        }}
         onContextMenu={(e) => e.preventDefault()}
         draggable={false}
         className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity,transform] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isSelected ? 'ring-2 ring-[#6F7B64] ring-offset-2 ring-offset-[#F8F5EF] shadow-md' : ''} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
