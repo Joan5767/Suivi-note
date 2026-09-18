@@ -535,6 +535,8 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
   const [redoStack, setRedoStack] = useState<DrawObject[][]>([]);
   const [saving, setSaving] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const selectNewTextOnFocusRef = useRef(false);
   const interactionRef = useRef<
     | null
     | { kind: 'draw'; id: string; tool: Exclude<DrawTool, 'polygon' | 'text'>; start: DrawPoint; before: DrawObject[] }
@@ -642,6 +644,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
       event.preventDefault();
       const before = snapshot();
       const id = crypto.randomUUID();
+      selectNewTextOnFocusRef.current = true;
       setObjects(current => [...current, { id, type: 'text', x: point.x, y: point.y, text: 'Texte', color: toolColors.text, fontSize: 42 }]);
       setSelectedTextId(id);
       pushHistory(before);
@@ -717,6 +720,16 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
   const selectedText = objects.find(object => object.id === selectedTextId && object.type === 'text') as Extract<DrawObject, { type: 'text' }> | undefined;
   const selectedTextBounds = selectedText ? drawingObjectBounds(selectedText) : null;
+
+  useEffect(() => {
+    if (!selectedText || !selectNewTextOnFocusRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      textInputRef.current?.focus();
+      textInputRef.current?.select();
+      selectNewTextOnFocusRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedTextId]);
 
   const updateSelectedText = (payload: Partial<Extract<DrawObject, { type: 'text' }>>) => {
     if (!selectedTextId) return;
@@ -816,36 +829,39 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
           </div>
         )}
 
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          <button type="button" onClick={() => toggleTool('pen')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'pen' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>✎ Stylo</button>
-          <div className="flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] p-1 flex-shrink-0">
+        <div className="flex items-center gap-2 pb-0.5">
+          <div className="min-w-0 flex-1 flex items-center gap-1.5 overflow-x-auto">
+            <button type="button" onClick={() => toggleTool('pen')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'pen' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>✎ Stylo</button>
+            <button type="button" onClick={() => toggleTool('text')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'text' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>T Texte</button>
+            <div className="flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] p-1 flex-shrink-0">
             {([2, 4, 7, 10] as DrawStrokeWidth[]).map(width => (
               <button key={width} type="button" onClick={() => setStrokeWidth(width)} className={`w-8 h-7 rounded-lg flex items-center justify-center ${strokeWidth === width ? 'bg-[#E4E8DB]' : ''}`} title={`Épaisseur ${width}`}>
                 <span className="block rounded-full" style={{ width: Math.min(22, 8 + width), height: Math.max(2, width / 1.3), backgroundColor: tool ? toolColors[tool] : '#202124' }} />
               </button>
             ))}
-          </div>
-          {shapeButtons.map(button => (
-            <button key={button.tool} type="button" onClick={() => toggleTool(button.tool)} title={button.title} className={`w-9 h-9 rounded-xl text-lg font-black border flex-shrink-0 ${tool === button.tool ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>{button.label}</button>
-          ))}
-          <button type="button" onClick={() => toggleTool('text')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'text' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>T Texte</button>
-
-          <div className={`flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] px-1.5 py-1 flex-shrink-0 ${!tool ? 'opacity-45' : ''}`} title={tool ? 'Couleur de cet outil' : 'Sélectionne un outil pour choisir sa couleur'}>
-            {DRAW_COLORS.map(color => (
-              <button
-                key={color}
-                type="button"
-                disabled={!tool}
-                onClick={() => changeToolColor(color)}
-                aria-label={`Couleur du tracé ${color}`}
-                className={`w-6 h-6 rounded-full border-2 disabled:cursor-default ${tool && toolColors[tool] === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`}
-                style={{ backgroundColor: color, borderColor: '#fff' }}
-              />
+            </div>
+            {shapeButtons.map(button => (
+              <button key={button.tool} type="button" onClick={() => toggleTool(button.tool)} title={button.title} className={`w-9 h-9 rounded-xl text-lg font-black border flex-shrink-0 ${tool === button.tool ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>{button.label}</button>
             ))}
-          </div>
 
-          <button type="button" onClick={undo} disabled={!polygonDraft.length && !undoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Annuler">↶</button>
-          <button type="button" onClick={redo} disabled={!polygonRedoPoints.length && !redoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Rétablir">↷</button>
+            <div className={`flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] px-1.5 py-1 flex-shrink-0 ${!tool ? 'opacity-45' : ''}`} title={tool ? 'Couleur de cet outil' : 'Sélectionne un outil pour choisir sa couleur'}>
+              {DRAW_COLORS.map(color => (
+                <button
+                  key={color}
+                  type="button"
+                  disabled={!tool}
+                  onClick={() => changeToolColor(color)}
+                  aria-label={`Couleur du tracé ${color}`}
+                  className={`w-6 h-6 rounded-full border-2 disabled:cursor-default ${tool && toolColors[tool] === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`}
+                  style={{ backgroundColor: color, borderColor: '#fff' }}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0 border-l border-[#DDD5C9] pl-2">
+            <button type="button" onClick={undo} disabled={!polygonDraft.length && !undoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Effacer la dernière saisie">↶</button>
+            <button type="button" onClick={redo} disabled={!polygonRedoPoints.length && !redoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Remettre la saisie">↷</button>
+          </div>
         </div>
 
         {tool === 'polygon' && polygonDraft.length > 0 && (
@@ -854,7 +870,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
         {selectedText && (
           <div className="flex items-center gap-2 overflow-x-auto">
-            <input autoFocus value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
+            <input ref={textInputRef} autoFocus value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onFocus={(e) => { if (selectNewTextOnFocusRef.current) e.currentTarget.select(); }} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
             <div className="flex items-center gap-1 flex-shrink-0">
               {DRAW_COLORS.map(color => (
                 <button key={color} type="button" onClick={() => { setToolColors(current => ({ ...current, text: color })); updateSelectedText({ color }); }} className={`w-7 h-7 rounded-full border-2 ${selectedText.color === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`} style={{ backgroundColor: color, borderColor: '#fff' }} />
@@ -921,7 +937,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
 
 export default function Home() {
-  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
+  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [demoResetting, setDemoResetting] = useState(false);
@@ -979,6 +995,7 @@ export default function Home() {
   const memoEditorOpenRef = useRef(false);
   const memoEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const memoIgnoreNextPopRef = useRef(false);
+  const memoSwipeStartRef = useRef<{ x: number; y: number; ignore: boolean } | null>(null);
 
   // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
   // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
@@ -1246,11 +1263,55 @@ export default function Home() {
   const [planningTemplateDndMoved, setPlanningTemplateDndMoved] = useState(false);
   const planningTemplateDndMovedRef = useRef(false);
   const planningTemplateDndSessionRef = useRef<{ id: string; originalTemplates: PlanningTemplate[] } | null>(null);
+  const planningTemplateDragLastTargetRef = useRef('');
+  const planningTemplateSuppressClickUntilRef = useRef(0);
+  const planningTemplatePendingFlipRef = useRef<{ before: Map<string, DOMRect>; excludeId?: string } | null>(null);
+  const planningTemplateFlipAnimationsRef = useRef<Map<string, Animation>>(new Map());
   const planningTemplateDndSensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 12 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 10 } }),
   );
   const [previewTemplate, setPreviewTemplate] = useState<PlanningTemplate | null>(null);
+
+  // Même animation FLIP que les notes actives : les autres cartes glissent
+  // jusqu'à leur nouvelle place au lieu de sauter brutalement dans la grille.
+  useLayoutEffect(() => {
+    const pending = planningTemplatePendingFlipRef.current;
+    if (!pending) return;
+    planningTemplatePendingFlipRef.current = null;
+
+    document.querySelectorAll<HTMLElement>('[data-planning-template-id]').forEach((element) => {
+      const id = element.dataset.planningTemplateId;
+      if (!id || id === pending.excludeId) return;
+      const previous = pending.before.get(id);
+      if (!previous) return;
+      const next = element.getBoundingClientRect();
+      const dx = previous.left - next.left;
+      const dy = previous.top - next.top;
+      if (Math.abs(dx) < 0.75 && Math.abs(dy) < 0.75) return;
+
+      planningTemplateFlipAnimationsRef.current.get(id)?.cancel();
+      const animation = element.animate(
+        [
+          { transform: `translate3d(${dx}px, ${dy}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        {
+          duration: 285,
+          easing: 'cubic-bezier(0.20, 0.80, 0.20, 1)',
+          fill: 'none',
+        }
+      );
+      planningTemplateFlipAnimationsRef.current.set(id, animation);
+      const clear = () => {
+        if (planningTemplateFlipAnimationsRef.current.get(id) === animation) {
+          planningTemplateFlipAnimationsRef.current.delete(id);
+        }
+      };
+      animation.onfinish = clear;
+      animation.oncancel = clear;
+    });
+  }, [savedTemplates]);
 
   // Si un planning sauvegardé est chargé, on conserve son identité et son état d'origine.
   // Ainsi, « Enregistrer » met à jour CE planning au lieu d'en créer un nouveau.
@@ -1958,7 +2019,7 @@ export default function Home() {
         case '#memos':
           setMainMode('memos'); setIsFocusMode(false); break;
         case '#planning':
-          setMainMode('planning_home'); break;
+          setMainMode('planning_gallery'); break;
         case '#planning-editor':
           setMainMode('planning'); break;
         case '#planning-gallery':
@@ -2244,16 +2305,16 @@ export default function Home() {
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
     const currentHash = window.location.hash;
     const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
-    const currentIsPlanningChild = currentHash === '#planning-editor' || currentHash === '#planning-gallery';
 
-    if (currentIsPlanningChild) {
-      // Éditeur <-> galerie = même niveau logique : on remplace l'étape courante.
+    if (currentHash === '#planning-editor') {
+      // Depuis l'éditeur, revenir à la galerie remplace l'étape d'édition.
       window.history.replaceState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
       refreshRouteFromCurrentHash();
       return;
     }
 
-    // Depuis l'accueil Planning, on crée une seule vraie étape enfant.
+    // Depuis l'une des URL de galerie (#planning ou ancienne #planning-gallery),
+    // l'éditeur devient un vrai niveau enfant pour que Retour retrouve la galerie.
     window.history.pushState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
     refreshRouteFromCurrentHash();
   };
@@ -3701,6 +3762,49 @@ export default function Home() {
     }
   };
 
+  const isMemoSwipeInteractiveTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [data-no-memo-swipe]'));
+  };
+
+  const handleMemoSwipeStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (
+      showMemoArchivedRef.current ||
+      memoEditorOpenRef.current ||
+      drawEditorOpenRef.current ||
+      selectedMemoIdsRef.current.size > 0 ||
+      event.touches.length !== 1
+    ) {
+      memoSwipeStartRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    memoSwipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      ignore: isMemoSwipeInteractiveTarget(event.target),
+    };
+  };
+
+  const handleMemoSwipeEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    const start = memoSwipeStartRef.current;
+    memoSwipeStartRef.current = null;
+    if (!start || start.ignore || showMemoArchivedRef.current || event.changedTouches.length !== 1) return;
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+
+    // Geste volontaire : au moins 70 px vers la droite et nettement plus
+    // horizontal que vertical, afin de préserver le défilement de la page.
+    if (deltaX < 70 || Math.abs(deltaX) < Math.abs(deltaY) * 1.35) return;
+
+    // Empêche le clic synthétique suivant le geste d'ouvrir la carte touchée.
+    memoSuppressAllClicksUntilRef.current = performance.now() + 420;
+    enterMemoArchives();
+  };
+
   const createMemoFolder = async () => {
     const name = memoFolderName.trim();
     if (!name) return;
@@ -5022,15 +5126,32 @@ export default function Home() {
     return true;
   };
 
+  const planningTemplateCollisionDetection = (args: any) => {
+    const pointerHits = pointerWithin(args);
+    return pointerHits.length ? pointerHits : closestCenter(args);
+  };
+
+  const capturePlanningTemplateLayout = (excludeId?: string) => {
+    const rects = new Map<string, DOMRect>();
+    document.querySelectorAll<HTMLElement>('[data-planning-template-id]').forEach((element) => {
+      const id = element.dataset.planningTemplateId;
+      if (!id || id === excludeId) return;
+      rects.set(id, element.getBoundingClientRect());
+    });
+    return rects;
+  };
+
   const handlePlanningTemplateDndStart = (event: DragStartEvent) => {
     const rawId = String(event.active.id);
     const id = rawId.replace(/^planning-template:/, '');
     const current = savedTemplatesRef.current;
     if (!current.some(template => template.id === id)) return;
     planningTemplateDndSessionRef.current = { id, originalTemplates: current };
+    planningTemplateDragLastTargetRef.current = '';
     planningTemplateDndMovedRef.current = false;
     setPlanningTemplateDndMoved(false);
     setDraggingTemplateId(id);
+    planningTemplateSuppressClickUntilRef.current = performance.now() + 500;
     if ('vibrate' in navigator) navigator.vibrate(10);
   };
 
@@ -5053,11 +5174,26 @@ export default function Home() {
     const targetIndex = current.findIndex(template => template.id === targetId);
     if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
 
-    const next = [...current];
-    const [source] = next.splice(sourceIndex, 1);
+    const activeRect = event.active.rect.current.translated;
+    const overRect = event.over.rect;
+    const activeCenterX = activeRect ? activeRect.left + activeRect.width / 2 : overRect.left + overRect.width / 2;
+    const activeCenterY = activeRect ? activeRect.top + activeRect.height / 2 : overRect.top + overRect.height / 2;
+    const targetCenterX = overRect.left + overRect.width / 2;
+    const targetCenterY = overRect.top + overRect.height / 2;
+    const sameRow = Math.abs(activeCenterY - targetCenterY) < overRect.height * 0.42;
+    const insertAfter = sameRow ? activeCenterX >= targetCenterX : activeCenterY >= targetCenterY;
+    const targetToken = `${targetId}:${insertAfter ? 'after' : 'before'}`;
+    if (planningTemplateDragLastTargetRef.current === targetToken) return;
+
+    const before = capturePlanningTemplateLayout(sourceId);
+    const next = current.filter(template => template.id !== sourceId);
+    const targetIndexWithoutSource = next.findIndex(template => template.id === targetId);
+    const source = current[sourceIndex];
     if (!source) return;
-    next.splice(targetIndex, 0, source);
+    next.splice(targetIndexWithoutSource + (insertAfter ? 1 : 0), 0, source);
     const normalized = next.map((template, index) => ({ ...template, sort_order: index }));
+    planningTemplateDragLastTargetRef.current = targetToken;
+    planningTemplatePendingFlipRef.current = { before, excludeId: sourceId };
     savedTemplatesRef.current = normalized;
     setSavedTemplates(normalized);
   };
@@ -5067,11 +5203,13 @@ export default function Home() {
     setPlanningTemplateDndMoved(false);
     planningTemplateDndMovedRef.current = false;
     planningTemplateDndSessionRef.current = null;
+    planningTemplateDragLastTargetRef.current = '';
   };
 
   const handlePlanningTemplateDndEnd = (event: DragEndEvent) => {
     const session = planningTemplateDndSessionRef.current;
     const moved = planningTemplateDndMovedRef.current || Math.hypot(event.delta.x, event.delta.y) >= 7;
+    planningTemplateSuppressClickUntilRef.current = performance.now() + 420;
     resetPlanningTemplateDndUi();
     if (!session || !moved) return;
     void persistPlanningTemplateOrder(savedTemplatesRef.current);
@@ -5079,6 +5217,9 @@ export default function Home() {
 
   const handlePlanningTemplateDndCancel = (_event: DragCancelEvent) => {
     const session = planningTemplateDndSessionRef.current;
+    planningTemplatePendingFlipRef.current = null;
+    planningTemplateFlipAnimationsRef.current.forEach(animation => animation.cancel());
+    planningTemplateFlipAnimationsRef.current.clear();
     if (session) {
       savedTemplatesRef.current = session.originalTemplates;
       setSavedTemplates(session.originalTemplates);
@@ -7039,7 +7180,7 @@ export default function Home() {
               <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📌</span>
               <span className="flex flex-col min-w-0">
                 <span className="text-base font-black">Notes, Mémos &amp; Listes</span>
-                <span className="text-xs font-semibold text-[#687B73] mt-0.5">Conserver tes idées, mémos et listes réutilisables</span>
+                <span className="text-xs font-semibold text-[#687B73] mt-0.5">Conserver tes idées, mémos et listes</span>
               </span>
             </button>
           </div>
@@ -7077,7 +7218,11 @@ export default function Home() {
           onDragEnd={handleMemoDndEnd}
           onDragCancel={handleMemoDndCancel}
         >
-        <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
+        <div
+          className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto"
+          onTouchStart={handleMemoSwipeStart}
+          onTouchEnd={handleMemoSwipeEnd}
+        >
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 mb-5">
             <button
               type="button"
@@ -7582,63 +7727,19 @@ export default function Home() {
         </DndContext>
       )}
 
-      {/* ================= VUE : ACCUEIL PLANNING ================= */}
-      {mainMode === 'planning_home' && (
-        <div className="relative min-h-[78vh] w-full flex flex-col items-center animate-fade-in pt-4 sm:pt-8">
-          <div className="w-full max-w-xl flex items-center justify-between mb-6">
-            <button
-              onClick={() => window.location.hash = 'hub'}
-              className="text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors"
-            >
-              ← Menu Principal
-            </button>
-            <button
-              onClick={() => setShowPlanningAbout(true)}
-              className="w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
-              aria-label="À quoi sert l'application Planning ?"
-            >?</button>
-          </div>
-
-          <h1
-            className="text-[42px] sm:text-[48px] leading-none text-[#4B5843] text-center mb-10 font-semibold"
-            style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
-          >
-            Planning
-          </h1>
-
-          <div className="w-full max-w-sm flex flex-col gap-3">
-            <button
-              onClick={startNewPlanning}
-              className="w-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(78,88,66,0.10)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C8D0B8]"
-            >
-              <span className="w-10 h-10 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">＋</span>
-              <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Nouveau planning</span>
-                <span className="text-xs font-semibold text-[#687260] mt-0.5">Commencer une semaine vide</span>
-              </span>
-            </button>
-
-            <button
-              onClick={() => navigatePlanningChild('#planning-gallery')}
-              className="w-full bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(92,74,57,0.09)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#DAC9B5]"
-            >
-              <span className="w-10 h-10 rounded-full bg-white/55 flex items-center justify-center text-lg flex-shrink-0">▤</span>
-              <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Plannings sauvegardés</span>
-                <span className="text-xs font-semibold text-[#786858] mt-0.5">{savedTemplates.length} planning{savedTemplates.length > 1 ? 's' : ''}</span>
-              </span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ================= NOUVELLE VUE : GALERIE DES PLANNINGS ================= */}
+      {/* ================= VUE : GALERIE DES PLANNINGS ================= */}
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
            <div className="grid grid-cols-[1fr_auto_1fr] items-center mb-3 gap-2">
-             <button onClick={navigatePlanningHome} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Accueil</button>
+             <button onClick={() => window.location.hash = 'hub'} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
              <h1 className="text-2xl font-black text-[#4B5843] text-center">Mes plannings</h1>
-             <div />
+             <button
+               type="button"
+               onClick={openBlankPlanning}
+               className="justify-self-end w-11 h-11 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-2xl font-light shadow-sm transition-transform active:scale-95 flex items-center justify-center"
+               title="Nouveau planning"
+               aria-label="Créer un nouveau planning"
+             >＋</button>
            </div>
 
            {savedTemplates.length === 0 ? (
@@ -7649,7 +7750,7 @@ export default function Home() {
            ) : (
              <DndContext
                sensors={planningTemplateDndSensors}
-               collisionDetection={closestCenter}
+               collisionDetection={planningTemplateCollisionDetection}
                measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
                onDragStart={handlePlanningTemplateDndStart}
                onDragMove={handlePlanningTemplateDndMove}
@@ -7670,8 +7771,7 @@ export default function Home() {
                        <button
                          type="button"
                          draggable={false}
-                         onPointerDown={(e) => e.stopPropagation()}
-                         onClick={(e) => { e.stopPropagation(); void renameSavedTemplate(tmpl); }}
+                         onClick={(e) => { e.stopPropagation(); if (performance.now() < planningTemplateSuppressClickUntilRef.current) return; void renameSavedTemplate(tmpl); }}
                          className="font-bold text-sm truncate text-left hover:underline decoration-dotted underline-offset-2"
                          title="Cliquer pour renommer ce planning"
                        >
@@ -7685,8 +7785,7 @@ export default function Home() {
                    <button
                      type="button"
                      draggable={false}
-                     onPointerDown={(e) => e.stopPropagation()}
-                     onClick={(e) => { e.stopPropagation(); setPreviewTemplate(tmpl); }}
+                     onClick={(e) => { e.stopPropagation(); if (performance.now() < planningTemplateSuppressClickUntilRef.current) return; setPreviewTemplate(tmpl); }}
                      className="h-32 bg-gray-50 w-full relative flex border-b border-gray-200 p-1 cursor-pointer hover:bg-[#F7F4ED] transition-colors text-left"
                      aria-label={`Ouvrir l'aperçu de ${tmpl.name}`}
                    >
