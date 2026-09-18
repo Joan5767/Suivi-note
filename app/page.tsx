@@ -66,6 +66,7 @@ interface PlanningTemplate {
   id: string;
   name: string;
   blocks: WeeklyBlock[];
+  sort_order: number;
   created_at?: string | null;
 }
 
@@ -248,6 +249,42 @@ function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: b
         <span className={`text-xl transition-transform ${hovering ? 'scale-125' : ''}`}>🗑️</span>
         <span>{hovering ? 'Relâche pour supprimer' : 'Supprimer'}</span>
       </div>
+    </div>
+  );
+}
+
+
+type PlanningDndCardProps = {
+  template: PlanningTemplate;
+  disabled?: boolean;
+  hideOriginal?: boolean;
+  children: React.ReactNode;
+};
+
+function PlanningDndCard({ template, disabled = false, hideOriginal = false, children }: PlanningDndCardProps) {
+  const draggable = useDraggable({ id: `planning-template:${template.id}`, disabled });
+  const droppable = useDroppable({ id: `planning-template:${template.id}`, disabled });
+
+  const setNodeRef = (node: HTMLElement | null) => {
+    draggable.setNodeRef(node);
+    droppable.setNodeRef(node);
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-planning-template-id={template.id}
+      {...draggable.attributes}
+      {...draggable.listeners}
+      className={`bg-[#FBFAF7] rounded-2xl shadow-sm border border-[#DED7CC] overflow-hidden flex flex-col transition-[box-shadow,opacity,transform] duration-180 ease-out select-none ${hideOriginal ? 'opacity-0 shadow-none' : 'cursor-grab active:cursor-grabbing active:scale-[0.99]'}`}
+      style={{
+        touchAction: 'pan-y',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+      } as React.CSSProperties}
+    >
+      {children}
     </div>
   );
 }
@@ -555,7 +592,16 @@ export default function Home() {
   );
 
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
-  const [savedTemplates, setSavedTemplates] = useState<PlanningTemplate[]>([]); 
+  const [savedTemplates, setSavedTemplates] = useState<PlanningTemplate[]>([]);
+  const savedTemplatesRef = useRef<PlanningTemplate[]>([]);
+  const [draggingTemplateId, setDraggingTemplateId] = useState<string | null>(null);
+  const [planningTemplateDndMoved, setPlanningTemplateDndMoved] = useState(false);
+  const planningTemplateDndMovedRef = useRef(false);
+  const planningTemplateDndSessionRef = useRef<{ id: string; originalTemplates: PlanningTemplate[] } | null>(null);
+  const planningTemplateDndSensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 12 } }),
+  );
   const [previewTemplate, setPreviewTemplate] = useState<PlanningTemplate | null>(null);
 
   // Si un planning sauvegardé est chargé, on conserve son identité et son état d'origine.
@@ -1576,10 +1622,15 @@ export default function Home() {
     return true;
   };
 
+  useEffect(() => {
+    savedTemplatesRef.current = savedTemplates;
+  }, [savedTemplates]);
+
   const fetchTemplates = async () => {
     const { data, error } = await supabase
       .from('planning_templates')
       .select('*')
+      .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -1587,12 +1638,14 @@ export default function Home() {
       return false;
     }
 
-    const templates = (data || []).map((template: any) => ({
+    const templates = (data || []).map((template: any, index: number) => ({
       ...template,
       name: typeof template.name === 'string' ? template.name : 'Planning sans nom',
       blocks: normalizeWeeklyBlocks(template.blocks),
+      sort_order: Number.isFinite(Number(template?.sort_order)) ? Number(template.sort_order) : index,
     })) as PlanningTemplate[];
 
+    savedTemplatesRef.current = templates;
     setSavedTemplates(templates);
     return true;
   };
@@ -3869,6 +3922,7 @@ export default function Home() {
         .insert([{
           name: cleanName,
           blocks: normalizedBlocks,
+          sort_order: savedTemplatesRef.current.length,
         }])
         .select('*')
         .single();
@@ -3993,6 +4047,7 @@ export default function Home() {
         .insert([{
           name: cleanName,
           blocks: duplicatedBlocks,
+          sort_order: savedTemplatesRef.current.length,
         }])
         .select('*')
         .single();
@@ -4076,32 +4131,85 @@ export default function Home() {
     });
   };
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    e.dataTransfer.setData('text/plain', index.toString());
+  const persistPlanningTemplateOrder = async (templates: PlanningTemplate[]) => {
+    const ordered = templates.map((template, index) => ({ ...template, sort_order: index }));
+    savedTemplatesRef.current = ordered;
+    setSavedTemplates(ordered);
+
+    const results = await Promise.all(ordered.map((template, index) =>
+      supabase.from('planning_templates').update({ sort_order: index }).eq('id', template.id)
+    ));
+    const failed = results.find(result => result.error);
+    if (failed?.error) {
+      showAppMessage("L'ordre des plannings a changé à l'écran mais n'a pas pu être enregistré : " + failed.error.message);
+      await fetchTemplates();
+      return false;
+    }
+    return true;
   };
 
-  const handleDrop = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+  const handlePlanningTemplateDndStart = (event: DragStartEvent) => {
+    const rawId = String(event.active.id);
+    const id = rawId.replace(/^planning-template:/, '');
+    const current = savedTemplatesRef.current;
+    if (!current.some(template => template.id === id)) return;
+    planningTemplateDndSessionRef.current = { id, originalTemplates: current };
+    planningTemplateDndMovedRef.current = false;
+    setPlanningTemplateDndMoved(false);
+    setDraggingTemplateId(id);
+    if ('vibrate' in navigator) navigator.vibrate(10);
+  };
 
-    if (
-      !Number.isInteger(draggedIndex) ||
-      draggedIndex < 0 ||
-      draggedIndex >= savedTemplates.length ||
-      draggedIndex === index
-    ) {
-      return;
+  const handlePlanningTemplateDndMove = (event: DragMoveEvent) => {
+    const distance = Math.hypot(event.delta.x, event.delta.y);
+    if (!planningTemplateDndMovedRef.current && distance >= 7) {
+      planningTemplateDndMovedRef.current = true;
+      setPlanningTemplateDndMoved(true);
     }
+  };
 
-    const newTemplates = [...savedTemplates];
-    const [draggedItem] = newTemplates.splice(draggedIndex, 1);
-    if (!draggedItem) return;
+  const handlePlanningTemplateDndOver = (event: DragOverEvent) => {
+    if (!planningTemplateDndMovedRef.current || !event.over) return;
+    const sourceId = String(event.active.id).replace(/^planning-template:/, '');
+    const targetId = String(event.over.id).replace(/^planning-template:/, '');
+    if (!sourceId || !targetId || sourceId === targetId) return;
 
-    newTemplates.splice(index, 0, draggedItem);
-    setSavedTemplates(newTemplates);
+    const current = savedTemplatesRef.current;
+    const sourceIndex = current.findIndex(template => template.id === sourceId);
+    const targetIndex = current.findIndex(template => template.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
 
-    // Pour l'instant l'ordre est visuel uniquement. Un champ sort_order sera ajouté
-    // lors de la migration multi-utilisateur afin de le rendre persistant proprement.
+    const next = [...current];
+    const [source] = next.splice(sourceIndex, 1);
+    if (!source) return;
+    next.splice(targetIndex, 0, source);
+    const normalized = next.map((template, index) => ({ ...template, sort_order: index }));
+    savedTemplatesRef.current = normalized;
+    setSavedTemplates(normalized);
+  };
+
+  const resetPlanningTemplateDndUi = () => {
+    setDraggingTemplateId(null);
+    setPlanningTemplateDndMoved(false);
+    planningTemplateDndMovedRef.current = false;
+    planningTemplateDndSessionRef.current = null;
+  };
+
+  const handlePlanningTemplateDndEnd = (event: DragEndEvent) => {
+    const session = planningTemplateDndSessionRef.current;
+    const moved = planningTemplateDndMovedRef.current || Math.hypot(event.delta.x, event.delta.y) >= 7;
+    resetPlanningTemplateDndUi();
+    if (!session || !moved) return;
+    void persistPlanningTemplateOrder(savedTemplatesRef.current);
+  };
+
+  const handlePlanningTemplateDndCancel = (_event: DragCancelEvent) => {
+    const session = planningTemplateDndSessionRef.current;
+    if (session) {
+      savedTemplatesRef.current = session.originalTemplates;
+      setSavedTemplates(session.originalTemplates);
+    }
+    resetPlanningTemplateDndUi();
   };
 
   const buildWeeklyICSContent = (blocks: WeeklyBlock[] = weeklyBlocks) => {
@@ -6610,15 +6718,22 @@ export default function Home() {
                 <p className="text-gray-500 font-bold">Tu n'as encore sauvegardé aucun modèle.</p>
              </div>
            ) : (
+             <DndContext
+               sensors={planningTemplateDndSensors}
+               collisionDetection={closestCenter}
+               measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+               onDragStart={handlePlanningTemplateDndStart}
+               onDragMove={handlePlanningTemplateDndMove}
+               onDragOver={handlePlanningTemplateDndOver}
+               onDragEnd={handlePlanningTemplateDndEnd}
+               onDragCancel={handlePlanningTemplateDndCancel}
+             >
              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-               {savedTemplates.map((tmpl, index) => (
-                 <div 
-                   key={tmpl.id} 
-                   className="bg-[#FBFAF7] rounded-2xl shadow-sm border border-[#DED7CC] overflow-hidden flex flex-col transition-transform hover:shadow-md cursor-grab active:cursor-grabbing"
-                   draggable={true}
-                   onDragStart={(e) => handleDragStart(e, index)}
-                   onDragOver={(e) => e.preventDefault()}
-                   onDrop={(e) => handleDrop(e, index)}
+               {savedTemplates.map((tmpl) => (
+                 <PlanningDndCard
+                   key={tmpl.id}
+                   template={tmpl}
+                   hideOriginal={draggingTemplateId === tmpl.id && planningTemplateDndMoved}
                  >
                    {/* En-tête de la carte */}
                    <div className="bg-[#D8DEC9] text-[#394433] px-3 py-2.5 flex justify-between items-center gap-2">
@@ -6684,12 +6799,25 @@ export default function Home() {
 
                    {/* Actions secondaires : l'ouverture et l'édition passent par la miniature. */}
                    <div className="p-2 flex items-center justify-end gap-1.5 bg-[#F4F0E9]">
-                     <button onClick={() => duplicateSavedTemplate(tmpl)} className="px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer" title="Dupliquer">⧉</button>
-                     <button onClick={() => deleteSavedTemplate(tmpl.id)} className="px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer" title="Supprimer">🗑</button>
+                     <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void duplicateSavedTemplate(tmpl); }} className="px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer" title="Dupliquer">⧉</button>
+                     <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); deleteSavedTemplate(tmpl.id); }} className="px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer" title="Supprimer">🗑</button>
                    </div>
-                 </div>
+                 </PlanningDndCard>
                ))}
              </div>
+             <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
+               {draggingTemplateId && planningTemplateDndMoved && (() => {
+                 const template = savedTemplates.find(item => item.id === draggingTemplateId);
+                 if (!template) return null;
+                 return (
+                   <div className="pointer-events-none w-[min(44vw,260px)] rounded-2xl overflow-hidden border border-[#C8D0B8] bg-[#FBFAF7] shadow-2xl scale-[1.02]">
+                     <div className="bg-[#D8DEC9] text-[#394433] px-3 py-2.5 font-black text-sm truncate">{template.name}</div>
+                     <div className="h-24 bg-[#F7F4ED] flex items-center justify-center text-[#7B856F] text-xs font-bold">Relâche pour placer</div>
+                   </div>
+                 );
+               })()}
+             </DragOverlay>
+             </DndContext>
            )}
         </div>
       )}
