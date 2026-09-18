@@ -163,10 +163,14 @@ const formatDuration = (totalMinutes: number) => {
 const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
 const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
+// Activé uniquement sur le projet Vercel de démonstration.
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+
 export default function Home() {
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
+  const [demoResetting, setDemoResetting] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
   const [notes, setNotes] = useState<Note[]>([]);
@@ -1249,6 +1253,38 @@ export default function Home() {
     }
   };
 
+  const requestDemoReset = () => {
+    if (!DEMO_MODE || demoResetting) return;
+
+    requestAppConfirmation({
+      title: 'Réinitialiser la démonstration ?',
+      message: 'Toutes les données créées pendant les tests seront supprimées et les exemples de départ seront restaurés.',
+      confirmLabel: 'Réinitialiser',
+      tone: 'sage',
+      onConfirm: async () => {
+        setDemoResetting(true);
+        try {
+          const response = await fetch('/api/demo-reset', { method: 'POST' });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.error || 'Réinitialisation impossible');
+
+          localStorage.removeItem(NOTE_DRAFT_STORAGE_KEY);
+          localStorage.removeItem(PLANNING_DRAFT_STORAGE_KEY);
+          showAppMessage('✅ Démonstration réinitialisée.');
+          window.setTimeout(() => window.location.reload(), 350);
+        } catch (error: any) {
+          showAppMessage('❌ ' + (error?.message || 'Réinitialisation impossible'));
+        } finally {
+          setDemoResetting(false);
+        }
+      },
+    });
+  };
+
+  const demoFeatureUnavailable = (label = 'Cette fonction') => {
+    showAppMessage(`ℹ️ ${label} est désactivée en mode démonstration.`);
+  };
+
   // Navigation de Tâches & Rappels sans empiler chaque clic dans l'historique.
   const isNotesChildHash = (hash: string) =>
     hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' || hash.startsWith('#note-');
@@ -1496,6 +1532,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (DEMO_MODE) return;
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
         reg.pushManager.getSubscription().then((sub) => {
@@ -1509,6 +1546,10 @@ export default function Home() {
   }, []);
 
   const subscribeToPush = async () => {
+    if (DEMO_MODE) {
+      demoFeatureUnavailable('Les notifications pop-up');
+      return;
+    }
     try {
       const registration = await navigator.serviceWorker.ready;
       const publicVapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
@@ -3855,7 +3896,7 @@ export default function Home() {
 
       if (error) throw error;
 
-      if (sendImmediateEmail) {
+      if (sendImmediateEmail && !DEMO_MODE) {
         try {
           const mailRes = await fetch('/api/notify', {
             method: 'POST',
@@ -3931,6 +3972,10 @@ export default function Home() {
   };
 
   const triggerImmediateEmail = (note: Note) => {
+    if (DEMO_MODE) {
+      demoFeatureUnavailable('L’envoi d’e-mail');
+      return;
+    }
     requestAppConfirmation({
       title: 'Envoyer le rappel par e-mail ?',
       message: 'L’e-mail sera envoyé immédiatement à ton adresse de rappel.',
@@ -4001,6 +4046,10 @@ export default function Home() {
   };
 
   const processAiNote = async (finalTranscript: string) => {
+    if (DEMO_MODE) {
+      demoFeatureUnavailable('L’analyse IA');
+      return;
+    }
     if (!finalTranscript.trim()) {
       showAppMessage("❌ Le micro n'a rien enregistré.");
       return;
@@ -4201,7 +4250,7 @@ export default function Home() {
 
       if (error) throw error;
 
-      if (data?.send_email) {
+      if (data?.send_email && !DEMO_MODE) {
         try {
           const mailRes = await fetch('/api/notify', {
             method: 'POST',
@@ -4269,7 +4318,7 @@ export default function Home() {
       setImportance(data.importance);
     }
 
-    if (data?.send_email) {
+    if (data?.send_email && !DEMO_MODE) {
       setSendImmediateEmail(true);
       setShowAdvancedSettings(true);
     }
@@ -4460,7 +4509,7 @@ export default function Home() {
       return;
     }
 
-    if (editingSendImmediateEmail) {
+    if (editingSendImmediateEmail && !DEMO_MODE) {
       try {
         const mailRes = await fetch('/api/notify', {
           method: 'POST',
@@ -4805,7 +4854,7 @@ export default function Home() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-2.5 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
                   <button
                     type="button"
-                    onClick={() => setEditingSendImmediateEmail(!editingSendImmediateEmail)}
+                    onClick={() => DEMO_MODE ? demoFeatureUnavailable('L’envoi d’e-mail') : setEditingSendImmediateEmail(!editingSendImmediateEmail)}
                     className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex items-center justify-between ${editingSendImmediateEmail ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1]' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
                   >
                     <span>📨 E-mail immédiat</span><span>{editingSendImmediateEmail ? 'ON' : 'OFF'}</span>
@@ -4896,7 +4945,7 @@ export default function Home() {
                     {showEditingDailyConfig && (
                       <div className="bg-[#F0F4EC] border border-t-0 border-[#D4DDCB] p-2.5 rounded-b-xl flex flex-col gap-2">
                         <div className="flex flex-wrap gap-4 justify-center">
-                          <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={editingReminderActive} onChange={(e) => setEditingReminderActive(e.target.checked)} className="accent-[#7E9071]"/> E-mail</label>
+                          <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={editingReminderActive} onChange={(e) => { if (DEMO_MODE && e.target.checked) { demoFeatureUnavailable('Les relances par e-mail'); return; } setEditingReminderActive(e.target.checked); }} className="accent-[#7E9071]"/> E-mail</label>
                           <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={editingReminderPopupActive} onChange={(e) => setEditingReminderPopupActive(e.target.checked)} className="accent-[#7E9071]"/> Pop-up</label>
                         </div>
                         <div className="flex items-center justify-center gap-2 pt-1 border-t border-[#D4DDCB]"><span className="text-xs font-bold text-[#46513F]">À :</span><input type="time" value={editingDailyTime} onChange={(e) => setEditingDailyTime(e.target.value)} className="p-1.5 border border-[#C8D2BC] rounded-lg text-black bg-white font-bold text-xs" /></div>
@@ -5539,6 +5588,25 @@ export default function Home() {
               </span>
             </button>
           </div>
+
+          {DEMO_MODE && (
+            <div className="w-full max-w-sm mt-5 rounded-[22px] border border-[#D7D0C4] bg-[#F7F3EC] px-4 py-3 text-[#625B52] shadow-[0_4px_14px_rgba(78,70,58,0.06)]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-black uppercase tracking-[0.12em] text-[#7B725F]">Mode démonstration</p>
+                  <p className="text-[11px] font-semibold text-[#81786C] mt-1">Données fictives uniquement. E-mail, notifications et IA sont désactivés.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={demoResetting}
+                  onClick={requestDemoReset}
+                  className="flex-shrink-0 rounded-xl bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#3F4938] px-3 py-2 text-xs font-black border border-[#C8D0B8] disabled:opacity-50"
+                >
+                  {demoResetting ? 'Patiente…' : '↻ Réinitialiser'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -6613,7 +6681,7 @@ export default function Home() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
                     <button
                       type="button"
-                      onClick={() => setSendImmediateEmail(!sendImmediateEmail)}
+                      onClick={() => DEMO_MODE ? demoFeatureUnavailable('L’envoi d’e-mail') : setSendImmediateEmail(!sendImmediateEmail)}
                       disabled={isAiProcessing}
                       className={`p-2.5 rounded-xl font-bold border transition-colors text-left text-xs flex items-center justify-between ${sendImmediateEmail ? 'bg-[#D9E2CF] text-[#3D4B37] border-[#BECBB1]' : 'bg-white text-[#625B52] border-[#DED5C8] hover:bg-[#F5F1EA]'}`}
                     >
@@ -6702,7 +6770,7 @@ export default function Home() {
                       {showDailyConfig && (
                         <div className="bg-[#F0F4EC] border border-t-0 border-[#D4DDCB] p-2.5 rounded-b-xl flex flex-col gap-2">
                           <div className="flex flex-wrap gap-4 justify-center">
-                            <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={activateReminder} onChange={(e) => setActivateReminder(e.target.checked)} className="accent-[#7E9071]"/> E-mail</label>
+                            <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={activateReminder} onChange={(e) => { if (DEMO_MODE && e.target.checked) { demoFeatureUnavailable('Les relances par e-mail'); return; } setActivateReminder(e.target.checked); }} className="accent-[#7E9071]"/> E-mail</label>
                             <label className="flex items-center gap-1 cursor-pointer font-bold text-[#46513F] text-xs"><input type="checkbox" checked={reminderPopupActive} onChange={(e) => setReminderPopupActive(e.target.checked)} className="accent-[#7E9071]"/> Pop-up</label>
                           </div>
                           <div className="flex items-center justify-center gap-2 pt-1 border-t border-[#D4DDCB]"><span className="text-xs font-bold text-[#46513F]">À :</span><input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value)} className="p-1.5 border border-[#C8D2BC] rounded-lg text-black bg-white font-bold text-xs" /></div>
