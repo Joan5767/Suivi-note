@@ -463,6 +463,9 @@ export default function Home() {
   const [showPlanningGestures, setShowPlanningGestures] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
+  // Quand l'export est lancé depuis l'aperçu d'un planning sauvegardé, on exporte
+  // directement ce modèle sans devoir l'ouvrir en édition ni modifier le brouillon courant.
+  const [exportPlanningContext, setExportPlanningContext] = useState<{ name: string; blocks: WeeklyBlock[] } | null>(null);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -479,6 +482,9 @@ export default function Home() {
   // permet de faire glisser le bloc vers un autre jour ou une autre heure.
   const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const [draggingBlockPreview, setDraggingBlockPreview] = useState<{ day: string; hour: number; minute: number } | null>(null);
+  const draggingBlockPreviewRef = useRef<{ day: string; hour: number; minute: number } | null>(null);
+  const [draggingBlockGhostMeta, setDraggingBlockGhostMeta] = useState<{ title: string; color: string; kind: 'task' | 'marker' } | null>(null);
+  const draggingBlockGhostRef = useRef<HTMLDivElement | null>(null);
   const suppressedBlockClickIdsRef = useRef<Set<string>>(new Set());
   const activeBlockDragCleanupRef = useRef<(() => void) | null>(null);
   // Permet à une sortie déjà confirmée (Enregistrer / Ne pas enregistrer) de traverser
@@ -3114,11 +3120,34 @@ export default function Home() {
     return true;
   };
 
-  const updateDraggedBlockPosition = (block: WeeklyBlock, clientX: number, clientY: number) => {
-    const scroller = daysScrollRef.current;
-    if (!scroller) return;
+  const positionDraggingBlockGhost = (clientX: number, clientY: number) => {
+    const ghost = draggingBlockGhostRef.current;
+    if (!ghost) return;
+    ghost.style.transform = `translate3d(${Math.round(clientX + 14)}px, ${Math.round(clientY + 14)}px, 0)`;
+  };
 
-    // Défilement automatique horizontal quand on approche d'un bord.
+  const setBlockDragPreview = (next: { day: string; hour: number; minute: number }) => {
+    const previous = draggingBlockPreviewRef.current;
+    if (
+      previous &&
+      previous.day === next.day &&
+      previous.hour === next.hour &&
+      previous.minute === next.minute
+    ) {
+      return;
+    }
+    draggingBlockPreviewRef.current = next;
+    setDraggingBlockPreview(next);
+  };
+
+  const updateDraggedBlockPosition = (block: WeeklyBlock, clientX: number, clientY: number) => {
+    // Le fantôme suit le doigt directement dans le DOM : aucun recalcul de la grille à
+    // chaque pixel, ce qui évite les gels quand plusieurs tâches se chevauchent.
+    positionDraggingBlockGhost(clientX, clientY);
+
+    const scroller = daysScrollRef.current;
+    if (!scroller) return draggingBlockPreviewRef.current;
+
     const scrollerRect = scroller.getBoundingClientRect();
     const horizontalEdge = Math.min(55, scrollerRect.width * 0.18);
     if (clientX < scrollerRect.left + horizontalEdge) {
@@ -3127,7 +3156,6 @@ export default function Home() {
       scroller.scrollLeft += 16;
     }
 
-    // Et verticalement pour atteindre une heure hors de l'écran sans relâcher.
     const verticalEdge = 70;
     if (clientY < verticalEdge) {
       window.scrollBy(0, -14);
@@ -3147,7 +3175,9 @@ export default function Home() {
     }
 
     const targetDay = dayColumn?.dataset.planningDay;
-    if (!dayColumn || !targetDay || !WEEK_DAYS.includes(targetDay)) return;
+    if (!dayColumn || !targetDay || !WEEK_DAYS.includes(targetDay)) {
+      return draggingBlockPreviewRef.current;
+    }
 
     const rect = dayColumn.getBoundingClientRect();
     const relativeY = clientY - rect.top - PLANNING_HEADER_HEIGHT;
@@ -3157,21 +3187,36 @@ export default function Home() {
     const planningEndMinutes = (PLANNING_END_HOUR + 1) * 60;
     const effectiveDuration = block.kind === 'marker' ? 15 : Math.max(15, block.duration || 60);
     const latestStartMinutes = Math.max(planningStartMinutes, planningEndMinutes - effectiveDuration);
-
-    // Le déplacement se cale sur la même grille de 15 minutes que la création.
     const snappedMinutes = Math.round(rawStartMinutes / 15) * 15;
     const safeStartMinutes = Math.min(
       latestStartMinutes,
       Math.max(planningStartMinutes, snappedMinutes)
     );
 
-    const startHour = Math.floor(safeStartMinutes / 60);
-    const startMinute = safeStartMinutes % 60;
+    const next = {
+      day: targetDay,
+      hour: Math.floor(safeStartMinutes / 60),
+      minute: safeStartMinutes % 60,
+    };
 
-    setDraggingBlockPreview({ day: targetDay, hour: startHour, minute: startMinute });
+    setBlockDragPreview(next);
+    return next;
+  };
+
+  const commitDraggedBlockPosition = (blockId: string) => {
+    const finalPosition = draggingBlockPreviewRef.current;
+    if (!finalPosition) return;
+
+    // La vraie tâche ne change de jour/heure qu'au relâchement. Ainsi le calcul des
+    // chevauchements côte-à-côte ne peut plus réorganiser la grille sous le doigt.
     setWeeklyBlocks(prev => prev.map(item =>
-      item.id === block.id
-        ? { ...item, day: targetDay, startHour, startMinute }
+      item.id === blockId
+        ? {
+            ...item,
+            day: finalPosition.day,
+            startHour: finalPosition.hour,
+            startMinute: finalPosition.minute,
+          }
         : item
     ));
   };
@@ -3194,8 +3239,12 @@ export default function Home() {
       active = true;
       setSelectedBlockId(null);
       setDraggingBlockId(block.id);
-      setDraggingBlockPreview({ day: block.day, hour: block.startHour, minute: block.startMinute || 0 });
+      setDraggingBlockGhostMeta({ title: block.title, color: block.color, kind: block.kind || 'task' });
+      const initial = { day: block.day, hour: block.startHour, minute: block.startMinute || 0 };
+      draggingBlockPreviewRef.current = initial;
+      setDraggingBlockPreview(initial);
       suppressNextBlockClick(block.id);
+      requestAnimationFrame(() => positionDraggingBlockGhost(startX, startY));
       if ('vibrate' in navigator) navigator.vibrate?.(35);
     };
 
@@ -3212,7 +3261,6 @@ export default function Home() {
       const currentTouch = findTouch(event.touches);
       if (!currentTouch) return;
 
-      // Si l'utilisateur commence à faire défiler avant l'appui long, on annule le drag.
       if (!active) {
         const distance = Math.hypot(currentTouch.clientX - startX, currentTouch.clientY - startY);
         if (distance > 10) cleanup();
@@ -3230,6 +3278,7 @@ export default function Home() {
       if (active) {
         const finalTouch = findTouch(event.changedTouches);
         if (finalTouch) updateDraggedBlockPosition(block, finalTouch.clientX, finalTouch.clientY);
+        commitDraggedBlockPosition(block.id);
       }
       cleanup();
     }
@@ -3244,6 +3293,8 @@ export default function Home() {
       if (active) {
         setDraggingBlockId(null);
         setDraggingBlockPreview(null);
+        draggingBlockPreviewRef.current = null;
+        setDraggingBlockGhostMeta(null);
         suppressNextBlockClick(block.id);
       }
       if (activeBlockDragCleanupRef.current === cleanup) {
@@ -3274,8 +3325,12 @@ export default function Home() {
       active = true;
       setSelectedBlockId(null);
       setDraggingBlockId(block.id);
-      setDraggingBlockPreview({ day: block.day, hour: block.startHour, minute: block.startMinute || 0 });
+      setDraggingBlockGhostMeta({ title: block.title, color: block.color, kind: block.kind || 'task' });
+      const initial = { day: block.day, hour: block.startHour, minute: block.startMinute || 0 };
+      draggingBlockPreviewRef.current = initial;
+      setDraggingBlockPreview(initial);
       suppressNextBlockClick(block.id);
+      requestAnimationFrame(() => positionDraggingBlockGhost(startX, startY));
     };
 
     const timer = window.setTimeout(activateDrag, 320);
@@ -3295,7 +3350,10 @@ export default function Home() {
 
     function handleEnd(event: PointerEvent) {
       if (event.pointerId !== pointerId) return;
-      if (active) updateDraggedBlockPosition(block, event.clientX, event.clientY);
+      if (active) {
+        updateDraggedBlockPosition(block, event.clientX, event.clientY);
+        commitDraggedBlockPosition(block.id);
+      }
       cleanup();
     }
 
@@ -3309,6 +3367,8 @@ export default function Home() {
       if (active) {
         setDraggingBlockId(null);
         setDraggingBlockPreview(null);
+        draggingBlockPreviewRef.current = null;
+        setDraggingBlockGhostMeta(null);
         suppressNextBlockClick(block.id);
       }
       if (activeBlockDragCleanupRef.current === cleanup) {
@@ -3676,8 +3736,8 @@ export default function Home() {
     // lors de la migration multi-utilisateur afin de le rendre persistant proprement.
   };
 
-  const buildWeeklyICSContent = () => {
-    const exportableBlocks = weeklyBlocks.filter(block => block.kind !== 'marker');
+  const buildWeeklyICSContent = (blocks: WeeklyBlock[] = weeklyBlocks) => {
+    const exportableBlocks = blocks.filter(block => block.kind !== 'marker');
     if (exportableBlocks.length === 0) return null;
 
     const daysMap: Record<string, number> = {
@@ -3724,8 +3784,20 @@ export default function Home() {
     return icsContent.replace(/\n/g, '\r\n');
   };
 
+  const getExportPlanning = () => ({
+    blocks: exportPlanningContext?.blocks ?? weeklyBlocks,
+    name: exportPlanningContext?.name || activeTemplateName || 'Ma semaine type',
+  });
+
+  const closeExportModal = () => {
+    setShowExportModal(false);
+    setExportPlanningContext(null);
+    setShowExportHelp(false);
+  };
+
   const exportWeeklyICS = () => {
-    const icsContent = buildWeeklyICSContent();
+    const planning = getExportPlanning();
+    const icsContent = buildWeeklyICSContent(planning.blocks);
     if (!icsContent) {
       showAppMessage("Le planning ne contient aucune tâche à exporter. Les repères horaires seuls ne sont pas exportés.");
       return;
@@ -3734,42 +3806,42 @@ export default function Home() {
     const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
+    const safeName = planning.name.trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'ma_semaine_type';
     link.href = url;
-    link.download = 'ma_semaine_type.ics';
+    link.download = `${safeName}.ics`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    setShowExportModal(false);
+    closeExportModal();
   };
 
   const addWeeklyDirectlyToCalendar = async () => {
-    const icsContent = buildWeeklyICSContent();
+    const planning = getExportPlanning();
+    const icsContent = buildWeeklyICSContent(planning.blocks);
     if (!icsContent) {
       showAppMessage("Le planning ne contient aucune tâche à ajouter au calendrier.");
       return;
     }
 
-    const file = new File([icsContent], 'ma_semaine_type.ics', { type: 'text/calendar' });
+    const safeName = planning.name.trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'ma_semaine_type';
+    const file = new File([icsContent], `${safeName}.ics`, { type: 'text/calendar' });
 
     try {
       if (typeof navigator.share === 'function' && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
         await navigator.share({
-          title: activeTemplateName || 'Mon planning de semaine',
+          title: planning.name,
           text: 'Ajouter ce planning à mon calendrier',
           files: [file],
         });
-        setShowExportModal(false);
+        closeExportModal();
         return;
       }
     } catch (error: any) {
-      // Annulation volontaire du partage : on ne force pas le téléchargement.
       if (error?.name === 'AbortError') return;
       console.warn('Partage calendrier indisponible :', error);
     }
 
-    // Sur les navigateurs qui ne savent pas transmettre directement le fichier à une
-    // application calendrier, on revient au format universel .ics.
     exportWeeklyICS();
     showAppMessage("L'ajout direct n'est pas pris en charge par ce navigateur : le fichier .ics a été préparé à la place.");
   };
@@ -4847,7 +4919,7 @@ export default function Home() {
                 onClick={() => setShowEditingAdvancedSettings(!showEditingAdvancedSettings)}
                 className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2 px-2.5 rounded-xl text-xs flex justify-between items-center transition-colors border border-[#DED5C8]"
               >
-                <span>⚙️ Paramétrage de la tâche</span><span>{showEditingAdvancedSettings ? '▲' : '▼'}</span>
+                <span>⚙️ Paramétrage des rappels</span><span>{showEditingAdvancedSettings ? '▲' : '▼'}</span>
               </button>
 
               {showEditingAdvancedSettings && (
@@ -5385,7 +5457,17 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-4">
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => {
+                  setExportPlanningContext({ name: previewTemplate.name, blocks: previewTemplate.blocks || [] });
+                  setShowExportHelp(false);
+                  setShowExportModal(true);
+                }}
+                className="w-full bg-[#E1D3C3] hover:bg-[#D7C5B1] text-[#59493B] font-black py-3 rounded-xl transition-colors"
+              >
+                Exporter
+              </button>
               <button onClick={() => editSavedTemplate(previewTemplate)} className="w-full bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 rounded-xl transition-colors">
                 Éditer le planning
               </button>
@@ -5511,7 +5593,7 @@ export default function Home() {
 
       {/* MODALE : EXPORT CALENDRIER */}
       {showExportModal && (
-        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowExportModal(false)}>
+        <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={closeExportModal}>
           <div className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 mb-4">
               <div className="flex items-center gap-2">
@@ -5522,7 +5604,7 @@ export default function Home() {
                   aria-label="Différence entre les deux options"
                 >?</button>
               </div>
-              <button onClick={() => setShowExportModal(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+              <button onClick={closeExportModal} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
             </div>
 
             {showExportHelp && (
@@ -6170,7 +6252,7 @@ export default function Home() {
                </button>
 
                <button
-                 onClick={() => { setShowExportHelp(false); setShowExportModal(true); }}
+                 onClick={() => { setExportPlanningContext(null); setShowExportHelp(false); setShowExportModal(true); }}
                  className="flex-shrink-0 bg-[#DCE2D2] hover:bg-[#CFD8C3] text-[#4A5741] font-black py-2.5 px-3 rounded-xl text-[11px] sm:text-xs transition-colors"
                  aria-label="Exporter vers un calendrier"
                >
@@ -6312,7 +6394,7 @@ export default function Home() {
                                ev.color === 'blue' ? 'bg-blue-500' :
                                ev.color === 'green' ? 'bg-green-500' :
                                ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
-                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''} ${isDragging ? 'ring-2 ring-purple-500 ring-offset-2 scale-y-150 shadow-lg' : ''}`}
+                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''} ${isDragging ? 'opacity-30' : ''}`}
                            />
 
                            {isSelected && (
@@ -6387,7 +6469,7 @@ export default function Home() {
                                setSelectedBlockId(isSelected ? null : ev.id); 
                              }
                            }}
-                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer select-none ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'} ${isDragging ? 'ring-2 ring-purple-500 shadow-xl scale-[1.02] opacity-90 cursor-grabbing' : ''}`}
+                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer select-none ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'} ${isDragging ? 'opacity-30 cursor-grabbing' : ''}`}
                          >
                            
                            <div
@@ -6470,6 +6552,30 @@ export default function Home() {
              </div>
            </div>
            </div>
+
+           {draggingBlockId && draggingBlockGhostMeta && (
+             <div
+               ref={draggingBlockGhostRef}
+               className="fixed left-0 top-0 z-[21000] pointer-events-none will-change-transform"
+               style={{ transform: 'translate3d(-9999px, -9999px, 0)' }}
+             >
+               {draggingBlockGhostMeta.kind === 'marker' ? (
+                 <div className={`w-36 h-[6px] rounded-full shadow-xl ${
+                   draggingBlockGhostMeta.color === 'blue' ? 'bg-blue-500' :
+                   draggingBlockGhostMeta.color === 'green' ? 'bg-green-500' :
+                   draggingBlockGhostMeta.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
+                 }`} />
+               ) : (
+                 <div className={`min-w-[120px] max-w-[190px] rounded-xl border-2 shadow-2xl px-3 py-2 font-black text-xs ${
+                   draggingBlockGhostMeta.color === 'blue' ? 'bg-blue-100 border-blue-400 text-blue-900' :
+                   draggingBlockGhostMeta.color === 'green' ? 'bg-green-100 border-green-400 text-green-900' :
+                   draggingBlockGhostMeta.color === 'red' ? 'bg-red-100 border-red-400 text-red-900' : 'bg-gray-100 border-gray-400 text-gray-900'
+                 }`}>
+                   {draggingBlockGhostMeta.title || 'Tâche'}
+                 </div>
+               )}
+             </div>
+           )}
 
            {draggingBlockId && draggingBlockPreview && (
              <div className="fixed left-1/2 -translate-x-1/2 bottom-5 z-[20000] bg-gray-950 text-white px-4 py-2.5 rounded-full shadow-2xl text-sm font-black pointer-events-none border border-white/20">
@@ -6675,7 +6781,7 @@ export default function Home() {
 
               <div className="flex flex-col mt-2">
                 <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2.5 px-3 rounded-xl text-sm flex justify-between items-center transition-colors border border-[#DED5C8]">
-                  <span>⚙️ Paramétrage de la tâche</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
+                  <span>⚙️ Paramétrage des rappels</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
                 </button>
                 {showAdvancedSettings && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2 p-3 bg-[#F6F2EB] rounded-xl border border-[#E1D9CE]">
