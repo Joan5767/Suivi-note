@@ -278,6 +278,7 @@ export default function Home() {
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
   const memoSelectionHistoryArmedRef = useRef(false);
+  const memoEditorOpenRef = useRef(false);
 
   // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
   // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
@@ -1216,6 +1217,7 @@ export default function Home() {
       setShowEditingDailyConfig(false);
       setShowEditingExactDateConfig(false);
 
+      memoEditorOpenRef.current = false;
       setMemoEditorOpen(false);
 
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
@@ -1257,9 +1259,15 @@ export default function Home() {
     }
 
     const handleMemoSelectionPopState = () => {
-      // Le bouton Retour doit d'abord quitter la sélection multiple, sans sortir
-      // de Notes, Mémos & Listes. La sélection crée une entrée d'historique
-      // invisible sur le même #memos, exactement pour consommer ce premier retour.
+      // Dans Notes, Mémos & Listes, le bouton Retour ferme d'abord ce qui est
+      // ouvert localement (éditeur ou sélection) au lieu de quitter l'application.
+      if (memoEditorOpenRef.current) {
+        memoEditorOpenRef.current = false;
+        setMemoEditorOpen(false);
+        resetMemoDraft();
+        return;
+      }
+
       if (selectedMemoIdsRef.current.size > 0) {
         selectedMemoIdsRef.current = new Set();
         setSelectedMemoIds(new Set());
@@ -2773,6 +2781,22 @@ export default function Home() {
     cancelActiveTaskDrag(e?.pointerId);
   };
 
+  const armMemoEditorHistory = () => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hash !== '#memos' || window.history.state?.memoEditor) return;
+    window.history.pushState({ ...(window.history.state || {}), memoEditor: true }, '', window.location.href);
+  };
+
+  const closeMemoEditor = (consumeHistory = true) => {
+    memoEditorOpenRef.current = false;
+    setMemoEditorOpen(false);
+    resetMemoDraft();
+
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoEditor) {
+      window.history.back();
+    }
+  };
+
   const armMemoSelectionHistory = () => {
     if (typeof window === 'undefined') return;
     if (window.location.hash !== '#memos' || window.history.state?.memoSelection) return;
@@ -2840,6 +2864,8 @@ export default function Home() {
 
   const openNewMemo = (type: 'text' | 'list') => {
     resetMemoDraft(type);
+    armMemoEditorHistory();
+    memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
   };
 
@@ -2852,6 +2878,8 @@ export default function Home() {
     setMemoNewItem('');
     setMemoDraftColor(memo.color);
     setMemoDraftPinned(memo.pinned);
+    armMemoEditorHistory();
+    memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
   };
 
@@ -2901,8 +2929,7 @@ export default function Home() {
       const { error } = await query;
       if (error) throw error;
 
-      setMemoEditorOpen(false);
-      resetMemoDraft();
+      closeMemoEditor(true);
       await fetchMemos();
     } catch (error: any) {
       showAppMessage('Erreur lors de la sauvegarde du mémo : ' + (error?.message || 'erreur inconnue'));
@@ -5373,28 +5400,49 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowNotesHelp(false)}>
           <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 mb-4">
-              <h2 className="text-lg font-black text-[#46513F]">Options de Tâches &amp; Rappels</h2>
+              <h2 className="text-lg font-black text-[#46513F]">{activeTab === 'notes' ? 'Tâches enregistrées' : 'Options de Tâches &amp; Rappels'}</h2>
               <button onClick={() => setShowNotesHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
             </div>
 
-            <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
-              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
-                <strong className="text-[#4E5847]">📨 E-mail immédiat</strong>
-                <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la tâche directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
+            {activeTab === 'notes' ? (
+              <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#4E5847]">↕️ Déplacer et classer</strong>
+                  <p className="mt-1">Maintiens une tâche puis déplace-la pour changer son ordre. Tu peux aussi la déposer dans une autre priorité pour la passer en Urgente, Importante ou Normale.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#55516A]">✏️ Modifier une tâche</strong>
+                  <p className="mt-1">Ouvre une tâche puis utilise Modifier pour changer son contenu, sa priorité ou ajouter et ajuster ses rappels : pop-up, relance quotidienne, e-mail et agenda.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#67574A]">🎯 Mode Focus</strong>
+                  <p className="mt-1">Le mode Focus affiche une seule tâche à la fois, en commençant par les urgentes puis les importantes et les normales. Tu peux la terminer ou la remettre à plus tard pour passer à la suivante.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#4E5847]">✅ Terminer / archiver</strong>
+                  <p className="mt-1">Une tâche terminée quitte la liste active. Tu peux ensuite la retrouver dans l'historique, la réactiver ou la supprimer.</p>
+                </div>
               </div>
-              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
-                <strong className="text-[#55516A]">⏰ Alarme pop-up</strong>
-                <p className="mt-1">Programme une notification sur ton smartphone. Tu peux choisir un délai « Dans… » ou définir précisément une date et une heure.</p>
+            ) : (
+              <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#4E5847]">📨 E-mail immédiat</strong>
+                  <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la tâche directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#55516A]">⏰ Alarme pop-up</strong>
+                  <p className="mt-1">Programme une notification sur ton smartphone. Tu peux choisir un délai « Dans… » ou définir précisément une date et une heure.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#4E5847]">🔄 Relance quotidienne</strong>
+                  <p className="mt-1">Répète le rappel tous les jours à l'heure choisie jusqu'à ce que tu le désactives. La relance peut être envoyée par e-mail, par pop-up, ou par les deux.</p>
+                </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#67574A]">📅 Agenda / .ics</strong>
+                  <p className="mt-1">Associe une date et une heure à la tâche pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli. Le fichier .ics est téléchargé sur ton appareil : tu peux ensuite le conserver ou l'envoyer à quelqu'un pour qu'il l'importe dans son propre calendrier.</p>
+                </div>
               </div>
-              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
-                <strong className="text-[#4E5847]">🔄 Relance quotidienne</strong>
-                <p className="mt-1">Répète le rappel tous les jours à l'heure choisie jusqu'à ce que tu le désactives. La relance peut être envoyée par e-mail, par pop-up, ou par les deux.</p>
-              </div>
-              <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
-                <strong className="text-[#67574A]">📅 Agenda / .ics</strong>
-                <p className="mt-1">Associe une date et une heure à la tâche pour l'ajouter à ton calendrier. Google Agenda ouvre un événement prérempli. Le fichier .ics est téléchargé sur ton appareil : tu peux ensuite le conserver ou l'envoyer à quelqu'un pour qu'il l'importe dans son propre calendrier.</p>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -6045,7 +6093,7 @@ export default function Home() {
           {memoEditorOpen && (
             <div
               className="fixed inset-0 z-[12600] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4"
-              onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+              onClick={() => closeMemoEditor(true)}
             >
               <div
                 className={`w-full max-w-lg rounded-[28px] border shadow-2xl p-5 max-h-[90vh] overflow-y-auto ${memoColorClasses(memoDraftColor)}`}
@@ -6072,7 +6120,7 @@ export default function Home() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+                    onClick={() => closeMemoEditor(true)}
                     className="w-8 h-8 rounded-full bg-white/60 hover:bg-white/85 font-black"
                   >×</button>
                 </div>
@@ -6159,8 +6207,11 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setMemoDraftPinned(prev => !prev)}
-                    className={`px-3 py-2 rounded-xl text-xs font-black border ${memoDraftPinned ? 'bg-white/80 border-black/10' : 'bg-white/35 border-black/5'}`}
-                  >{memoDraftPinned ? '📌 Épinglé' : '📌 Épingler'}</button>
+                    aria-pressed={memoDraftPinned}
+                    aria-label={memoDraftPinned ? 'Désépingler la note' : 'Épingler la note'}
+                    title={memoDraftPinned ? 'Désépingler' : 'Épingler'}
+                    className={`w-10 h-10 rounded-xl text-lg font-black border flex items-center justify-center transition-all active:scale-95 ${memoDraftPinned ? 'bg-[#819076] text-white border-[#74836A] shadow-sm' : 'bg-white/35 border-black/5 hover:bg-white/65'}`}
+                  >📌</button>
 
                   <div className="flex items-center gap-1.5">
                     {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
@@ -6182,7 +6233,7 @@ export default function Home() {
                     <div className="mt-4 grid grid-cols-[1fr_auto_auto] gap-2">
                       <button
                         type="button"
-                        onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); transferMemoToTasks(originalMemo); }}
+                        onClick={() => { closeMemoEditor(true); transferMemoToTasks(originalMemo); }}
                         className="min-w-0 py-2.5 px-3 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-[11px] font-black truncate"
                       >
                         → Envoyer vers Tâches &amp; Rappels
@@ -6190,8 +6241,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={async () => {
-                          setMemoEditorOpen(false);
-                          resetMemoDraft();
+                          closeMemoEditor(true);
                           await updateMemo(originalMemo.id, { archived: !originalMemo.archived });
                         }}
                         className="w-10 h-10 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-sm font-black"
@@ -6199,7 +6249,7 @@ export default function Home() {
                       >{originalMemo.archived ? '↩' : '📦'}</button>
                       <button
                         type="button"
-                        onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); deleteMemo(originalMemo); }}
+                        onClick={() => { closeMemoEditor(true); deleteMemo(originalMemo); }}
                         className="w-10 h-10 rounded-xl bg-white/55 hover:bg-[#F0DDD7] border border-black/10 text-sm font-black"
                         title="Supprimer"
                       >🗑</button>
@@ -6210,7 +6260,7 @@ export default function Home() {
                 <div className="flex gap-2 mt-5">
                   <button
                     type="button"
-                    onClick={() => { setMemoEditorOpen(false); resetMemoDraft(); }}
+                    onClick={() => closeMemoEditor(true)}
                     className="flex-1 py-3 rounded-xl bg-white/45 hover:bg-white/70 border border-black/10 text-xs font-black"
                   >Annuler</button>
                   <button
@@ -6898,7 +6948,7 @@ export default function Home() {
                   if (isFocusMode) navigateNotesChild('#notes-list');
                   else navigateNotesChild('#notes-focus');
                 }}
-                className="min-w-[104px] h-11 px-4 rounded-xl text-xs font-black shadow-sm transition-colors whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] flex items-center justify-center"
+                className="min-w-[132px] h-14 px-5 rounded-2xl text-sm font-black shadow-md transition-all whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] flex items-center justify-center active:scale-95"
               >
                 {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
               </button>
