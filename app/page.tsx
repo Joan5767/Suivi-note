@@ -2,6 +2,24 @@
 
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { supabase } from '@/lib/supabase';
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragCancelEvent,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
 
 interface Subtask {
   id: string;
@@ -166,6 +184,67 @@ const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 // Activé uniquement sur le projet Vercel de démonstration.
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
+type MemoDndCardProps = {
+  memo: MemoEntry;
+  selected: boolean;
+  disabled: boolean;
+  hideOriginal: boolean;
+  colorClass: string;
+  onOpen: () => void;
+  children: React.ReactNode;
+};
+
+function MemoDndCard({ memo, selected, disabled, hideOriginal, colorClass, onOpen, children }: MemoDndCardProps) {
+  const draggable = useDraggable({ id: memo.id, disabled });
+  const droppable = useDroppable({ id: memo.id, disabled });
+
+  const setNodeRef = (node: HTMLElement | null) => {
+    draggable.setNodeRef(node);
+    droppable.setNodeRef(node);
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      data-memo-card-id={memo.id}
+      aria-selected={selected}
+      onClick={onOpen}
+      onContextMenu={(e) => e.preventDefault()}
+      {...draggable.attributes}
+      {...draggable.listeners}
+      className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity,transform] duration-180 ease-out cursor-pointer select-none ${colorClass} ${selected ? 'ring-2 ring-[#6F7B64] ring-offset-2 ring-offset-[#F8F5EF] shadow-md' : ''} ${hideOriginal ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
+      style={{
+        touchAction: 'pan-y',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+      } as React.CSSProperties}
+    >
+      {children}
+    </article>
+  );
+}
+
+function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: boolean }) {
+  const { setNodeRef } = useDroppable({ id: 'memo-trash', disabled: !active });
+  if (!active) return null;
+  return (
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-[max(22px,env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
+      <div
+        ref={setNodeRef}
+        className={`pointer-events-auto min-w-[150px] h-14 px-5 rounded-full border-2 shadow-xl flex items-center justify-center gap-2 font-black text-sm transition-all duration-150 ${
+          hovering
+            ? 'bg-[#B85D55] border-[#9F4A43] text-white scale-110 shadow-[0_10px_28px_rgba(150,65,57,0.32)]'
+            : 'bg-[#F7EBE7] border-[#D8AAA2] text-[#8A514A] scale-100'
+        }`}
+      >
+        <span className={`text-xl transition-transform ${hovering ? 'scale-125' : ''}`}>🗑️</span>
+        <span>{hovering ? 'Relâche pour supprimer' : 'Supprimer'}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -199,6 +278,17 @@ export default function Home() {
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
   const memoSelectionHistoryArmedRef = useRef(false);
+
+  // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
+  // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
+  // DragOverlay prend le relais et DnD Kit garantit toujours une fin/cancel propre.
+  const [memoDndMoved, setMemoDndMoved] = useState(false);
+  const memoDndMovedRef = useRef(false);
+  const memoDndSessionRef = useRef<{ id: string; originalEntries: MemoEntry[] } | null>(null);
+  const memoDndSensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 12 } }),
+  );
 
   // Réorganisation des mémos façon Google Keep : appui long, carte flottante,
   // réorganisation en direct puis sauvegarde de l'ordre dans Supabase.
@@ -1796,15 +1886,12 @@ export default function Home() {
   const detachMemoWindowListeners = () => {
     const listeners = memoWindowListenersRef.current;
     if (!listeners) return;
-    // Capture au niveau document : plus fiable sur Android qu'un listener posé
-    // seulement après l'activation du drag. Les événements restent suivis même
-    // lorsque le navigateur annule le PointerEvent natif.
-    document.removeEventListener('pointermove', listeners.move, true);
-    document.removeEventListener('pointerup', listeners.up, true);
-    document.removeEventListener('pointercancel', listeners.cancel, true);
-    document.removeEventListener('touchmove', listeners.touchMove, true);
-    document.removeEventListener('touchend', listeners.touchEnd, true);
-    document.removeEventListener('touchcancel', listeners.touchCancel, true);
+    window.removeEventListener('pointermove', listeners.move);
+    window.removeEventListener('pointerup', listeners.up);
+    window.removeEventListener('pointercancel', listeners.cancel);
+    window.removeEventListener('touchmove', listeners.touchMove);
+    window.removeEventListener('touchend', listeners.touchEnd);
+    window.removeEventListener('touchcancel', listeners.touchCancel);
     memoWindowListenersRef.current = null;
   };
 
@@ -1969,9 +2056,6 @@ export default function Home() {
     memoDragRef.current = null;
     detachMemoWindowListeners();
     if (drag.slotRefreshTimer !== null) window.clearTimeout(drag.slotRefreshTimer);
-    try {
-      if (drag.element.hasPointerCapture?.(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId);
-    } catch (_) {}
     if (drag.active) {
       preventDefault?.();
       stopPropagation?.();
@@ -2017,107 +2101,61 @@ export default function Home() {
 
   const attachMemoWindowListeners = () => {
     detachMemoWindowListeners();
-
     const move = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (!drag) return;
-
-      // Sur écran tactile on s'appuie sur TouchEvent, installé dès pointerdown.
-      // Le navigateur peut envoyer pointercancel lorsqu'il envisage un scroll ;
-      // ce PointerEvent ne doit donc jamais piloter le drag tactile.
+      if (!drag || drag.pointerCancelled) return;
+      // Sur mobile, les TouchEvents deviennent la source principale dès que le
+      // drag est actif. Cela évite les pointercancel intempestifs d'Android.
       if (drag.pointerType === 'touch') return;
-
-      if (!drag.active) return;
       processMemoDragMove(event.clientX, event.clientY, event.pointerId, () => event.preventDefault());
     };
-
     const up = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (!drag) return;
+      if (!drag || drag.pointerCancelled) return;
       if (drag.pointerType === 'touch') return;
-      if (drag.active) finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
-      else cancelMemoLongPress(event.pointerId);
+      finishMemoDrag(event.pointerId, () => event.preventDefault(), () => event.stopPropagation());
     };
-
     const cancel = (event: PointerEvent) => {
       const drag = memoDragRef.current;
-      if (!drag) return;
-
-      if (drag.pointerType === 'touch') {
-        // Très important : ne PAS marquer le drag comme annulé. Android peut
-        // émettre pointercancel au début d'un mouvement vertical alors que les
-        // TouchEvents continuent normalement jusqu'à touchend.
-        if (!drag.active) {
-          clearMemoLongPressTimer();
-        }
+      if (drag?.active && drag.pointerId === event.pointerId && drag.pointerType === 'touch') {
+        // Ne termine pas le drag ici : Android peut annuler le PointerEvent
+        // pendant un mouvement vertical. Le TouchEvent continue, lui.
+        drag.pointerCancelled = true;
         return;
       }
-
-      if (drag.active) finishMemoDrag(event.pointerId);
-      else cancelMemoLongPress(event.pointerId);
+      cancelMemoLongPress(event.pointerId);
     };
-
     const touchMove = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag || drag.pointerType !== 'touch' || event.touches.length === 0) return;
-      const touch = event.touches[0];
-      drag.lastX = touch.clientX;
-      drag.lastY = touch.clientY;
-
-      if (!drag.active) {
-        const distance = Math.hypot(touch.clientX - drag.startX, touch.clientY - drag.startY);
-        const heldFor = performance.now() - drag.pressStartedAt;
-
-        // Même si le PointerEvent a été annulé par Android, le TouchEvent peut
-        // encore déclencher le drag après l'appui long.
-        if (distance > 10 && heldFor >= 115) {
-          clearMemoLongPressTimer();
-          activateMemoDrag(drag);
-        } else if (distance > 56 && heldFor < 115) {
-          // Geste de scroll volontaire avant l'appui long : on abandonne sans
-          // empêcher le défilement natif.
-          cancelMemoLongPress(drag.pointerId);
-          return;
-        } else {
-          return;
-        }
-      }
-
+      if (!drag?.active || drag.pointerType !== 'touch' || event.touches.length === 0) return;
       if (event.cancelable) event.preventDefault();
+      const touch = event.touches[0];
       processMemoDragMove(touch.clientX, touch.clientY, drag.pointerId);
     };
-
     const touchEnd = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag || drag.pointerType !== 'touch') return;
-      if (event.cancelable && drag.active) event.preventDefault();
-      if (drag.active) finishMemoDrag(drag.pointerId);
-      else cancelMemoLongPress(drag.pointerId);
+      if (!drag?.active || drag.pointerType !== 'touch') return;
+      if (event.cancelable) event.preventDefault();
+      finishMemoDrag(drag.pointerId);
     };
-
     const touchCancel = (event: TouchEvent) => {
       const drag = memoDragRef.current;
-      if (!drag || drag.pointerType !== 'touch') return;
-
-      // Un vrai touchcancel doit toujours nettoyer l'état. S'il survient pendant
-      // un drag, on valide la dernière position connue plutôt que de laisser la
-      // carte fantôme figée à l'écran.
-      if (event.cancelable && drag.active) event.preventDefault();
-      if (drag.active) finishMemoDrag(drag.pointerId);
-      else cancelMemoLongPress(drag.pointerId);
+      if (!drag) return;
+      // Un touchcancel ne doit jamais laisser une carte flottante bloquée.
+      if (drag.active && drag.pointerType === 'touch') {
+        if (event.cancelable) event.preventDefault();
+        finishMemoDrag(drag.pointerId);
+        return;
+      }
+      cancelMemoLongPress(drag.pointerId);
     };
-
     memoWindowListenersRef.current = { move, up, cancel, touchMove, touchEnd, touchCancel };
-
-    // Installés en phase capture et, pour le tactile, dès le pointerdown. Ainsi
-    // touchend/touchcancel sont reçus même si un composant React ou Android
-    // interrompt la chaîne de PointerEvents.
-    document.addEventListener('pointermove', move, { passive: false, capture: true });
-    document.addEventListener('pointerup', up, { capture: true });
-    document.addEventListener('pointercancel', cancel, { capture: true });
-    document.addEventListener('touchmove', touchMove, { passive: false, capture: true });
-    document.addEventListener('touchend', touchEnd, { passive: false, capture: true });
-    document.addEventListener('touchcancel', touchCancel, { passive: false, capture: true });
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('touchmove', touchMove, { passive: false });
+    window.addEventListener('touchend', touchEnd, { passive: false });
+    window.addEventListener('touchcancel', touchCancel);
   };
 
   const activateMemoDrag = (drag: NonNullable<typeof memoDragRef.current>) => {
@@ -2140,7 +2178,7 @@ export default function Home() {
     drag.layoutLockedUntil = 0;
     drag.slots = captureMemoSlots(drag);
     setMemoDragVisual({ x: currentRect.left, y: currentRect.top, width: currentRect.width, height: currentRect.height });
-    if (!memoWindowListenersRef.current) attachMemoWindowListeners();
+    attachMemoWindowListeners();
     if ('vibrate' in navigator) navigator.vibrate(16);
   };
 
@@ -2184,11 +2222,6 @@ export default function Home() {
 
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 
-    // Sur mobile les listeners TouchEvent doivent exister AVANT le premier
-    // mouvement. Les installer uniquement après 180 ms était la cause principale
-    // des drags qui restaient bloqués lorsque Android prenait le geste pour un scroll.
-    if (e.pointerType === 'touch') attachMemoWindowListeners();
-
     memoLongPressTimerRef.current = window.setTimeout(() => {
       const drag = memoDragRef.current;
       if (!drag || drag.id !== memo.id || drag.pointerId !== e.pointerId) return;
@@ -2200,10 +2233,6 @@ export default function Home() {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
 
-    // Sur tactile, un seul moteur doit piloter le geste : les TouchEvents natifs
-    // installés en capture. Mélanger PointerEvent + TouchEvent créait des fins de
-    // drag concurrentes et des cartes fantômes figées.
-    if (drag.pointerType === 'touch') return;
     if (drag.active) return;
 
     drag.lastX = e.clientX;
@@ -2231,15 +2260,10 @@ export default function Home() {
   const endMemoLongPress = (e: React.PointerEvent<HTMLElement>) => {
     const drag = memoDragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
-    if (drag.pointerType === 'touch') {
-      // touchend (capture document) est la source de vérité sur mobile.
-      return;
-    }
-    if (drag.active) return;
+    if (drag.active) return; // le listener window termine le drag
     clearMemoLongPressTimer();
     try { drag.element.releasePointerCapture(drag.pointerId); } catch (_) {}
     memoDragRef.current = null;
-    detachMemoWindowListeners();
   };
 
   const cancelMemoLongPress = (pointerId?: number) => {
@@ -2258,6 +2282,103 @@ export default function Home() {
     setMemoDragVisual(null);
     setMemoTrashHover(false);
     memoDragLastPreviewRef.current = '';
+  };
+
+  const memoDndCollisionDetection = (args: any) => {
+    const pointerHits = pointerWithin(args);
+    const trash = pointerHits.find((hit: any) => String(hit.id) === 'memo-trash');
+    if (trash) return [trash];
+    if (pointerHits.length) return pointerHits;
+    return closestCenter(args);
+  };
+
+  const handleMemoDndStart = (event: DragStartEvent) => {
+    const id = String(event.active.id);
+    if (selectedMemoIdsRef.current.size > 0 || memoSearch.trim()) return;
+    const memo = memoEntriesRef.current.find(item => item.id === id);
+    if (!memo) return;
+
+    memoDndSessionRef.current = { id, originalEntries: memoEntriesRef.current };
+    memoDndMovedRef.current = false;
+    setMemoDndMoved(false);
+    setDraggingMemoId(id);
+    setMemoTrashHover(false);
+    memoSuppressClickIdsRef.current.add(id);
+    if ('vibrate' in navigator) navigator.vibrate(12);
+  };
+
+  const handleMemoDndMove = (event: DragMoveEvent) => {
+    const distance = Math.hypot(event.delta.x, event.delta.y);
+    if (!memoDndMovedRef.current && distance >= 7) {
+      memoDndMovedRef.current = true;
+      setMemoDndMoved(true);
+    }
+  };
+
+  const handleMemoDndOver = (event: DragOverEvent) => {
+    if (!memoDndMovedRef.current) return;
+    const sourceId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : '';
+    setMemoTrashHover(overId === 'memo-trash');
+    if (!overId || overId === 'memo-trash' || overId === sourceId) return;
+
+    const source = memoEntriesRef.current.find(item => item.id === sourceId);
+    const target = memoEntriesRef.current.find(item => item.id === overId);
+    if (!source || !target) return;
+    if (source.pinned !== target.pinned || source.archived !== target.archived) return;
+
+    const activeRect = event.active.rect.current.translated;
+    const overRect = event.over?.rect;
+    const activeCenterY = activeRect ? activeRect.top + activeRect.height / 2 : 0;
+    const targetCenterY = overRect ? overRect.top + overRect.height / 2 : 0;
+    previewMemoReorder(sourceId, overId, activeCenterY >= targetCenterY);
+  };
+
+  const resetMemoDndUi = () => {
+    setDraggingMemoId(null);
+    setMemoTrashHover(false);
+    setMemoDndMoved(false);
+    memoDndMovedRef.current = false;
+    memoDndSessionRef.current = null;
+  };
+
+  const handleMemoDndEnd = (event: DragEndEvent) => {
+    const sourceId = String(event.active.id);
+    const session = memoDndSessionRef.current;
+    const moved = memoDndMovedRef.current || Math.hypot(event.delta.x, event.delta.y) >= 7;
+    const overId = event.over ? String(event.over.id) : '';
+
+    // Empêche le click synthétique post-drag d'ouvrir la note.
+    memoSuppressAllClicksUntilRef.current = performance.now() + 420;
+    window.setTimeout(() => memoSuppressClickIdsRef.current.delete(sourceId), 450);
+
+    if (!moved) {
+      resetMemoDndUi();
+      toggleMemoSelection(sourceId);
+      return;
+    }
+
+    if (overId === 'memo-trash') {
+      const memo = memoEntriesRef.current.find(item => item.id === sourceId)
+        || session?.originalEntries.find(item => item.id === sourceId);
+      resetMemoDndUi();
+      if (memo) void deleteMemoImmediately(memo);
+      return;
+    }
+
+    resetMemoDndUi();
+    void persistCurrentMemoDragGroup(sourceId);
+  };
+
+  const handleMemoDndCancel = (_event: DragCancelEvent) => {
+    const session = memoDndSessionRef.current;
+    if (session) {
+      memoEntriesRef.current = session.originalEntries;
+      setMemoEntries(session.originalEntries);
+      memoSuppressAllClicksUntilRef.current = performance.now() + 300;
+      window.setTimeout(() => memoSuppressClickIdsRef.current.delete(session.id), 350);
+    }
+    resetMemoDndUi();
   };
 
   // ---------- Réorganisation des tâches et changement de priorité ----------
@@ -4864,35 +4985,19 @@ export default function Home() {
   const otherMemoColumns = buildMemoMasonryColumns(otherMemos);
 
   const renderMemoCard = (memo: MemoEntry) => {
-    const isDragging = draggingMemoId === memo.id;
     const isSelected = selectedMemoIds.has(memo.id);
+    const hideOriginal = draggingMemoId === memo.id && memoDndMoved;
+    const dragDisabled = selectedMemoIds.size > 0 || !!memoSearch.trim();
 
     return (
-      <article
+      <MemoDndCard
         key={memo.id}
-        data-memo-card-id={memo.id}
-        aria-selected={isSelected}
-        onClick={() => openMemoCard(memo)}
-        onPointerDown={(e) => beginMemoLongPress(e, memo)}
-        onPointerMove={moveMemoLongPress}
-        onPointerUp={endMemoLongPress}
-        onPointerCancel={(e) => {
-          // Android peut annuler le PointerEvent pendant un drag vertical.
-          // Le TouchEvent global continue et terminera proprement le geste.
-          if (e.pointerType !== 'touch') cancelMemoLongPress(e.pointerId);
-        }}
-        onContextMenu={(e) => e.preventDefault()}
-        draggable={false}
-        className={`relative rounded-[18px] border p-3 shadow-sm transition-[box-shadow,opacity,transform] duration-150 ease-out cursor-pointer select-none ${memoColorClasses(memo.color)} ${isSelected ? 'ring-2 ring-[#6F7B64] ring-offset-2 ring-offset-[#F8F5EF] shadow-md' : ''} ${isDragging ? 'opacity-0 shadow-none' : 'active:scale-[0.985]'}`}
-        style={{
-          touchAction: isDragging ? 'none' : 'pan-y',
-          // La carte d'origine reste dans le DOM et conserve le pointeur pendant
-          // tout le drag. Elle est invisible, mais pas désactivée côté événements.
-          pointerEvents: 'auto',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-          WebkitTouchCallout: 'none',
-        } as React.CSSProperties}
+        memo={memo}
+        selected={isSelected}
+        disabled={dragDisabled}
+        hideOriginal={hideOriginal}
+        colorClass={memoColorClasses(memo.color)}
+        onOpen={() => openMemoCard(memo)}
       >
         {isSelected && (
           <span className="absolute -top-2 -left-2 z-10 w-6 h-6 rounded-full bg-[#6F7B64] text-white border-2 border-[#F8F5EF] shadow flex items-center justify-center text-[12px] font-black">✓</span>
@@ -4920,8 +5025,7 @@ export default function Home() {
             )}
           </div>
         )}
-
-      </article>
+      </MemoDndCard>
     );
   };
 
@@ -5764,6 +5868,16 @@ export default function Home() {
 
       {/* ================= VUE : NOTES, MÉMOS & LISTES ================= */}
       {mainMode === 'memos' && (
+        <DndContext
+          sensors={memoDndSensors}
+          collisionDetection={memoDndCollisionDetection}
+          measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+          onDragStart={handleMemoDndStart}
+          onDragMove={handleMemoDndMove}
+          onDragOver={handleMemoDndOver}
+          onDragEnd={handleMemoDndEnd}
+          onDragCancel={handleMemoDndCancel}
+        >
         <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 mb-5">
             <button
@@ -5892,59 +6006,41 @@ export default function Home() {
             </div>
           )}
 
-          {draggingMemoId && selectedMemoIds.size === 0 && (
-            <div className="fixed left-1/2 -translate-x-1/2 bottom-[max(22px,env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
-              <div
-                ref={memoTrashRef}
-                className={`pointer-events-auto min-w-[150px] h-14 px-5 rounded-full border-2 shadow-xl flex items-center justify-center gap-2 font-black text-sm transition-all duration-150 ${
-                  memoTrashHover
-                    ? 'bg-[#B85D55] border-[#9F4A43] text-white scale-110 shadow-[0_10px_28px_rgba(150,65,57,0.32)]'
-                    : 'bg-[#F7EBE7] border-[#D8AAA2] text-[#8A514A] scale-100'
-                }`}
-              >
-                <span className={`text-xl transition-transform ${memoTrashHover ? 'scale-125' : ''}`}>🗑️</span>
-                <span>{memoTrashHover ? 'Relâche pour supprimer' : 'Supprimer'}</span>
-              </div>
-            </div>
-          )}
+          <MemoTrashDroppable
+            active={!!draggingMemoId && memoDndMoved && selectedMemoIds.size === 0}
+            hovering={memoTrashHover}
+          />
 
-          {draggingMemoId && memoDragVisual && (() => {
-            const memo = memoEntries.find(item => item.id === draggingMemoId);
-            if (!memo) return null;
-            return (
-              <div
-                ref={memoGhostRef}
-                className={`fixed z-[12850] pointer-events-none rounded-[18px] border p-3 shadow-2xl scale-[1.035] ${memoColorClasses(memo.color)}`}
-                style={{
-                  left: memoDragVisual.x,
-                  top: memoDragVisual.y,
-                  width: memoDragVisual.width,
-                  maxHeight: Math.max(memoDragVisual.height, 72),
-                }}
-              >
-                <div className="flex items-start gap-2">
-                  <div className="flex-1 min-w-0">
-                    {memo.title && <h3 className="font-black text-[14px] leading-tight whitespace-pre-wrap break-words">{memo.title}</h3>}
-                    {memo.content && <p className="text-[12px] mt-1.5 whitespace-pre-wrap leading-[1.35] opacity-85 break-words line-clamp-6">{memo.content}</p>}
+          <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
+            {draggingMemoId && memoDndMoved && (() => {
+              const memo = memoEntries.find(item => item.id === draggingMemoId);
+              if (!memo) return null;
+              return (
+                <div className={`pointer-events-none rounded-[18px] border p-3 shadow-2xl scale-[1.025] ${memoColorClasses(memo.color)}`} style={{ width: 'min(46vw, 380px)' }}>
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      {memo.title && <h3 className="font-black text-[14px] leading-tight whitespace-pre-wrap break-words">{memo.title}</h3>}
+                      {memo.content && <p className="text-[12px] mt-1.5 whitespace-pre-wrap leading-[1.35] opacity-85 break-words line-clamp-6">{memo.content}</p>}
+                    </div>
+                    {memo.pinned && <span className="text-xs flex-shrink-0">📌</span>}
                   </div>
-                  {memo.pinned && <span className="text-xs flex-shrink-0">📌</span>}
-                </div>
-                {memo.memo_type === 'list' && memo.items.length > 0 && (
-                  <div className="mt-2.5 flex flex-col gap-1">
-                    {memo.items.slice(0, 6).map(item => (
-                      <div key={item.id} className="flex items-start gap-1.5 text-[11px] font-semibold leading-tight">
-                        <span className="mt-[-1px] flex-shrink-0 opacity-70">{item.completed ? '☑' : '☐'}</span>
-                        <span className={`break-words ${item.completed ? 'line-through opacity-45' : ''}`}>{item.text}</span>
-                      </div>
-                    ))}
+                  {memo.memo_type === 'list' && memo.items.length > 0 && (
+                    <div className="mt-2.5 flex flex-col gap-1">
+                      {memo.items.slice(0, 6).map(item => (
+                        <div key={item.id} className="flex items-start gap-1.5 text-[11px] font-semibold leading-tight">
+                          <span className="mt-[-1px] flex-shrink-0 opacity-70">{item.completed ? '☑' : '☐'}</span>
+                          <span className={`break-words ${item.completed ? 'line-through opacity-45' : ''}`}>{item.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : 'bg-[#4B5843]'}`}>
+                    {memoTrashHover ? 'Relâche pour supprimer' : 'Relâche pour placer'}
                   </div>
-                )}
-                <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : 'bg-[#4B5843]'}`}>
-                  {memoTrashHover ? 'Relâche pour supprimer' : 'Relâche pour placer'}
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
+          </DragOverlay>
 
           {memoEditorOpen && (
             <div
@@ -6128,6 +6224,7 @@ export default function Home() {
             </div>
           )}
         </div>
+        </DndContext>
       )}
 
       {/* ================= VUE : ACCUEIL PLANNING ================= */}
