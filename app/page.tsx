@@ -99,6 +99,8 @@ interface MemoEntry {
   content: string;
   memo_type: 'text' | 'list';
   items: MemoListItem[];
+  is_drawing: boolean;
+  drawing_data: DrawNoteData;
   color: MemoColor;
   pinned: boolean;
   archived: boolean;
@@ -289,6 +291,501 @@ function PlanningDndCard({ template, disabled = false, hideOriginal = false, chi
   );
 }
 
+type DrawPoint = { x: number; y: number };
+type DrawStrokeWidth = 2 | 4 | 7 | 10;
+type DrawTool = 'pen' | 'line' | 'dimension' | 'rect' | 'ellipse' | 'triangle' | 'polygon' | 'text';
+type DrawColor = '#202124' | '#B85D55' | '#4D6F8C' | '#5E7B59' | '#8A684B';
+
+type DrawObject =
+  | { id: string; type: 'path'; points: DrawPoint[]; stroke: string; strokeWidth: number }
+  | { id: string; type: 'line'; x1: number; y1: number; x2: number; y2: number; stroke: string; strokeWidth: number }
+  | { id: string; type: 'dimension'; x1: number; y1: number; x2: number; y2: number; stroke: string; strokeWidth: number }
+  | { id: string; type: 'rect'; x: number; y: number; width: number; height: number; stroke: string; strokeWidth: number }
+  | { id: string; type: 'ellipse'; x: number; y: number; width: number; height: number; stroke: string; strokeWidth: number }
+  | { id: string; type: 'triangle'; x: number; y: number; width: number; height: number; stroke: string; strokeWidth: number }
+  | { id: string; type: 'polygon'; points: DrawPoint[]; stroke: string; strokeWidth: number }
+  | { id: string; type: 'text'; x: number; y: number; text: string; color: string; fontSize: number };
+
+interface DrawNoteData {
+  version: 1;
+  width: number;
+  height: number;
+  objects: DrawObject[];
+}
+
+
+const drawMemoColorClasses = (color: MemoColor) => ({
+  sage: 'bg-[#E9EEE2] border-[#C8D2BC] text-[#3E4A37]',
+  sand: 'bg-[#F4EBDD] border-[#DDCCB4] text-[#5C4C3E]',
+  rose: 'bg-[#F3E3DF] border-[#DEC0BA] text-[#654842]',
+  blue: 'bg-[#E3EBEF] border-[#C0D0D8] text-[#405660]',
+  lavender: 'bg-[#ECE6F1] border-[#D1C3DC] text-[#554861]',
+  white: 'bg-white border-[#DED8CE] text-[#4A4741]',
+}[color]);
+
+const EMPTY_DRAW_NOTE: DrawNoteData = { version: 1, width: 1000, height: 1400, objects: [] };
+
+const normalizeDrawPoint = (point: any): DrawPoint | null => {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+};
+
+const normalizeDrawNoteData = (value: unknown): DrawNoteData => {
+  if (!value || typeof value !== 'object') return { ...EMPTY_DRAW_NOTE, objects: [] };
+  const raw = value as any;
+  const objects: DrawObject[] = Array.isArray(raw.objects)
+    ? raw.objects.flatMap((object: any) => {
+        const id = typeof object?.id === 'string' && object.id ? object.id : crypto.randomUUID();
+        const stroke = typeof object?.stroke === 'string' ? object.stroke : '#202124';
+        const strokeWidth = Math.max(1, Math.min(18, Number(object?.strokeWidth) || 4));
+        if (object?.type === 'path') {
+          const points = Array.isArray(object.points) ? object.points.map(normalizeDrawPoint).filter(Boolean) as DrawPoint[] : [];
+          return points.length > 1 ? [{ id, type: 'path' as const, points, stroke, strokeWidth }] : [];
+        }
+        if (object?.type === 'line' || object?.type === 'dimension') {
+          const values = ['x1', 'y1', 'x2', 'y2'].map(key => Number(object?.[key]));
+          if (values.some(value => !Number.isFinite(value))) return [];
+          return [{ id, type: object.type, x1: values[0], y1: values[1], x2: values[2], y2: values[3], stroke, strokeWidth }];
+        }
+        if (object?.type === 'rect' || object?.type === 'ellipse' || object?.type === 'triangle') {
+          const values = ['x', 'y', 'width', 'height'].map(key => Number(object?.[key]));
+          if (values.some(value => !Number.isFinite(value))) return [];
+          return [{ id, type: object.type, x: values[0], y: values[1], width: values[2], height: values[3], stroke, strokeWidth }];
+        }
+        if (object?.type === 'polygon') {
+          const points = Array.isArray(object.points) ? object.points.map(normalizeDrawPoint).filter(Boolean) as DrawPoint[] : [];
+          return points.length > 2 ? [{ id, type: 'polygon' as const, points, stroke, strokeWidth }] : [];
+        }
+        if (object?.type === 'text') {
+          const x = Number(object?.x);
+          const y = Number(object?.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+          return [{
+            id,
+            type: 'text' as const,
+            x,
+            y,
+            text: typeof object?.text === 'string' ? object.text : 'Texte',
+            color: typeof object?.color === 'string' ? object.color : '#202124',
+            fontSize: Math.max(16, Math.min(180, Number(object?.fontSize) || 42)),
+          }];
+        }
+        return [];
+      })
+    : [];
+  return { version: 1, width: 1000, height: 1400, objects };
+};
+
+const drawingObjectBounds = (object: DrawObject) => {
+  if (object.type === 'text') {
+    const width = Math.max(object.fontSize * 1.2, object.text.length * object.fontSize * 0.58);
+    const height = object.fontSize * 1.3;
+    return { x: object.x, y: object.y - object.fontSize, width, height };
+  }
+  if (object.type === 'path' || object.type === 'polygon') {
+    const xs = object.points.map(point => point.x);
+    const ys = object.points.map(point => point.y);
+    return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  }
+  if (object.type === 'line' || object.type === 'dimension') {
+    return { x: Math.min(object.x1, object.x2), y: Math.min(object.y1, object.y2), width: Math.abs(object.x2 - object.x1), height: Math.abs(object.y2 - object.y1) };
+  }
+  return {
+    x: Math.min(object.x, object.x + object.width),
+    y: Math.min(object.y, object.y + object.height),
+    width: Math.abs(object.width),
+    height: Math.abs(object.height),
+  };
+};
+
+function DrawingObjectSvg({ object, selected = false }: { object: DrawObject; selected?: boolean }) {
+  const common = { strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, vectorEffect: 'non-scaling-stroke' as const };
+  if (object.type === 'path') {
+    const d = object.points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+    return <path d={d} fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  if (object.type === 'line') {
+    return <line x1={object.x1} y1={object.y1} x2={object.x2} y2={object.y2} stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  if (object.type === 'dimension') {
+    const dx = object.x2 - object.x1;
+    const dy = object.y2 - object.y1;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const px = (-dy / length) * 15;
+    const py = (dx / length) * 15;
+    return (
+      <g fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common}>
+        <line x1={object.x1} y1={object.y1} x2={object.x2} y2={object.y2} />
+        <line x1={object.x1 - px} y1={object.y1 - py} x2={object.x1 + px} y2={object.y1 + py} />
+        <line x1={object.x2 - px} y1={object.y2 - py} x2={object.x2 + px} y2={object.y2 + py} />
+      </g>
+    );
+  }
+  if (object.type === 'rect') {
+    const x = Math.min(object.x, object.x + object.width);
+    const y = Math.min(object.y, object.y + object.height);
+    return <rect x={x} y={y} width={Math.abs(object.width)} height={Math.abs(object.height)} fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  if (object.type === 'ellipse') {
+    const x = Math.min(object.x, object.x + object.width);
+    const y = Math.min(object.y, object.y + object.height);
+    const width = Math.abs(object.width);
+    const height = Math.abs(object.height);
+    return <ellipse cx={x + width / 2} cy={y + height / 2} rx={width / 2} ry={height / 2} fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  if (object.type === 'triangle') {
+    const x = Math.min(object.x, object.x + object.width);
+    const y = Math.min(object.y, object.y + object.height);
+    const width = Math.abs(object.width);
+    const height = Math.abs(object.height);
+    return <polygon points={`${x + width / 2},${y} ${x + width},${y + height} ${x},${y + height}`} fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  if (object.type === 'polygon') {
+    return <polygon points={object.points.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={object.stroke} strokeWidth={object.strokeWidth} {...common} />;
+  }
+  return (
+    <text x={object.x} y={object.y} fill={object.color} fontSize={object.fontSize} fontFamily="Arial, sans-serif" fontWeight={selected ? 600 : 500}>
+      {object.text || 'Texte'}
+    </text>
+  );
+}
+
+function DrawingPreview({ data, className = '' }: { data: DrawNoteData; className?: string }) {
+  const safe = normalizeDrawNoteData(data);
+  return (
+    <div className={`overflow-hidden rounded-xl border border-black/10 bg-white ${className}`}>
+      <svg viewBox={`0 0 ${safe.width} ${safe.height}`} className="block w-full h-auto bg-white" aria-label="Aperçu du dessin">
+        {safe.objects.map(object => <DrawingObjectSvg key={object.id} object={object} />)}
+      </svg>
+    </div>
+  );
+}
+
+type DrawEditorProps = {
+  initialData: DrawNoteData;
+  initialTitle: string;
+  initialPinned: boolean;
+  initialColor: MemoColor;
+  onSave: (payload: { title: string; pinned: boolean; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
+  onClose: () => void;
+};
+
+function DrawNoteEditor({ initialData, initialTitle, initialPinned, initialColor, onSave, onClose }: DrawEditorProps) {
+  const [title, setTitle] = useState(initialTitle);
+  const [pinned, setPinned] = useState(initialPinned);
+  const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
+  const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
+  const [tool, setTool] = useState<DrawTool>('pen');
+  const [strokeWidth, setStrokeWidth] = useState<DrawStrokeWidth>(4);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [textColor, setTextColor] = useState<DrawColor>('#202124');
+  const [polygonDraft, setPolygonDraft] = useState<DrawPoint[]>([]);
+  const [undoStack, setUndoStack] = useState<DrawObject[][]>([]);
+  const [redoStack, setRedoStack] = useState<DrawObject[][]>([]);
+  const [saving, setSaving] = useState(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const interactionRef = useRef<
+    | null
+    | { kind: 'draw'; id: string; tool: Exclude<DrawTool, 'polygon' | 'text'>; start: DrawPoint; before: DrawObject[] }
+    | { kind: 'move-text'; id: string; start: DrawPoint; originX: number; originY: number; before: DrawObject[] }
+    | { kind: 'resize-text'; id: string; start: DrawPoint; startFontSize: number; center: DrawPoint; startDistance: number; before: DrawObject[] }
+  >(null);
+
+  const snapshot = (value = objects) => value.map(object => JSON.parse(JSON.stringify(object)) as DrawObject);
+  const pushHistory = (before: DrawObject[]) => {
+    setUndoStack(stack => [...stack.slice(-39), snapshot(before)]);
+    setRedoStack([]);
+  };
+  const undo = () => {
+    if (!undoStack.length) return;
+    const previous = undoStack[undoStack.length - 1];
+    setRedoStack(stack => [...stack, snapshot(objects)]);
+    setObjects(snapshot(previous));
+    setUndoStack(stack => stack.slice(0, -1));
+    setSelectedTextId(null);
+    setPolygonDraft([]);
+  };
+  const redo = () => {
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    setUndoStack(stack => [...stack, snapshot(objects)]);
+    setObjects(snapshot(next));
+    setRedoStack(stack => stack.slice(0, -1));
+    setSelectedTextId(null);
+    setPolygonDraft([]);
+  };
+
+  const toSvgPoint = (clientX: number, clientY: number): DrawPoint => {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1000, ((clientX - rect.left) / rect.width) * 1000)),
+      y: Math.max(0, Math.min(1400, ((clientY - rect.top) / rect.height) * 1400)),
+    };
+  };
+
+  const setObject = (id: string, updater: (object: DrawObject) => DrawObject) => {
+    setObjects(current => current.map(object => object.id === id ? updater(object) : object));
+  };
+
+  const beginTextMoveOrResize = (event: React.PointerEvent, object: Extract<DrawObject, { type: 'text' }>, mode: 'move' | 'resize') => {
+    event.stopPropagation();
+    event.preventDefault();
+    const point = toSvgPoint(event.clientX, event.clientY);
+    const bounds = drawingObjectBounds(object);
+    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    if (mode === 'move') {
+      interactionRef.current = { kind: 'move-text', id: object.id, start: point, originX: object.x, originY: object.y, before: snapshot() };
+    } else {
+      interactionRef.current = {
+        kind: 'resize-text',
+        id: object.id,
+        start: point,
+        startFontSize: object.fontSize,
+        center,
+        startDistance: Math.max(1, Math.hypot(point.x - center.x, point.y - center.y)),
+        before: snapshot(),
+      };
+    }
+    (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0 && event.pointerType === 'mouse') return;
+    const point = toSvgPoint(event.clientX, event.clientY);
+    if (tool === 'polygon') {
+      event.preventDefault();
+      if (polygonDraft.length >= 3 && Math.hypot(point.x - polygonDraft[0].x, point.y - polygonDraft[0].y) < 35) {
+        const before = snapshot();
+        setObjects(current => [...current, { id: crypto.randomUUID(), type: 'polygon', points: polygonDraft, stroke: '#202124', strokeWidth }]);
+        setPolygonDraft([]);
+        pushHistory(before);
+      } else {
+        setPolygonDraft(current => [...current, point]);
+      }
+      return;
+    }
+    if (tool === 'text') {
+      event.preventDefault();
+      const before = snapshot();
+      const id = crypto.randomUUID();
+      setObjects(current => [...current, { id, type: 'text', x: point.x, y: point.y, text: 'Texte', color: textColor, fontSize: 42 }]);
+      setSelectedTextId(id);
+      pushHistory(before);
+      return;
+    }
+
+    event.preventDefault();
+    setSelectedTextId(null);
+    const before = snapshot();
+    const id = crypto.randomUUID();
+    let object: DrawObject;
+    if (tool === 'pen') object = { id, type: 'path', points: [point, point], stroke: '#202124', strokeWidth };
+    else if (tool === 'line' || tool === 'dimension') object = { id, type: tool, x1: point.x, y1: point.y, x2: point.x, y2: point.y, stroke: '#202124', strokeWidth };
+    else object = { id, type: tool, x: point.x, y: point.y, width: 0, height: 0, stroke: '#202124', strokeWidth };
+    setObjects(current => [...current, object]);
+    interactionRef.current = { kind: 'draw', id, tool, start: point, before };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    const interaction = interactionRef.current;
+    if (!interaction) return;
+    event.preventDefault();
+    const point = toSvgPoint(event.clientX, event.clientY);
+    if (interaction.kind === 'move-text') {
+      const dx = point.x - interaction.start.x;
+      const dy = point.y - interaction.start.y;
+      setObject(interaction.id, object => object.type === 'text' ? { ...object, x: interaction.originX + dx, y: interaction.originY + dy } : object);
+      return;
+    }
+    if (interaction.kind === 'resize-text') {
+      const distance = Math.max(1, Math.hypot(point.x - interaction.center.x, point.y - interaction.center.y));
+      const ratio = distance / interaction.startDistance;
+      setObject(interaction.id, object => object.type === 'text' ? { ...object, fontSize: Math.max(16, Math.min(180, interaction.startFontSize * ratio)) } : object);
+      return;
+    }
+    setObject(interaction.id, object => {
+      if (interaction.tool === 'pen' && object.type === 'path') {
+        const last = object.points[object.points.length - 1];
+        if (Math.hypot(point.x - last.x, point.y - last.y) < 2.5) return object;
+        return { ...object, points: [...object.points, point] };
+      }
+      if ((interaction.tool === 'line' || interaction.tool === 'dimension') && (object.type === 'line' || object.type === 'dimension')) {
+        return { ...object, x2: point.x, y2: point.y };
+      }
+      if ((interaction.tool === 'rect' || interaction.tool === 'ellipse' || interaction.tool === 'triangle') && (object.type === 'rect' || object.type === 'ellipse' || object.type === 'triangle')) {
+        const dx = point.x - interaction.start.x;
+        const dy = point.y - interaction.start.y;
+        if (interaction.tool === 'rect' || interaction.tool === 'ellipse') {
+          const size = Math.max(Math.abs(dx), Math.abs(dy));
+          return { ...object, width: Math.sign(dx || 1) * size, height: Math.sign(dy || 1) * size };
+        }
+        return { ...object, width: dx, height: dy };
+      }
+      return object;
+    });
+  };
+
+  const finishInteraction = () => {
+    const interaction = interactionRef.current;
+    if (!interaction) return;
+    interactionRef.current = null;
+    const object = objects.find(item => item.id === interaction.id);
+    if (interaction.kind === 'draw' && object) {
+      const bounds = drawingObjectBounds(object);
+      if (interaction.tool !== 'pen' && bounds.width < 4 && bounds.height < 4) {
+        setObjects(current => current.filter(item => item.id !== interaction.id));
+        return;
+      }
+    }
+    pushHistory(interaction.before);
+  };
+
+  const selectedText = objects.find(object => object.id === selectedTextId && object.type === 'text') as Extract<DrawObject, { type: 'text' }> | undefined;
+  const selectedTextBounds = selectedText ? drawingObjectBounds(selectedText) : null;
+
+  const updateSelectedText = (payload: Partial<Extract<DrawObject, { type: 'text' }>>) => {
+    if (!selectedTextId) return;
+    const before = snapshot();
+    setObject(selectedTextId, object => object.type === 'text' ? { ...object, ...payload } : object);
+    pushHistory(before);
+  };
+
+  const removeSelectedText = () => {
+    if (!selectedTextId) return;
+    const before = snapshot();
+    setObjects(current => current.filter(object => object.id !== selectedTextId));
+    setSelectedTextId(null);
+    pushHistory(before);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const ok = await onSave({ title: title.trim(), pinned, color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
+      if (ok) onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const shapeButtons: Array<{ tool: DrawTool; label: string; title: string }> = [
+    { tool: 'line', label: '╱', title: 'Ligne' },
+    { tool: 'dimension', label: '↔', title: 'Ligne de cote' },
+    { tool: 'rect', label: '□', title: 'Carré' },
+    { tool: 'ellipse', label: '○', title: 'Rond' },
+    { tool: 'triangle', label: '△', title: 'Triangle' },
+    { tool: 'polygon', label: '⬡', title: 'Polygone' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[15000] bg-[#EDE9E1] flex flex-col select-none">
+      <div className="bg-[#F8F5EF] border-b border-[#D8D0C5] shadow-sm px-3 py-2 flex flex-col gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onClose} className="w-10 h-10 rounded-full bg-white border border-[#DDD5C9] font-black text-lg">←</button>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titre du dessin" className="min-w-0 flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-sm font-black focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" />
+          <button type="button" onClick={() => setPinned(value => !value)} className={`w-10 h-10 rounded-xl border text-lg ${pinned ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`} title={pinned ? 'Désépingler' : 'Épingler'}>📌</button>
+          <button type="button" onClick={() => void save()} disabled={saving} className="px-3 h-10 rounded-xl bg-[#6F7B64] text-white text-xs font-black disabled:opacity-50">{saving ? '…' : 'Enregistrer'}</button>
+        </div>
+
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          <button type="button" onClick={() => setTool('pen')} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'pen' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>✎ Stylo</button>
+          <div className="flex items-center gap-1 bg-white rounded-xl border border-[#DDD5C9] p-1 flex-shrink-0">
+            {([2, 4, 7, 10] as DrawStrokeWidth[]).map(width => (
+              <button key={width} type="button" onClick={() => setStrokeWidth(width)} className={`w-8 h-7 rounded-lg flex items-center justify-center ${strokeWidth === width ? 'bg-[#E4E8DB]' : ''}`} title={`Épaisseur ${width}`}>
+                <span className="block rounded-full bg-[#202124]" style={{ width: Math.min(22, 8 + width), height: Math.max(2, width / 1.3) }} />
+              </button>
+            ))}
+          </div>
+          {shapeButtons.map(button => (
+            <button key={button.tool} type="button" onClick={() => { setTool(button.tool); if (button.tool !== 'polygon') setPolygonDraft([]); }} title={button.title} className={`w-9 h-9 rounded-xl text-lg font-black border flex-shrink-0 ${tool === button.tool ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>{button.label}</button>
+          ))}
+          <button type="button" onClick={() => { setTool('text'); setPolygonDraft([]); }} className={`h-9 px-3 rounded-xl text-xs font-black border flex-shrink-0 ${tool === 'text' ? 'bg-[#D8DEC9] border-[#B8C2A9]' : 'bg-white border-[#DDD5C9]'}`}>T Texte</button>
+          <button type="button" onClick={undo} disabled={!undoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Annuler">↶</button>
+          <button type="button" onClick={redo} disabled={!redoStack.length} className="w-9 h-9 rounded-xl bg-white border border-[#DDD5C9] font-black disabled:opacity-30 flex-shrink-0" title="Rétablir">↷</button>
+        </div>
+
+        {tool === 'polygon' && polygonDraft.length > 0 && (
+          <div className="text-[10px] font-bold text-[#6F685E] px-1">Polygone : touche le premier point pour fermer la forme. Points : {polygonDraft.length}</div>
+        )}
+
+        {selectedText && (
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <input value={selectedText.text} onChange={(e) => setObject(selectedText.id, object => object.type === 'text' ? { ...object, text: e.target.value } : object)} onBlur={() => {}} className="min-w-[150px] flex-1 bg-white border border-[#DDD5C9] rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none" />
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {(['#202124', '#B85D55', '#4D6F8C', '#5E7B59', '#8A684B'] as DrawColor[]).map(color => (
+                <button key={color} type="button" onClick={() => { setTextColor(color); updateSelectedText({ color }); }} className={`w-7 h-7 rounded-full border-2 ${selectedText.color === color ? 'ring-2 ring-[#9EAA91] ring-offset-1' : ''}`} style={{ backgroundColor: color, borderColor: '#fff' }} />
+              ))}
+            </div>
+            <button type="button" onClick={removeSelectedText} className="w-9 h-9 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0">🗑</button>
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-auto p-3 flex justify-center items-start bg-[#E9E4DB]">
+        <div className="w-full max-w-[760px] shadow-xl bg-white border border-[#D8D0C5]">
+          <svg
+            ref={svgRef}
+            viewBox="0 0 1000 1400"
+            className="block w-full h-auto bg-white"
+            style={{ touchAction: 'none' }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishInteraction}
+            onPointerCancel={finishInteraction}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <rect x="0" y="0" width="1000" height="1400" fill="white" />
+            {objects.map(object => {
+              const selected = object.type === 'text' && object.id === selectedTextId;
+              return (
+                <g key={object.id} onPointerDown={object.type === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
+                  <DrawingObjectSvg object={object} selected={selected} />
+                </g>
+              );
+            })}
+            {polygonDraft.length > 0 && (
+              <g fill="none" stroke="#202124" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+                <polyline points={polygonDraft.map(point => `${point.x},${point.y}`).join(' ')} />
+                {polygonDraft.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r={index === 0 ? 14 : 8} fill={index === 0 ? '#D8DEC9' : '#202124'} stroke="#202124" strokeWidth="2" />)}
+              </g>
+            )}
+            {selectedText && selectedTextBounds && (
+              <g>
+                <rect x={selectedTextBounds.x - 10} y={selectedTextBounds.y - 10} width={selectedTextBounds.width + 20} height={selectedTextBounds.height + 20} fill="none" stroke="#819076" strokeWidth="3" strokeDasharray="10 8" />
+                {[
+                  [selectedTextBounds.x - 10, selectedTextBounds.y - 10],
+                  [selectedTextBounds.x + selectedTextBounds.width + 10, selectedTextBounds.y - 10],
+                  [selectedTextBounds.x - 10, selectedTextBounds.y + selectedTextBounds.height + 10],
+                  [selectedTextBounds.x + selectedTextBounds.width + 10, selectedTextBounds.y + selectedTextBounds.height + 10],
+                ].map(([x, y], index) => (
+                  <circle key={index} cx={x} cy={y} r="14" fill="#F8F5EF" stroke="#819076" strokeWidth="4" onPointerDown={(event) => beginTextMoveOrResize(event, selectedText, 'resize')} />
+                ))}
+              </g>
+            )}
+          </svg>
+        </div>
+      </div>
+
+      <div className="bg-[#F8F5EF] border-t border-[#D8D0C5] px-3 py-2 flex items-center justify-between gap-2 flex-shrink-0">
+        <div className="text-[10px] font-bold text-[#81786C] truncate">
+          {tool === 'pen' ? 'Dessine à main levée.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer.' : tool === 'text' ? 'Touche la feuille pour ajouter du texte.' : 'Glisse sur la feuille pour créer la forme.'}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
+            <button key={color} type="button" onClick={() => setMemoColor(color)} aria-label={`Couleur de la carte ${color}`} className={`w-6 h-6 rounded-full border-2 ${drawMemoColorClasses(color).split(' ').slice(0, 2).join(' ')} ${memoColor === color ? 'ring-2 ring-black/20 ring-offset-1' : ''}`} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function Home() {
   const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning_home' | 'planning' | 'planning_gallery'>('hub');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
@@ -325,6 +822,16 @@ export default function Home() {
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const [drawEditorOpen, setDrawEditorOpen] = useState(false);
+  const [drawEditorSeed, setDrawEditorSeed] = useState<{
+    sessionKey: string;
+    memoId: string | null;
+    title: string;
+    pinned: boolean;
+    color: MemoColor;
+    drawing: DrawNoteData;
+  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', pinned: false, color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
+  const drawEditorOpenRef = useRef(false);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
   const selectedMemoIdsRef = useRef<Set<string>>(new Set());
   const memoSelectionHistoryArmedRef = useRef(false);
@@ -1280,6 +1787,8 @@ export default function Home() {
 
       memoEditorOpenRef.current = false;
       setMemoEditorOpen(false);
+      drawEditorOpenRef.current = false;
+      setDrawEditorOpen(false);
 
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
       if (directNoteMatch) {
@@ -1325,8 +1834,14 @@ export default function Home() {
         return;
       }
 
-      // Retour Android : on ferme d'abord l'éditeur en sauvegardant automatiquement,
+      // Retour Android : DrawNote se ferme d'abord, puis l'éditeur de mémo,
       // puis la sélection, puis les Archives. On ne quitte l'application qu'après.
+      if (drawEditorOpenRef.current) {
+        drawEditorOpenRef.current = false;
+        setDrawEditorOpen(false);
+        return;
+      }
+
       if (memoEditorOpenRef.current) {
         void memoEditorAutoSaveRef.current().then((saved) => {
           if (!saved) {
@@ -1670,6 +2185,8 @@ export default function Home() {
     content: typeof row?.content === 'string' ? row.content : '',
     memo_type: row?.memo_type === 'list' ? 'list' : 'text',
     items: normalizeMemoItems(row?.items),
+    is_drawing: Boolean(row?.is_drawing),
+    drawing_data: normalizeDrawNoteData(row?.drawing_data),
     color: ['sage', 'sand', 'rose', 'blue', 'lavender', 'white'].includes(row?.color) ? row.color : 'sage',
     pinned: Boolean(row?.pinned),
     archived: Boolean(row?.archived),
@@ -1886,6 +2403,7 @@ export default function Home() {
     if (memo.title) height += 18 * Math.min(3, Math.max(1, memo.title.split('\n').length + Math.floor(memo.title.length / 24)));
     if (memo.content) height += 17 * Math.min(6, Math.max(1, memo.content.split('\n').length + Math.floor(memo.content.length / 28))) + 6;
     if (memo.memo_type === 'list' && memo.items.length) height += Math.min(6, memo.items.length) * 18 + (memo.items.length > 6 ? 14 : 0) + 8;
+    if (memo.is_drawing) height += 190;
     return Math.max(44, height);
   };
 
@@ -2899,6 +3417,21 @@ export default function Home() {
     cancelActiveTaskDrag(e?.pointerId);
   };
 
+  const armDrawEditorHistory = () => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hash !== '#memos' || window.history.state?.drawEditor) return;
+    window.history.pushState({ ...(window.history.state || {}), drawEditor: true }, '', window.location.href);
+  };
+
+  const closeDrawEditor = (consumeHistory = true) => {
+    drawEditorOpenRef.current = false;
+    setDrawEditorOpen(false);
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.drawEditor) {
+      memoIgnoreNextPopRef.current = true;
+      window.history.back();
+    }
+  };
+
   const armMemoEditorHistory = () => {
     if (typeof window === 'undefined') return;
     if (window.location.hash !== '#memos' || window.history.state?.memoEditor) return;
@@ -3042,6 +3575,10 @@ export default function Home() {
       toggleMemoSelection(memo.id);
       return;
     }
+    if (memo.is_drawing) {
+      openDrawEditor(memo);
+      return;
+    }
     openMemoEditor(memo);
   };
 
@@ -3061,6 +3598,85 @@ export default function Home() {
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
+  };
+
+  const openDrawEditor = (memo?: MemoEntry) => {
+    const target = memo?.is_drawing ? memo : null;
+    setDrawEditorSeed({
+      sessionKey: crypto.randomUUID(),
+      memoId: target?.id || null,
+      title: target?.title || '',
+      pinned: target?.pinned || false,
+      color: target?.color || 'sage',
+      drawing: target ? normalizeDrawNoteData(target.drawing_data) : { ...EMPTY_DRAW_NOTE, objects: [] },
+    });
+    armDrawEditorHistory();
+    drawEditorOpenRef.current = true;
+    setDrawEditorOpen(true);
+  };
+
+  const switchNewMemoToDraw = () => {
+    // On réutilise l'entrée d'historique déjà créée par la fenêtre de mémo
+    // pour que Retour Android ferme simplement DrawNote.
+    memoEditorOpenRef.current = false;
+    setMemoEditorOpen(false);
+    resetMemoDraft();
+    if (typeof window !== 'undefined') {
+      const currentState = window.history.state || {};
+      if (currentState.memoEditor) {
+        window.history.replaceState({ ...currentState, memoEditor: false, drawEditor: true }, '', window.location.href);
+      } else if (!currentState.drawEditor) {
+        window.history.pushState({ ...currentState, drawEditor: true }, '', window.location.href);
+      }
+    }
+    setDrawEditorSeed({
+      sessionKey: crypto.randomUUID(),
+      memoId: null,
+      title: memoDraftTitle.trim(),
+      pinned: memoDraftPinned,
+      color: memoDraftColor,
+      drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
+    });
+    drawEditorOpenRef.current = true;
+    setDrawEditorOpen(true);
+  };
+
+  const saveDrawMemo = async (payload: { title: string; pinned: boolean; color: MemoColor; drawing: DrawNoteData }) => {
+    setLoading(true);
+    try {
+      const currentId = drawEditorSeed.memoId;
+      const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
+      const archived = existingMemo?.archived ?? false;
+      const keepExistingOrder = existingMemo && existingMemo.pinned === payload.pinned;
+      const sortOrder = keepExistingOrder
+        ? existingMemo.sort_order
+        : nextMemoSortOrder(payload.pinned, archived, currentId || undefined);
+      const dbPayload = {
+        title: payload.title,
+        content: '',
+        memo_type: 'text',
+        items: [],
+        is_drawing: true,
+        drawing_data: normalizeDrawNoteData(payload.drawing),
+        color: payload.color,
+        pinned: payload.pinned,
+        sort_order: sortOrder,
+        updated_at: new Date().toISOString(),
+      };
+
+      const query = currentId
+        ? supabase.from('memo_notes').update(dbPayload).eq('id', currentId)
+        : supabase.from('memo_notes').insert([{ ...dbPayload, archived: false, archive_folder_id: null }]);
+      const { error } = await query;
+      if (error) throw error;
+      await fetchMemos();
+      return true;
+    } catch (error: any) {
+      showAppMessage('Erreur lors de la sauvegarde du DrawNote : ' + (error?.message || 'erreur inconnue'));
+      return false;
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openMemoEditor = (memo: MemoEntry) => {
@@ -5312,6 +5928,10 @@ export default function Home() {
           {memo.pinned && <span className="text-xs flex-shrink-0" title="Épinglé">📌</span>}
         </div>
 
+        {memo.is_drawing && (
+          <DrawingPreview data={memo.drawing_data} className="mt-2.5 max-h-[190px]" />
+        )}
+
         {memo.memo_type === 'list' && memo.items.length > 0 && (
           <div className="mt-2.5 flex flex-col gap-1">
             {memo.items.slice(0, 6).map(item => (
@@ -6412,6 +7032,9 @@ export default function Home() {
                     </div>
                     {memo.pinned && <span className="text-xs flex-shrink-0">📌</span>}
                   </div>
+                  {memo.is_drawing && (
+                    <DrawingPreview data={memo.drawing_data} className="mt-2.5 max-h-[190px]" />
+                  )}
                   {memo.memo_type === 'list' && memo.items.length > 0 && (
                     <div className="mt-2.5 flex flex-col gap-1">
                       {memo.items.slice(0, 6).map(item => (
@@ -6491,9 +7114,9 @@ export default function Home() {
                     >☑ Liste</button>
                     <button
                       type="button"
-                      onClick={() => showAppMessage('DrawNote arrive à l’étape suivante.')}
+                      onClick={() => editingMemoId ? showAppMessage('Pour éviter de perdre le contenu existant, crée un nouveau DrawNote avec le bouton +.') : switchNewMemoToDraw()}
                       className="px-3 py-1.5 rounded-xl text-xs font-black border bg-white/30 border-transparent hover:bg-white/55"
-                      title="DrawNote sera ajouté à l'étape suivante"
+                      title="Créer un DrawNote"
                     >✏️ DrawNote</button>
                   </div>
                   <button
@@ -6648,6 +7271,18 @@ export default function Home() {
                 </div>
               </div>
             </div>
+          )}
+
+          {drawEditorOpen && (
+            <DrawNoteEditor
+              key={drawEditorSeed.sessionKey}
+              initialData={drawEditorSeed.drawing}
+              initialTitle={drawEditorSeed.title}
+              initialPinned={drawEditorSeed.pinned}
+              initialColor={drawEditorSeed.color}
+              onSave={saveDrawMemo}
+              onClose={() => closeDrawEditor(true)}
+            />
           )}
         </div>
         </DndContext>
