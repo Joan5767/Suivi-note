@@ -110,12 +110,6 @@ interface MemoEntry {
   updated_at?: string | null;
 }
 
-interface MemoFolder {
-  id: string;
-  name: string;
-  created_at?: string | null;
-}
-
 interface DragSlot {
   id: string;
   left: number;
@@ -191,6 +185,22 @@ const formatDuration = (totalMinutes: number) => {
 const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
 const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
+type QuickCaptureKind = 'note' | 'task';
+
+const detectQuickCaptureKind = (value: string): QuickCaptureKind => {
+  const text = value.trim().toLocaleLowerCase('fr-FR');
+  if (!text) return 'note';
+
+  const startsWithAction = /^(appeler|acheter|envoyer|faire|prendre|réserver|payer|rappeler|contacter|terminer|préparer|commander|récupérer|aller|vérifier|répondre|relancer|penser à|ne pas oublier)\b/.test(text);
+  const explicitTask = /\b(à faire|todo|tâche|rappelle[- ]moi|penser à|ne pas oublier)\b/.test(text);
+  const timeSignal = /\b(aujourd['’]hui|demain|après-demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|ce soir|ce matin|cet après-midi|à\s+\d{1,2}\s*(?:h|heure)|avant\s+\d{1,2}\s*(?:h|heure))\b/.test(text);
+
+  // En cas de doute, la note reste le choix par défaut.
+  return explicitTask || startsWithAction || (timeSignal && /\b(dois|faut|prévoir|rendez-vous|rdv)\b/.test(text)) ? 'task' : 'note';
+};
+
+const quickCaptureHasTimeSignal = (value: string) => /\b(aujourd['’]hui|demain|après-demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|ce soir|ce matin|cet après-midi|à\s+\d{1,2}\s*(?:h|heure))\b/i.test(value);
+
 // Activé uniquement sur le projet Vercel de démonstration.
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
@@ -239,7 +249,7 @@ function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: b
   const { setNodeRef } = useDroppable({ id: 'memo-trash', disabled: !active });
   if (!active) return null;
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-[max(22px,env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-[calc(82px+env(safe-area-inset-bottom))] z-[12870] pointer-events-none">
       <div
         ref={setNodeRef}
         className={`pointer-events-auto min-w-[150px] h-14 px-5 rounded-full border-2 shadow-xl flex items-center justify-center gap-2 font-black text-sm transition-all duration-150 ${
@@ -251,48 +261,6 @@ function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: b
         <span className={`text-xl transition-transform ${hovering ? 'scale-125' : ''}`}>🗑️</span>
         <span>{hovering ? 'Relâche pour supprimer' : 'Supprimer'}</span>
       </div>
-    </div>
-  );
-}
-
-
-function MemoArchiveFolderDroppable({ folder, hovering, onOpen, onRename, onDelete, count }: {
-  folder: MemoFolder;
-  hovering: boolean;
-  onOpen: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  count: number;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: `memo-folder:${folder.id}` });
-  const activeHover = hovering || isOver;
-  return (
-    <div
-      ref={setNodeRef}
-      data-memo-folder-id={folder.id}
-      className={`relative group rounded-2xl transition-all ${activeHover ? 'ring-2 ring-[#819076] ring-offset-2 scale-[1.02]' : ''}`}
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        className={`w-full min-h-[72px] text-left rounded-2xl border px-3 py-2.5 pr-[72px] shadow-sm transition-colors ${activeHover ? 'bg-[#D8DEC9] border-[#B9C5AC]' : 'bg-[#EEE8DD] hover:bg-[#E7DFD2] border-[#D9D0C2]'}`}
-      >
-        <div className="font-black text-xs truncate">📁 {folder.name}</div>
-        <div className="text-[10px] font-bold opacity-55 mt-1">{count} note{count > 1 ? 's' : ''}</div>
-        {activeHover && <div className="text-[9px] font-black text-[#4B5843] mt-1">Relâche pour classer ici</div>}
-      </button>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onRename(); }}
-        className="absolute right-10 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-white text-[11px] flex items-center justify-center"
-        title="Renommer le dossier"
-      >✎</button>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="absolute right-2 top-2 w-7 h-7 rounded-full bg-white/70 hover:bg-[#F0DDD7] text-[11px] flex items-center justify-center"
-        title="Supprimer le dossier"
-      >🗑</button>
     </div>
   );
 }
@@ -500,20 +468,15 @@ function DrawingPreview({ data, className = '' }: { data: DrawNoteData; classNam
 type DrawEditorProps = {
   initialData: DrawNoteData;
   initialTitle: string;
-  initialArchived: boolean;
-  initialArchiveFolderId: string | null;
   initialColor: MemoColor;
-  folders: MemoFolder[];
-  onSave: (payload: { title: string; archived: boolean; archiveFolderId: string | null; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
+  onSave: (payload: { title: string; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
   onDelete?: () => void;
   registerAutoSave: (handler: () => Promise<boolean>) => void;
   onClose: () => void;
 };
 
-function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArchiveFolderId, initialColor, folders, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
+function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
   const [title, setTitle] = useState(initialTitle);
-  const [archived, setArchived] = useState(initialArchived);
-  const [archiveFolderId, setArchiveFolderId] = useState<string | null>(initialArchiveFolderId);
   const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
   const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
   const [tool, setTool] = useState<DrawTool | null>('pen');
@@ -773,7 +736,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
   const save = async (closeAfterSave = true) => {
     setSaving(true);
     try {
-      const ok = await onSave({ title: title.trim(), archived, archiveFolderId: archived ? archiveFolderId : null, color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
+      const ok = await onSave({ title: title.trim(), color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
       if (ok && closeAfterSave) onClose();
       return ok;
     } finally {
@@ -783,7 +746,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
   useEffect(() => {
     registerAutoSave(() => save(false));
-  }, [title, archived, archiveFolderId, memoColor, objects]);
+  }, [title, memoColor, objects]);
 
   const saveAndClose = async () => {
     if (saving) return;
@@ -919,24 +882,6 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
         </div>
 
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => {
-              if (archived && archiveFolderId) {
-                // Sortir du dossier ne réactive jamais le DrawNote.
-                setArchiveFolderId(null);
-                return;
-              }
-              setArchived(value => {
-                const next = !value;
-                if (!next) setArchiveFolderId(null);
-                return next;
-              });
-            }}
-            className={`h-10 px-3 rounded-xl border text-[10px] leading-tight font-black flex-shrink-0 ${archived ? 'bg-[#819076] text-white border-[#738168]' : 'bg-white border-[#DDD5C9]'}`}
-            title={archived ? (archiveFolderId ? 'Sortir du dossier en restant dans les archives' : 'Déplacer vers les notes actives') : 'Archiver ce DrawNote'}
-          >{archived ? (archiveFolderId ? '📤 Sortir du dossier' : '📝 Notes actives') : '📦 Archiver'}</button>
-
           <div className="flex items-center gap-1.5" aria-label="Couleur de fond de la note">
             {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
               <button
@@ -958,20 +903,6 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
           {onDelete && <button type="button" onClick={onDelete} className="w-10 h-10 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0" title="Supprimer ce DrawNote">🗑</button>}
         </div>
-
-        {archived && (
-          <div className="flex items-center gap-2 rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] px-2.5 py-2">
-            <span className="text-[10px] font-black text-[#665E53] flex-shrink-0">📁 Dossier</span>
-            <select
-              value={archiveFolderId || ''}
-              onChange={(e) => setArchiveFolderId(e.target.value || null)}
-              className="min-w-0 flex-1 bg-white border border-[#D9D0C2] rounded-lg px-2 py-1.5 text-xs font-bold text-[#4A463F]"
-            >
-              <option value="">Sans dossier</option>
-              {folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-            </select>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -979,10 +910,9 @@ function DrawNoteEditor({ initialData, initialTitle, initialArchived, initialArc
 
 
 export default function Home() {
-  const [mainMode, setMainMode] = useState<'hub' | 'notes' | 'memos' | 'planning' | 'planning_gallery'>('hub');
+  const [mainMode, setMainMode] = useState<'notes' | 'memos' | 'planning' | 'planning_gallery'>('memos');
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
-  const [demoResetting, setDemoResetting] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
 
   const [notes, setNotes] = useState<Note[]>([]);
@@ -994,21 +924,17 @@ export default function Home() {
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  const [quickCaptureText, setQuickCaptureText] = useState('');
+  const [quickCaptureKind, setQuickCaptureKind] = useState<QuickCaptureKind>('note');
+  const [quickCaptureOverridden, setQuickCaptureOverridden] = useState(false);
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
-  const [memoFolders, setMemoFolders] = useState<MemoFolder[]>([]);
   const [memoSearch, setMemoSearch] = useState('');
   const [showMemoArchived, setShowMemoArchived] = useState(false);
   const showMemoArchivedRef = useRef(false);
-  const [activeMemoFolderId, setActiveMemoFolderId] = useState<string | null>(null);
-  const activeMemoFolderIdRef = useRef<string | null>(null);
-  const [showMemoFolderCreate, setShowMemoFolderCreate] = useState(false);
-  const [memoFolderName, setMemoFolderName] = useState('');
-  const [showMemoMoveFolder, setShowMemoMoveFolder] = useState(false);
-  const [memoFolderPickerMode, setMemoFolderPickerMode] = useState<'move' | 'archive'>('move');
   const [showMemosHelp, setShowMemosHelp] = useState(false);
-  const [memoFolderDragHoverId, setMemoFolderDragHoverId] = useState<string | null>(null);
   const [memoEditorOpen, setMemoEditorOpen] = useState(false);
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
   const [memoDraftType, setMemoDraftType] = useState<'text' | 'list'>('text');
@@ -1017,19 +943,14 @@ export default function Home() {
   const [memoDraftItems, setMemoDraftItems] = useState<MemoListItem[]>([]);
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
-  const [memoDraftPinned, setMemoDraftPinned] = useState(false);
-  const [memoDraftArchived, setMemoDraftArchived] = useState(false);
-  const [memoDraftArchiveFolderId, setMemoDraftArchiveFolderId] = useState<string | null>(null);
   const [drawEditorOpen, setDrawEditorOpen] = useState(false);
   const [drawEditorSeed, setDrawEditorSeed] = useState<{
     sessionKey: string;
     memoId: string | null;
     title: string;
-    archived: boolean;
-    archiveFolderId: string | null;
     color: MemoColor;
     drawing: DrawNoteData;
-  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', archived: false, archiveFolderId: null, color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
+  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
   const drawEditorOpenRef = useRef(false);
   const drawEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
@@ -1038,14 +959,6 @@ export default function Home() {
   const memoEditorOpenRef = useRef(false);
   const memoEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const memoIgnoreNextPopRef = useRef(false);
-  const memoSwipeStartRef = useRef<{
-    x: number;
-    y: number;
-    ignore: boolean;
-    archived: boolean;
-    folderId: string | null;
-    triggered: boolean;
-  } | null>(null);
 
   // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
   // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
@@ -1253,7 +1166,6 @@ export default function Home() {
   // Navigation tactile entre Créer et Notes sauvegardées.
   // On mémorise seulement le point de départ : le changement de page n'est déclenché
   // que si le geste est clairement horizontal afin de ne pas gêner le scroll vertical.
-  const notesSwipeStartRef = useRef<{ x: number; y: number; ignore: boolean } | null>(null);
   const [focusPhase, setFocusPhase] = useState<'rouge' | 'ask_orange' | 'orange' | 'ask_vert' | 'vert' | 'done'>('rouge');
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
@@ -1295,7 +1207,6 @@ export default function Home() {
   const [cleanupThresholdDays, setCleanupThresholdDays] = useState(30); 
   const [cleanupNotes, setCleanupNotes] = useState<Note[]>([]);
   const [currentCleanupIndex, setCurrentCleanupIndex] = useState(0);
-  const [cleanupMode, setCleanupMode] = useState<'actif' | 'archive'>('actif');
 
   const WEEK_DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
   const PLANNING_START_HOUR = 7;
@@ -2058,14 +1969,19 @@ export default function Home() {
       }
 
       switch(hash) {
+        case '#tasks-create':
         case '#notes-create':
           setMainMode('notes'); setActiveTab('create'); setIsFocusMode(false); break;
+        case '#tasks':
         case '#notes-list':
           setMainMode('notes'); setActiveTab('notes'); setIsFocusMode(false); break;
+        case '#tasks-history':
         case '#notes-history':
           setMainMode('notes'); setActiveTab('history'); setIsFocusMode(false); break;
+        case '#tasks-focus':
         case '#notes-focus':
           setMainMode('notes'); setIsFocusMode(true); break;
+        case '#notes':
         case '#memos':
           setMainMode('memos'); setIsFocusMode(false); break;
         case '#planning':
@@ -2076,12 +1992,12 @@ export default function Home() {
           setMainMode('planning_gallery'); break;
         case '#hub':
         default:
-          setMainMode('hub'); break;
+          setMainMode('memos'); setIsFocusMode(false); break;
       }
     };
 
     if (!window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + '#hub');
+      window.history.replaceState(null, '', window.location.pathname + '#notes');
     }
 
     const handleMemoSelectionPopState = () => {
@@ -2090,8 +2006,8 @@ export default function Home() {
         return;
       }
 
-      // Retour Android : DrawNote se sauvegarde et se ferme d'abord, puis l'éditeur
-      // de mémo, la sélection, le dossier d'archives et enfin les Archives.
+      // Retour Android : DrawNote se sauvegarde et se ferme d'abord, puis l'éditeur,
+      // la sélection et enfin l'historique des notes supprimées.
       if (drawEditorOpenRef.current) {
         void drawEditorAutoSaveRef.current().then((saved) => {
           if (!saved) {
@@ -2128,17 +2044,9 @@ export default function Home() {
         return;
       }
 
-      if (activeMemoFolderIdRef.current) {
-        activeMemoFolderIdRef.current = null;
-        setActiveMemoFolderId(null);
-        setMemoSearch('');
-        return;
-      }
-
       if (showMemoArchivedRef.current) {
         showMemoArchivedRef.current = false;
         setShowMemoArchived(false);
-        setActiveMemoFolderId(null);
       }
     };
 
@@ -2224,132 +2132,44 @@ export default function Home() {
     }
   };
 
-  const requestDemoReset = () => {
-    if (!DEMO_MODE || demoResetting) return;
-
-    requestAppConfirmation({
-      title: 'Réinitialiser la démonstration ?',
-      message: 'Toutes les données créées pendant les tests seront supprimées et les exemples de départ seront restaurés.',
-      confirmLabel: 'Réinitialiser',
-      tone: 'sage',
-      onConfirm: async () => {
-        setDemoResetting(true);
-        try {
-          const response = await fetch('/api/demo-reset', { method: 'POST' });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(result.error || 'Réinitialisation impossible');
-
-          localStorage.removeItem(NOTE_DRAFT_STORAGE_KEY);
-          localStorage.removeItem(PLANNING_DRAFT_STORAGE_KEY);
-          showAppMessage('✅ Démonstration réinitialisée.');
-          window.setTimeout(() => window.location.reload(), 350);
-        } catch (error: any) {
-          showAppMessage('❌ ' + (error?.message || 'Réinitialisation impossible'));
-        } finally {
-          setDemoResetting(false);
-        }
-      },
-    });
-  };
-
   const demoFeatureUnavailable = (label = 'Cette fonction') => {
     showAppMessage(`ℹ️ ${label} est désactivée en mode démonstration.`);
   };
 
   // Navigation de Tâches & Rappels sans empiler chaque clic dans l'historique.
   const isNotesChildHash = (hash: string) =>
-    hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' || hash.startsWith('#note-');
+    hash === '#tasks-create' || hash === '#tasks-focus' || hash === '#tasks-history' ||
+    hash === '#notes-create' || hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' ||
+    hash.startsWith('#note-');
 
-  const navigateNotesChild = (targetHash: '#notes-list' | '#notes-focus' | '#notes-history') => {
+  const navigateNotesChild = (targetHash: '#tasks' | '#tasks-focus' | '#tasks-history') => {
     const currentHash = window.location.hash;
     const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
 
-    if (isNotesChildHash(currentHash)) {
-      window.history.replaceState({ ...(window.history.state || {}), notesChild: true }, '', targetUrl);
+    if (targetHash === '#tasks') {
+      if (isNotesChildHash(currentHash) && window.history.state?.tasksChild) {
+        window.history.back();
+        return;
+      }
+      window.history.replaceState({ ...(window.history.state || {}), tasksChild: false }, '', targetUrl);
       refreshRouteFromCurrentHash();
       return;
     }
 
-    window.history.pushState({ ...(window.history.state || {}), notesChild: true }, '', targetUrl);
+    if (isNotesChildHash(currentHash)) {
+      window.history.replaceState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
+    } else {
+      window.history.pushState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
+    }
     refreshRouteFromCurrentHash();
   };
 
   const navigateNotesCreate = () => {
     const currentHash = window.location.hash;
-
-    if (isNotesChildHash(currentHash) && window.history.state?.notesChild) {
-      window.history.back();
-      return;
-    }
-
-    const targetUrl = `${window.location.pathname}${window.location.search}#notes-create`;
-    window.history.replaceState({ ...(window.history.state || {}), notesChild: false }, '', targetUrl);
+    const targetUrl = `${window.location.pathname}${window.location.search}#tasks-create`;
+    if (currentHash === '#tasks-create') return;
+    window.history.pushState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
     refreshRouteFromCurrentHash();
-  };
-
-  const navigateNotesHub = () => {
-    const currentHash = window.location.hash;
-
-    if (isNotesChildHash(currentHash) && window.history.state?.notesChild) {
-      window.history.go(-2);
-      return;
-    }
-
-    if (currentHash === '#notes-create') {
-      window.history.back();
-      return;
-    }
-
-    const targetUrl = `${window.location.pathname}${window.location.search}#hub`;
-    window.history.replaceState({ ...(window.history.state || {}), notesChild: false }, '', targetUrl);
-    refreshRouteFromCurrentHash();
-  };
-
-  const isNotesSwipeInteractiveTarget = (target: EventTarget | null) => {
-    if (!(target instanceof Element)) return false;
-    return Boolean(
-      target.closest(
-        'input, textarea, select, button, a, [contenteditable="true"], [role="button"], [data-no-notes-swipe]'
-      )
-    );
-  };
-
-  const handleNotesSwipeStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isFocusMode || activeTab === 'history' || e.touches.length !== 1) {
-      notesSwipeStartRef.current = null;
-      return;
-    }
-
-    const touch = e.touches[0];
-    notesSwipeStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      ignore: isNotesSwipeInteractiveTarget(e.target),
-    };
-  };
-
-  const handleNotesSwipeEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    const start = notesSwipeStartRef.current;
-    notesSwipeStartRef.current = null;
-
-    if (!start || start.ignore || isFocusMode || activeTab === 'history' || e.changedTouches.length !== 1) return;
-
-    const touch = e.changedTouches[0];
-    const deltaX = touch.clientX - start.x;
-    const deltaY = touch.clientY - start.y;
-    const horizontalDistance = Math.abs(deltaX);
-    const verticalDistance = Math.abs(deltaY);
-
-    // 70 px minimum et un mouvement nettement plus horizontal que vertical.
-    if (horizontalDistance < 70 || horizontalDistance < verticalDistance * 1.35) return;
-
-    if (deltaX < 0 && activeTab === 'create') {
-      // Glisser vers la gauche : Créer -> Notes sauvegardées.
-      navigateNotesChild('#notes-list');
-    } else if (deltaX > 0 && activeTab === 'notes') {
-      // Glisser vers la droite : Notes sauvegardées -> Créer.
-      navigateNotesCreate();
-    }
   };
 
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
@@ -2399,7 +2219,49 @@ export default function Home() {
       return false;
     }
 
-    const normalized = (data || []).map((row: any) => ({
+    let rows = [...(data || [])] as any[];
+    const nowIso = new Date().toISOString();
+
+    // L'ancien espace « Archives » devient l'historique. Une ancienne tâche
+    // archivée y est conservée 30 jours à partir de cette migration.
+    const archivedRows = rows.filter(row => Boolean(row?.is_archived));
+    if (archivedRows.length > 0) {
+      const migrationResults = await Promise.all(archivedRows.map(row => supabase
+        .from('notes')
+        .update({
+          is_archived: false,
+          completed: true,
+          completed_at: nowIso,
+          popup_active: false,
+        })
+        .eq('id', row.id)));
+      const migrationError = migrationResults.find(result => result.error)?.error;
+      if (migrationError) console.error('Erreur migration des anciennes archives :', migrationError);
+      rows = rows.map(row => row.is_archived ? {
+        ...row,
+        is_archived: false,
+        completed: true,
+        completed_at: nowIso,
+        popup_active: false,
+      } : row);
+    }
+
+    const historyCutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+    const expiredHistoryIds = rows
+      .filter(row => Boolean(row?.completed))
+      .filter(row => {
+        const timestamp = new Date(row.completed_at || row.created_at || 0).getTime();
+        return Number.isFinite(timestamp) && timestamp > 0 && timestamp < historyCutoff;
+      })
+      .map(row => String(row.id));
+
+    if (expiredHistoryIds.length > 0) {
+      const { error: cleanupError } = await supabase.from('notes').delete().in('id', expiredHistoryIds);
+      if (cleanupError) console.error('Erreur nettoyage automatique de l’historique :', cleanupError);
+      else rows = rows.filter(row => !expiredHistoryIds.includes(String(row.id)));
+    }
+
+    const normalized = rows.map((row: any) => ({
       ...row,
       sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
     })) as Note[];
@@ -2484,29 +2346,56 @@ export default function Home() {
       return false;
     }
 
-    const normalized = (data || []).map(normalizeMemoEntry);
-    memoEntriesRef.current = normalized;
-    setMemoEntries(normalized);
-    return true;
-  };
+    let rows = [...(data || [])] as any[];
+    let skipHistoryCleanup = false;
 
-  const fetchMemoFolders = async () => {
-    const { data, error } = await supabase
-      .from('memo_folders')
-      .select('id, name, created_at')
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      // La table n'existe qu'après l'exécution du SQL fourni avec cette version.
-      console.error('Erreur chargement dossiers mémos :', error);
-      return false;
+    // Au premier passage, les anciennes archives sont converties en éléments
+    // récemment supprimés afin qu'elles ne disparaissent pas immédiatement.
+    try {
+      const migrationKey = 'memo-deleted-history-migration-v1';
+      if (!window.localStorage.getItem(migrationKey)) {
+        const archivedRows = rows.filter(row => Boolean(row?.archived));
+        if (archivedRows.length > 0) {
+          const migratedAt = new Date().toISOString();
+          const migrationResults = await Promise.all(archivedRows.map(row => supabase
+            .from('memo_notes')
+            .update({ pinned: false, archive_folder_id: null, updated_at: migratedAt })
+            .eq('id', row.id)));
+          const migrationError = migrationResults.find(result => result.error)?.error;
+          if (!migrationError) {
+            rows = rows.map(row => row.archived ? { ...row, pinned: false, archive_folder_id: null, updated_at: migratedAt } : row);
+            window.localStorage.setItem(migrationKey, migratedAt);
+          } else {
+            console.error('Erreur migration des anciennes archives de notes :', migrationError);
+            skipHistoryCleanup = true;
+          }
+        } else {
+          window.localStorage.setItem(migrationKey, new Date().toISOString());
+        }
+      }
+    } catch (migrationError) {
+      console.warn('Migration locale de l’historique indisponible :', migrationError);
+      skipHistoryCleanup = true;
     }
 
-    setMemoFolders((data || []).map((row: any) => ({
-      id: String(row.id),
-      name: typeof row.name === 'string' ? row.name : 'Dossier',
-      created_at: typeof row.created_at === 'string' ? row.created_at : null,
-    })));
+    const historyCutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+    const expiredHistoryIds = skipHistoryCleanup ? [] : rows
+      .filter(row => Boolean(row?.archived))
+      .filter(row => {
+        const timestamp = new Date(row.updated_at || row.created_at || 0).getTime();
+        return Number.isFinite(timestamp) && timestamp > 0 && timestamp < historyCutoff;
+      })
+      .map(row => String(row.id));
+
+    if (expiredHistoryIds.length > 0) {
+      const { error: cleanupError } = await supabase.from('memo_notes').delete().in('id', expiredHistoryIds);
+      if (cleanupError) console.error('Erreur nettoyage automatique des notes supprimées :', cleanupError);
+      else rows = rows.filter(row => !expiredHistoryIds.includes(String(row.id)));
+    }
+
+    const normalized = rows.map(normalizeMemoEntry);
+    memoEntriesRef.current = normalized;
+    setMemoEntries(normalized);
     return true;
   };
 
@@ -2514,7 +2403,6 @@ export default function Home() {
     fetchNotes(); 
     fetchTemplates();
     fetchMemos();
-    fetchMemoFolders();
   }, []);
 
   // Resynchronise les données quand l'utilisateur revient dans l'application.
@@ -2526,7 +2414,6 @@ export default function Home() {
       void fetchNotes();
       void fetchTemplates();
       void fetchMemos();
-      void fetchMemoFolders();
     };
 
     window.addEventListener('focus', syncWhenVisible);
@@ -2593,18 +2480,12 @@ export default function Home() {
   }, [showMemoArchived]);
 
   useEffect(() => {
-    activeMemoFolderIdRef.current = activeMemoFolderId;
-  }, [activeMemoFolderId]);
-
-  useEffect(() => {
     if (mainMode !== 'memos') {
       selectedMemoIdsRef.current = new Set();
       setSelectedMemoIds(prev => prev.size ? new Set() : prev);
       memoSelectionHistoryArmedRef.current = false;
       showMemoArchivedRef.current = false;
       setShowMemoArchived(false);
-      activeMemoFolderIdRef.current = null;
-      setActiveMemoFolderId(null);
     }
   }, [mainMode]);
 
@@ -3256,9 +3137,7 @@ export default function Home() {
     const sourceId = String(event.active.id);
     const overId = event.over ? String(event.over.id) : '';
     setMemoTrashHover(overId === 'memo-trash');
-    const folderHoverId = overId.startsWith('memo-folder:') ? overId.slice('memo-folder:'.length) : null;
-    setMemoFolderDragHoverId(folderHoverId);
-    if (!overId || overId === 'memo-trash' || overId === sourceId || folderHoverId) return;
+    if (!overId || overId === 'memo-trash' || overId === sourceId) return;
 
     const source = memoEntriesRef.current.find(item => item.id === sourceId);
     const target = memoEntriesRef.current.find(item => item.id === overId);
@@ -3275,7 +3154,6 @@ export default function Home() {
   const resetMemoDndUi = () => {
     setDraggingMemoId(null);
     setMemoTrashHover(false);
-    setMemoFolderDragHoverId(null);
     setMemoDndMoved(false);
     memoDndMovedRef.current = false;
     memoDndSessionRef.current = null;
@@ -3302,25 +3180,6 @@ export default function Home() {
         || session?.originalEntries.find(item => item.id === sourceId);
       resetMemoDndUi();
       if (memo) void deleteMemoImmediately(memo);
-      return;
-    }
-
-    if (overId.startsWith('memo-folder:')) {
-      const folderId = overId.slice('memo-folder:'.length);
-      const memo = memoEntriesRef.current.find(item => item.id === sourceId)
-        || session?.originalEntries.find(item => item.id === sourceId);
-      resetMemoDndUi();
-      if (memo?.archived && folderId) {
-        const sortOrder = nextMemoSortOrder(memo.pinned, true, memo.id, folderId);
-        void (async () => {
-          const { error } = await supabase
-            .from('memo_notes')
-            .update({ archive_folder_id: folderId, sort_order: sortOrder, updated_at: new Date().toISOString() })
-            .eq('id', memo.id);
-          if (error) showAppMessage('Erreur lors du classement dans le dossier : ' + error.message);
-          await fetchMemos();
-        })();
-      }
       return;
     }
 
@@ -3358,6 +3217,102 @@ export default function Home() {
       .filter(note => taskIsDragEligible(note) && note.importance === priority)
       .map(note => Number.isFinite(note.sort_order) ? note.sort_order : 0);
     return orders.length ? Math.max(...orders) + 1 : 0;
+  };
+
+  const splitQuickCapture = (value: string) => {
+    const lines = value.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const firstLine = lines[0] || '';
+    const title = firstLine.length > 100 ? `${firstLine.slice(0, 97)}…` : firstLine;
+    const content = lines.length > 1 ? lines.slice(1).join('\n') : (firstLine.length > 100 ? firstLine : '');
+    return { title, content };
+  };
+
+  const openQuickCapture = () => {
+    setQuickCaptureText('');
+    setQuickCaptureKind('note');
+    setQuickCaptureOverridden(false);
+    setQuickCaptureOpen(true);
+  };
+
+  const closeQuickCapture = () => {
+    setQuickCaptureOpen(false);
+    setQuickCaptureText('');
+    setQuickCaptureKind('note');
+    setQuickCaptureOverridden(false);
+  };
+
+  const changeQuickCaptureText = (value: string) => {
+    setQuickCaptureText(value);
+    if (!quickCaptureOverridden) setQuickCaptureKind(detectQuickCaptureKind(value));
+  };
+
+  const chooseQuickCaptureKind = (kind: QuickCaptureKind) => {
+    setQuickCaptureKind(kind);
+    setQuickCaptureOverridden(true);
+  };
+
+  const continueQuickCaptureWithReminders = () => {
+    const { title, content } = splitQuickCapture(quickCaptureText);
+    setNewTitle(title);
+    setNewContent(content);
+    setImportance('vert');
+    closeQuickCapture();
+    navigateNotesCreate();
+  };
+
+  const saveQuickCapture = async () => {
+    const value = quickCaptureText.trim();
+    if (!value || loading) return;
+    const { title, content } = splitQuickCapture(value);
+    setLoading(true);
+    try {
+      if (quickCaptureKind === 'note') {
+        const { error } = await supabase.from('memo_notes').insert([{
+          title,
+          content,
+          memo_type: 'text',
+          items: [],
+          is_drawing: false,
+          drawing_data: { ...EMPTY_DRAW_NOTE, objects: [] },
+          color: 'sage',
+          pinned: false,
+          archived: false,
+          archive_folder_id: null,
+          sort_order: nextMemoSortOrder(false, false),
+          updated_at: new Date().toISOString(),
+        }]);
+        if (error) throw error;
+        await fetchMemos();
+        if (showMemoArchivedRef.current) leaveMemoArchives(false);
+        window.location.hash = 'notes';
+        setSuccessMessage('✅ Note enregistrée.');
+      } else {
+        const { error } = await supabase.from('notes').insert([{
+          title,
+          content,
+          importance: 'vert',
+          subtasks: [],
+          is_list: false,
+          reminder_active: false,
+          reminder_popup_active: false,
+          daily_reminder_time: '09:00',
+          target_date: '',
+          popup_active: false,
+          is_archived: false,
+          sort_order: nextTaskSortOrder('vert'),
+        }]);
+        if (error) throw error;
+        await fetchNotes();
+        window.location.hash = 'tasks';
+        setSuccessMessage('✅ Tâche enregistrée.');
+      }
+      closeQuickCapture();
+      window.setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error: any) {
+      showAppMessage('Erreur lors de la saisie rapide : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const captureTaskLayout = () => {
@@ -3733,7 +3688,7 @@ export default function Home() {
 
   const armDrawEditorHistory = () => {
     if (typeof window === 'undefined') return;
-    if (window.location.hash !== '#memos' || window.history.state?.drawEditor) return;
+    if (!['#notes', '#memos'].includes(window.location.hash) || window.history.state?.drawEditor) return;
     window.history.pushState({ ...(window.history.state || {}), drawEditor: true }, '', window.location.href);
   };
 
@@ -3748,7 +3703,7 @@ export default function Home() {
 
   const armMemoEditorHistory = () => {
     if (typeof window === 'undefined') return;
-    if (window.location.hash !== '#memos' || window.history.state?.memoEditor) return;
+    if (!['#notes', '#memos'].includes(window.location.hash) || window.history.state?.memoEditor) return;
     window.history.pushState({ ...(window.history.state || {}), memoEditor: true }, '', window.location.href);
   };
 
@@ -3771,7 +3726,7 @@ export default function Home() {
 
   const armMemoSelectionHistory = () => {
     if (typeof window === 'undefined') return;
-    if (window.location.hash !== '#memos' || window.history.state?.memoSelection) return;
+    if (!['#notes', '#memos'].includes(window.location.hash) || window.history.state?.memoSelection) return;
     window.history.pushState({ ...(window.history.state || {}), memoSelection: true }, '', window.location.href);
     memoSelectionHistoryArmedRef.current = true;
   };
@@ -3794,186 +3749,16 @@ export default function Home() {
     }
     showMemoArchivedRef.current = true;
     setShowMemoArchived(true);
-    setActiveMemoFolderId(null);
     setMemoSearch('');
-  };
-
-  const enterMemoArchiveFolder = (folderId: string) => {
-    if (typeof window !== 'undefined' && !window.history.state?.memoArchiveFolder) {
-      window.history.pushState({ ...(window.history.state || {}), memoArchiveFolder: true }, '', window.location.href);
-    }
-    activeMemoFolderIdRef.current = folderId;
-    setActiveMemoFolderId(folderId);
-    setMemoSearch('');
-  };
-
-  const leaveMemoArchiveFolder = (consumeHistory = true) => {
-    activeMemoFolderIdRef.current = null;
-    setActiveMemoFolderId(null);
-    setMemoSearch('');
-    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchiveFolder) {
-      memoIgnoreNextPopRef.current = true;
-      window.history.back();
-    }
   };
 
   const leaveMemoArchives = (consumeHistory = true) => {
     showMemoArchivedRef.current = false;
     setShowMemoArchived(false);
-    activeMemoFolderIdRef.current = null;
-    setActiveMemoFolderId(null);
     setMemoSearch('');
     if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchive) {
       window.history.back();
     }
-  };
-
-  const isMemoSwipeInteractiveTarget = (target: EventTarget | null) => {
-    if (!(target instanceof Element)) return false;
-    return Boolean(target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"]:not([data-memo-card-id]), [data-no-memo-swipe]'));
-  };
-
-  const handleMemoSwipeStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    if (
-      memoEditorOpenRef.current ||
-      drawEditorOpenRef.current ||
-      selectedMemoIdsRef.current.size > 0 ||
-      event.touches.length !== 1
-    ) {
-      memoSwipeStartRef.current = null;
-      return;
-    }
-
-    const touch = event.touches[0];
-    memoSwipeStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      ignore: isMemoSwipeInteractiveTarget(event.target),
-      archived: showMemoArchivedRef.current,
-      folderId: activeMemoFolderIdRef.current,
-      triggered: false,
-    };
-  };
-
-  const tryMemoSwipe = (clientX: number, clientY: number) => {
-    const start = memoSwipeStartRef.current;
-    if (!start || start.ignore || start.triggered) return false;
-
-    const deltaX = clientX - start.x;
-    const deltaY = clientY - start.y;
-
-    // Seuil volontaire mais tolérant sur mobile. Le sens dépend de la page :
-    // droite depuis les actives, gauche depuis les archives.
-    if (Math.abs(deltaX) < 58 || Math.abs(deltaX) < Math.abs(deltaY) * 1.15) return false;
-    if ((!start.archived && deltaX < 0) || (start.archived && deltaX > 0)) return false;
-
-    // Empêche le clic synthétique suivant le geste d'ouvrir la carte touchée.
-    start.triggered = true;
-    memoSuppressAllClicksUntilRef.current = performance.now() + 420;
-    if (!start.archived) {
-      enterMemoArchives();
-    } else if (start.folderId) {
-      // Dans un dossier, le premier balayage revient d'abord à la racine
-      // des archives, comme le bouton Retour du téléphone.
-      leaveMemoArchiveFolder(true);
-    } else {
-      leaveMemoArchives(true);
-    }
-    return true;
-  };
-
-  const handleMemoSwipeMove = (event: React.TouchEvent<HTMLDivElement>) => {
-    if (event.touches.length !== 1) return;
-    const touch = event.touches[0];
-    if (tryMemoSwipe(touch.clientX, touch.clientY) && event.cancelable) {
-      event.preventDefault();
-    }
-  };
-
-  const handleMemoSwipeEnd = (event: React.TouchEvent<HTMLDivElement>) => {
-    const start = memoSwipeStartRef.current;
-    if (start && !start.triggered && event.changedTouches.length === 1) {
-      const touch = event.changedTouches[0];
-      tryMemoSwipe(touch.clientX, touch.clientY);
-    }
-    memoSwipeStartRef.current = null;
-  };
-
-  const createMemoFolder = async () => {
-    const name = memoFolderName.trim();
-    if (!name) return;
-    const { error } = await supabase.from('memo_folders').insert([{ name }]);
-    if (error) {
-      showAppMessage('Erreur lors de la création du dossier : ' + error.message);
-      return;
-    }
-    setMemoFolderName('');
-    setShowMemoFolderCreate(false);
-    await fetchMemoFolders();
-  };
-
-  const renameMemoFolder = async (folder: MemoFolder) => {
-    const value = await askAppPrompt({
-      title: 'Renommer le dossier',
-      message: 'Choisis le nouveau nom du dossier d’archives.',
-      defaultValue: folder.name,
-      placeholder: 'Nom du dossier',
-      confirmLabel: 'Renommer',
-    });
-    const name = value?.trim();
-    if (!name || name === folder.name) return;
-    const { error } = await supabase.from('memo_folders').update({ name }).eq('id', folder.id);
-    if (error) {
-      showAppMessage('Erreur lors du renommage du dossier : ' + error.message);
-      return;
-    }
-    await fetchMemoFolders();
-  };
-
-  const moveSelectedMemosToFolder = async (folderId: string | null) => {
-    const selected = getSelectedMemos();
-    if (!selected.length) return;
-    const selectedIds = new Set(selected.map(memo => memo.id));
-    let nextOrder = memoEntriesRef.current
-      .filter(memo => !selectedIds.has(memo.id) && memo.archived && !memo.pinned && (memo.archive_folder_id || null) === folderId)
-      .reduce((value, memo) => Math.max(value, Number.isFinite(memo.sort_order) ? memo.sort_order : 0), -1) + 1;
-    const now = new Date().toISOString();
-    const results = await Promise.all(selected.map(memo => supabase
-      .from('memo_notes')
-      .update({
-        archived: true,
-        pinned: false,
-        archive_folder_id: folderId,
-        sort_order: nextOrder++,
-        updated_at: now,
-      })
-      .eq('id', memo.id)));
-    const error = results.find(result => result.error)?.error;
-    if (error) {
-      showAppMessage('Erreur lors du classement dans les archives : ' + error.message);
-      return;
-    }
-    setShowMemoMoveFolder(false);
-    clearMemoSelection();
-    await fetchMemos();
-  };
-
-  const deleteMemoFolder = (folder: MemoFolder) => {
-    requestAppConfirmation({
-      title: 'Supprimer ce dossier ?',
-      message: `Le dossier « ${folder.name} » sera supprimé. Les notes resteront dans les archives, sans dossier.`,
-      confirmLabel: 'Supprimer',
-      tone: 'danger',
-      onConfirm: async () => {
-        const { error } = await supabase.from('memo_folders').delete().eq('id', folder.id);
-        if (error) {
-          showAppMessage('Erreur lors de la suppression du dossier : ' + error.message);
-          return;
-        }
-        if (activeMemoFolderId === folder.id) setActiveMemoFolderId(null);
-        await Promise.all([fetchMemoFolders(), fetchMemos()]);
-      },
-    });
   };
 
   const selectMemo = (id: string) => {
@@ -4025,9 +3810,6 @@ export default function Home() {
     setMemoDraftItems([]);
     setMemoNewItem('');
     setMemoDraftColor('sage');
-    setMemoDraftPinned(false);
-    setMemoDraftArchived(false);
-    setMemoDraftArchiveFolderId(null);
   };
 
   const openNewMemo = (type: 'text' | 'list') => {
@@ -4043,8 +3825,6 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: target?.id || null,
       title: target?.title || '',
-      archived: target?.archived || false,
-      archiveFolderId: target?.archive_folder_id || null,
       color: target?.color || 'sage',
       drawing: target ? normalizeDrawNoteData(target.drawing_data) : { ...EMPTY_DRAW_NOTE, objects: [] },
     });
@@ -4071,8 +3851,6 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: null,
       title: memoDraftTitle.trim(),
-      archived: memoDraftArchived,
-      archiveFolderId: memoDraftArchived ? memoDraftArchiveFolderId : null,
       color: memoDraftColor,
       drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
@@ -4080,15 +3858,15 @@ export default function Home() {
     setDrawEditorOpen(true);
   };
 
-  const saveDrawMemo = async (payload: { title: string; archived: boolean; archiveFolderId: string | null; color: MemoColor; drawing: DrawNoteData }) => {
+  const saveDrawMemo = async (payload: { title: string; color: MemoColor; drawing: DrawNoteData }) => {
     setLoading(true);
     try {
       const currentId = drawEditorSeed.memoId;
       if (!currentId && !payload.title.trim() && normalizeDrawNoteData(payload.drawing).objects.length === 0) return true;
       const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
-      const archived = payload.archived;
-      const pinned = archived ? false : (existingMemo?.pinned ?? false);
-      const archiveFolderId = archived ? payload.archiveFolderId : null;
+      const archived = false;
+      const pinned = existingMemo?.pinned ?? false;
+      const archiveFolderId = null;
       const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === archived && (existingMemo.archive_folder_id || null) === archiveFolderId);
       const sortOrder = keepExistingOrder && existingMemo
         ? existingMemo.sort_order
@@ -4131,9 +3909,6 @@ export default function Home() {
     setMemoDraftItems(normalizeMemoItems(memo.items));
     setMemoNewItem('');
     setMemoDraftColor(memo.color);
-    setMemoDraftPinned(memo.pinned);
-    setMemoDraftArchived(memo.archived);
-    setMemoDraftArchiveFolderId(memo.archive_folder_id);
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
@@ -4164,9 +3939,9 @@ export default function Home() {
     setLoading(true);
     try {
       const existingMemo = editingMemoId ? memoEntriesRef.current.find(memo => memo.id === editingMemoId) : null;
-      const targetArchived = memoDraftArchived;
-      const pinned = targetArchived ? false : (existingMemo?.pinned ?? false);
-      const targetArchiveFolderId = targetArchived ? memoDraftArchiveFolderId : null;
+      const targetArchived = false;
+      const pinned = existingMemo?.pinned ?? false;
+      const targetArchiveFolderId = null;
       const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === targetArchived && (existingMemo.archive_folder_id || null) === targetArchiveFolderId);
       const sortOrder = keepExistingOrder && existingMemo
         ? existingMemo.sort_order
@@ -4239,34 +4014,98 @@ export default function Home() {
   };
 
   const deleteMemoImmediately = async (memo: MemoEntry) => {
-    // Suppression par glisser-déposer vers la poubelle : volontairement directe,
-    // sans confirmation. On retire la carte immédiatement pour garder un geste
-    // fluide, puis on restaure l'état si Supabase renvoie une erreur.
+    // La corbeille conserve la note dans l'historique pendant 30 jours.
     const previousEntries = memoEntriesRef.current;
-    const nextEntries = previousEntries.filter(item => item.id !== memo.id);
+    const deletedAt = new Date().toISOString();
+    const nextEntries = previousEntries.map(item => item.id === memo.id ? {
+      ...item,
+      archived: true,
+      pinned: false,
+      archive_folder_id: null,
+      updated_at: deletedAt,
+    } : item);
     memoEntriesRef.current = nextEntries;
     setMemoEntries(nextEntries);
 
-    const { error } = await supabase.from('memo_notes').delete().eq('id', memo.id);
+    const { error } = await supabase.from('memo_notes').update({
+      archived: true,
+      pinned: false,
+      archive_folder_id: null,
+      updated_at: deletedAt,
+    }).eq('id', memo.id);
     if (error) {
       memoEntriesRef.current = previousEntries;
       setMemoEntries(previousEntries);
       showAppMessage('Erreur lors de la suppression du mémo : ' + error.message);
       return false;
     }
+    await fetchMemos();
     return true;
   };
 
   const deleteMemo = (memo: MemoEntry) => {
     requestAppConfirmation({
       title: 'Supprimer ce mémo ?',
-      message: `« ${memo.title || 'Sans titre'} » sera supprimé définitivement.`,
+      message: `« ${memo.title || 'Sans titre'} » restera récupérable dans l’historique pendant 30 jours.`,
       confirmLabel: 'Supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('memo_notes').update({
+          archived: true,
+          pinned: false,
+          archive_folder_id: null,
+          updated_at: new Date().toISOString(),
+        }).eq('id', memo.id);
+        if (error) {
+          showAppMessage('Erreur lors de la suppression du mémo : ' + error.message);
+          return;
+        }
+        await fetchMemos();
+      },
+    });
+  };
+
+  const restoreDeletedMemo = async (memo: MemoEntry) => {
+    const { error } = await supabase.from('memo_notes').update({
+      archived: false,
+      pinned: false,
+      archive_folder_id: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', memo.id);
+    if (error) {
+      showAppMessage('Erreur lors de la restauration : ' + error.message);
+      return;
+    }
+    await fetchMemos();
+  };
+
+  const permanentlyDeleteMemo = (memo: MemoEntry) => {
+    requestAppConfirmation({
+      title: 'Supprimer définitivement ?',
+      message: `« ${memo.title || 'Sans titre'} » ne pourra plus être récupéré.`,
+      confirmLabel: 'Supprimer définitivement',
       tone: 'danger',
       onConfirm: async () => {
         const { error } = await supabase.from('memo_notes').delete().eq('id', memo.id);
         if (error) {
-          showAppMessage('Erreur lors de la suppression du mémo : ' + error.message);
+          showAppMessage('Erreur lors de la suppression définitive : ' + error.message);
+          return;
+        }
+        await fetchMemos();
+      },
+    });
+  };
+
+  const deleteAllMemoHistory = () => {
+    requestAppConfirmation({
+      title: 'Vider l’historique des notes ?',
+      message: 'Toutes les notes supprimées seront effacées définitivement.',
+      confirmLabel: 'Tout supprimer',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('memo_notes').delete().eq('archived', true);
+        if (error) {
+          showAppMessage('Erreur lors de la suppression de l’historique : ' + error.message);
           return;
         }
         await fetchMemos();
@@ -4283,20 +4122,32 @@ export default function Home() {
     const ids = Array.from(selectedMemoIdsRef.current);
     if (!ids.length) return;
 
-    // Comme le glisser vers la poubelle : suppression directe. La confirmation
-    // reste réservée à la poubelle située dans l'éditeur d'un mémo ouvert.
+    const deletedAt = new Date().toISOString();
     const previousEntries = memoEntriesRef.current;
-    const nextEntries = previousEntries.filter(memo => !selectedMemoIdsRef.current.has(memo.id));
+    const nextEntries = previousEntries.map(memo => selectedMemoIdsRef.current.has(memo.id) ? {
+      ...memo,
+      archived: true,
+      pinned: false,
+      archive_folder_id: null,
+      updated_at: deletedAt,
+    } : memo);
     memoEntriesRef.current = nextEntries;
     setMemoEntries(nextEntries);
     clearMemoSelection();
 
-    const { error } = await supabase.from('memo_notes').delete().in('id', ids);
+    const { error } = await supabase.from('memo_notes').update({
+      archived: true,
+      pinned: false,
+      archive_folder_id: null,
+      updated_at: deletedAt,
+    }).in('id', ids);
     if (error) {
       memoEntriesRef.current = previousEntries;
       setMemoEntries(previousEntries);
       showAppMessage('Erreur lors de la suppression des mémos : ' + error.message);
+      return;
     }
+    await fetchMemos();
   };
 
   const setSelectedMemosPinned = async () => {
@@ -4321,67 +4172,6 @@ export default function Home() {
       nextOrderByArchive.set(memo.archived, order + 1);
       return supabase.from('memo_notes').update({
         pinned: targetPinned,
-        sort_order: order,
-        updated_at: now,
-      }).eq('id', memo.id);
-    }));
-
-    const error = results.find(result => result.error)?.error;
-    if (error) {
-      showAppMessage('Erreur lors de la mise à jour des mémos : ' + error.message);
-      clearMemoSelection();
-      await fetchMemos();
-      return;
-    }
-    clearMemoSelection();
-    await fetchMemos();
-  };
-
-  const setSelectedMemosArchived = async () => {
-    const selected = getSelectedMemos();
-    if (!selected.length) return;
-
-    // Dans un dossier archivé, cette action sort les notes du dossier sans les
-    // réactiver : elles restent visibles dans Archives > Sans dossier.
-    if (showMemoArchived && activeMemoFolderId) {
-      const now = new Date().toISOString();
-      const selectedIds = new Set(selected.map(memo => memo.id));
-      let nextOrder = memoEntriesRef.current
-        .filter(memo => !selectedIds.has(memo.id) && memo.archived && !memo.pinned && !memo.archive_folder_id)
-        .reduce((value, memo) => Math.max(value, Number.isFinite(memo.sort_order) ? memo.sort_order : 0), -1) + 1;
-      const results = await Promise.all(selected.map(memo => supabase.from('memo_notes').update({
-        archived: true,
-        pinned: false,
-        archive_folder_id: null,
-        sort_order: nextOrder++,
-        updated_at: now,
-      }).eq('id', memo.id)));
-      const error = results.find(result => result.error)?.error;
-      if (error) showAppMessage('Erreur lors de la sortie du dossier : ' + error.message);
-      clearMemoSelection();
-      await fetchMemos();
-      return;
-    }
-    const selectedIds = new Set(selected.map(memo => memo.id));
-    const targetArchived = !showMemoArchived;
-    const now = new Date().toISOString();
-
-    // Les mémos épinglés/non épinglés conservent leurs groupes respectifs.
-    const nextOrderByPinned = new Map<boolean, number>();
-    for (const pinned of [false, true]) {
-      const max = memoEntriesRef.current
-        .filter(memo => !selectedIds.has(memo.id) && memo.archived === targetArchived && memo.pinned === pinned)
-        .reduce((value, memo) => Math.max(value, Number.isFinite(memo.sort_order) ? memo.sort_order : 0), -1);
-      nextOrderByPinned.set(pinned, max + 1);
-    }
-
-    const results = await Promise.all(selected.map(memo => {
-      const order = nextOrderByPinned.get(memo.pinned) ?? 0;
-      nextOrderByPinned.set(memo.pinned, order + 1);
-      return supabase.from('memo_notes').update({
-        archived: targetArchived,
-        pinned: false,
-        archive_folder_id: null,
         sort_order: order,
         updated_at: now,
       }).eq('id', memo.id);
@@ -5453,13 +5243,11 @@ export default function Home() {
   // Le référentiel horaire du planning est défini plus haut dans le composant
   // afin que toutes les fonctions utilisent exactement la même plage.
 
-  const loadCleanupNotes = (threshold: number, mode: 'actif' | 'archive') => {
+  const loadCleanupNotes = (threshold: number) => {
     const thresholdMs = threshold * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const oldNotes = notes.filter(n => {
       if (n.completed) return false; 
-      if (mode === 'actif' && n.is_archived) return false;
-      if (mode === 'archive' && !n.is_archived) return false;
       if (!n.created_at) return false;
       return now - new Date(n.created_at).getTime() >= thresholdMs;
     });
@@ -5467,21 +5255,22 @@ export default function Home() {
     setCurrentCleanupIndex(0);
   };
 
-  const openCleanupModal = (mode: 'actif' | 'archive') => {
-    setCleanupMode(mode);
-    loadCleanupNotes(cleanupThresholdDays, mode);
+  const openCleanupModal = () => {
+    loadCleanupNotes(cleanupThresholdDays);
     setShowCleanupModal(true);
   };
 
-  const handleCleanupAction = async (action: 'delete' | 'archive' | 'keep', note: Note) => {
+  const handleCleanupAction = async (action: 'delete' | 'keep', note: Note) => {
     try {
       if (action === 'delete') {
-        const { error } = await supabase.from('notes').delete().eq('id', note.id);
-        if (error) throw error;
-      } else if (action === 'archive') {
         const { error } = await supabase
           .from('notes')
-          .update({ is_archived: true })
+          .update({
+            completed: true,
+            completed_at: new Date().toISOString(),
+            is_archived: false,
+            popup_active: false,
+          })
           .eq('id', note.id);
         if (error) throw error;
       }
@@ -5496,7 +5285,7 @@ export default function Home() {
   const deleteAllHistory = () => {
     requestAppConfirmation({
       title: 'Supprimer tout l’historique ?',
-      message: 'Toutes les tâches terminées seront supprimées définitivement.',
+      message: 'Toutes les tâches terminées ou supprimées seront effacées définitivement.',
       confirmLabel: 'Tout supprimer',
       tone: 'danger',
       onConfirm: async () => {
@@ -5618,7 +5407,7 @@ export default function Home() {
       setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
 
       await fetchNotes();
-      navigateNotesChild('#notes-list');
+      navigateNotesChild('#tasks');
       setSuccessMessage('✅ Tâche créée avec succès !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
@@ -5631,17 +5420,39 @@ export default function Home() {
   const deleteNote = (id: string) => {
     requestAppConfirmation({
       title: 'Supprimer cette tâche ?',
-      message: 'La tâche sera supprimée définitivement.',
+      message: 'La tâche restera récupérable dans l’historique pendant 30 jours.',
       confirmLabel: 'Supprimer',
       tone: 'danger',
       onConfirm: async () => {
-        const { error } = await supabase.from('notes').delete().eq('id', id);
+        const { error } = await supabase.from('notes').update({
+          completed: true,
+          completed_at: new Date().toISOString(),
+          is_archived: false,
+          popup_active: false,
+        }).eq('id', id);
 
         if (error) {
           showAppMessage("Erreur lors de la suppression : " + error.message);
           return;
         }
 
+        await fetchNotes();
+      },
+    });
+  };
+
+  const deleteNotePermanently = (id: string) => {
+    requestAppConfirmation({
+      title: 'Supprimer définitivement ?',
+      message: 'Cette tâche ne pourra plus être récupérée.',
+      confirmLabel: 'Supprimer définitivement',
+      tone: 'danger',
+      onConfirm: async () => {
+        const { error } = await supabase.from('notes').delete().eq('id', id);
+        if (error) {
+          showAppMessage("Erreur lors de la suppression définitive : " + error.message);
+          return;
+        }
         await fetchNotes();
       },
     });
@@ -5958,7 +5769,7 @@ export default function Home() {
       setNewListItems([]);
       setCurrentNewListItem('');
       await fetchNotes();
-      navigateNotesChild('#notes-list');
+      navigateNotesChild('#tasks');
       setSuccessMessage('✅ Tâche créée avec succès par IA !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
@@ -6335,9 +6146,8 @@ export default function Home() {
   const displayedNotes = notes.filter(n => {
     if (n.completed) return false;
     const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
-    if (showArchived === true) return n.is_archived;
-    if (showArchived === 'snoozed') return !n.is_archived && isSnoozed;
-    return !n.is_archived && !isSnoozed;
+    if (showArchived === 'snoozed') return isSnoozed;
+    return !isSnoozed;
   }).sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
 
   const historyNotes = notes.filter(n => {
@@ -6345,11 +6155,11 @@ export default function Home() {
     if (!historySearch.trim()) return true;
     const term = historySearch.toLowerCase();
     return (n.title && n.title.toLowerCase().includes(term)) || (n.content && n.content.toLowerCase().includes(term));
-  });
+  }).sort((a, b) => getSafeTime(b.completed_at || b.created_at) - getSafeTime(a.completed_at || a.created_at));
 
-  const hasSnoozedNotes = notes.some(n => !n.is_archived && !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
+  const hasSnoozedNotes = notes.some(n => !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
 
-  const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id) && !n.is_archived);
+  const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id));
   const urgentNotes = focusableNotes.filter(n => n.importance === 'rouge');
   const importantNotes = focusableNotes.filter(n => n.importance === 'orange');
   const normalNotes = focusableNotes.filter(n => n.importance === 'vert');
@@ -6386,35 +6196,26 @@ export default function Home() {
   const normalizedMemoSearch = memoSearch.trim().toLocaleLowerCase('fr-FR');
   const visibleMemos = memoEntries.filter(memo => {
     if (memo.archived !== showMemoArchived) return false;
-    if (showMemoArchived) {
-      if (activeMemoFolderId) {
-        if (memo.archive_folder_id !== activeMemoFolderId) return false;
-      } else if (memo.archive_folder_id) {
-        return false;
-      }
-    }
     if (!normalizedMemoSearch) return true;
     const searchable = [memo.title, memo.content, ...memo.items.map(item => item.text)]
       .join(' ')
       .toLocaleLowerCase('fr-FR');
     return searchable.includes(normalizedMemoSearch);
   });
-  const activeMemoFolder = memoFolders.find(folder => folder.id === activeMemoFolderId) || null;
-  const memoFolderCounts = new Map(
-    memoFolders.map(folder => [folder.id, memoEntries.filter(memo => memo.archived && memo.archive_folder_id === folder.id).length])
-  );
   const pinnedMemos = showMemoArchived
     ? []
     : visibleMemos.filter(memo => memo.pinned).sort((a, b) => a.sort_order - b.sort_order);
   const otherMemos = (showMemoArchived ? visibleMemos : visibleMemos.filter(memo => !memo.pinned))
-    .sort((a, b) => a.sort_order - b.sort_order);
+    .sort((a, b) => showMemoArchived
+      ? getSafeTime(b.updated_at || b.created_at) - getSafeTime(a.updated_at || a.created_at)
+      : a.sort_order - b.sort_order);
   const pinnedMemoColumns = buildMemoMasonryColumns(pinnedMemos);
   const otherMemoColumns = buildMemoMasonryColumns(otherMemos);
 
   const renderMemoCard = (memo: MemoEntry) => {
     const isSelected = selectedMemoIds.has(memo.id);
     const hideOriginal = draggingMemoId === memo.id && memoDndMoved;
-    const dragDisabled = selectedMemoIds.size > 0 || !!memoSearch.trim();
+    const dragDisabled = showMemoArchived || selectedMemoIds.size > 0 || !!memoSearch.trim();
 
     return (
       <MemoDndCard
@@ -6424,7 +6225,7 @@ export default function Home() {
         disabled={dragDisabled}
         hideOriginal={hideOriginal}
         colorClass={memoColorClasses(memo.color)}
-        onOpen={() => openMemoCard(memo)}
+        onOpen={() => { if (!showMemoArchived) openMemoCard(memo); }}
       >
         {isSelected && (
           <span className="absolute -top-2 -left-2 z-10 w-6 h-6 rounded-full bg-[#6F7B64] text-white border-2 border-[#F8F5EF] shadow flex items-center justify-center text-[12px] font-black">✓</span>
@@ -6466,6 +6267,26 @@ export default function Home() {
             {memo.items.length > 6 && (
               <span className="text-[9px] font-bold opacity-50 mt-0.5">+ {memo.items.length - 6} autre{memo.items.length - 6 > 1 ? 's' : ''}</span>
             )}
+          </div>
+        )}
+
+        {showMemoArchived && (
+          <div className="mt-3 pt-2.5 border-t border-black/10" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="text-[9px] font-bold opacity-55 mb-2">
+              Supprimée le {new Date(memo.updated_at || memo.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={(event) => { event.stopPropagation(); void restoreDeletedMemo(memo); }}
+                className="rounded-xl bg-white/70 border border-black/10 px-2 py-2 text-[10px] font-black hover:bg-white"
+              >↩ Restaurer</button>
+              <button
+                type="button"
+                onClick={(event) => { event.stopPropagation(); permanentlyDeleteMemo(memo); }}
+                className="rounded-xl bg-[#F3DEDA] border border-[#DFBBB4] px-2 py-2 text-[10px] font-black text-[#94554D] hover:bg-[#EFCFC9]"
+              >🗑 Définitif</button>
+            </div>
           </div>
         )}
       </MemoDndCard>
@@ -6739,7 +6560,6 @@ export default function Home() {
               {showArchived === 'snoozed' && (<button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>)}
               {showArchived === false && (<button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>)}
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
-              <button onClick={() => { updateNote(note.id, 'is_archived', !note.is_archived); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">📦 {note.is_archived ? 'Désarchiver' : 'Archiver'}</button>
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
             </div>
           )}
@@ -6755,21 +6575,84 @@ export default function Home() {
   const savedTemplateOverlapLayouts = new Map(
     savedTemplates.map(template => [template.id, getTaskOverlapLayoutMap(template.blocks || [])])
   );
+  const primaryAddButtonClass = 'w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-3xl leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] transition-transform active:scale-95 flex items-center justify-center';
 
   return (
-    <main className="max-w-7xl mx-auto p-4 pb-20 relative">
+    <main className="max-w-7xl mx-auto p-4 pb-32 relative">
 
       {/* ================= MODALS GLOBALES ================= */}
+      {successMessage && (
+        <div className="fixed left-1/2 -translate-x-1/2 top-[max(14px,env(safe-area-inset-top))] z-[14500] max-w-[calc(100vw-32px)] rounded-full bg-[#E6F2DF] border border-[#BFD3B3] px-4 py-2 text-[#3D6234] text-xs font-black shadow-lg">
+          {successMessage}
+        </div>
+      )}
+
+      {quickCaptureOpen && (
+        <div className="fixed inset-0 z-[14000] bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={closeQuickCapture}>
+          <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-black text-[#46513F]">Saisie rapide</h2>
+                <p className="text-xs font-semibold text-[#81786C] mt-0.5">Écris ce que tu as en tête.</p>
+              </div>
+              <button type="button" onClick={closeQuickCapture} className="w-9 h-9 rounded-full bg-[#EEE8DD] text-[#62594E] font-black">×</button>
+            </div>
+
+            <textarea
+              autoFocus
+              value={quickCaptureText}
+              onChange={(event) => changeQuickCaptureText(event.target.value)}
+              placeholder="Ex. Appeler le garage demain à 10 h"
+              className="w-full min-h-[140px] resize-y rounded-2xl bg-white border border-[#D8D0C4] p-3 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+            />
+
+            <div className="mt-4 rounded-2xl bg-[#F1EEE7] border border-[#DDD5C7] p-3">
+              <div className="text-xs font-black text-[#5E574D] mb-2">
+                Reconnu comme : <span className="text-[#40503A]">{quickCaptureKind === 'task' ? 'Tâche' : 'Note'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2" role="group" aria-label="Choisir la destination de la saisie">
+                <button
+                  type="button"
+                  onClick={() => chooseQuickCaptureKind('note')}
+                  className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'note' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
+                >📝 Note</button>
+                <button
+                  type="button"
+                  onClick={() => chooseQuickCaptureKind('task')}
+                  className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'task' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
+                >✓ Tâche</button>
+              </div>
+              <p className="mt-2 text-[10px] font-semibold text-[#81786C]">En cas de doute, l’application choisit Note. Planning n’est jamais sélectionné automatiquement.</p>
+            </div>
+
+            {quickCaptureKind === 'task' && quickCaptureHasTimeSignal(quickCaptureText) && (
+              <button
+                type="button"
+                onClick={continueQuickCaptureWithReminders}
+                className="mt-3 w-full rounded-xl border border-[#D9CBAF] bg-[#F3EDD6] hover:bg-[#EAE1C2] px-3 py-2.5 text-xs font-black text-[#66562F]"
+              >⏰ Configurer un rappel avant d’enregistrer</button>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 mt-4">
+              <button type="button" onClick={closeQuickCapture} className="rounded-xl bg-white border border-[#DDD5C7] py-3 text-sm font-black text-[#756E63]">Annuler</button>
+              <button type="button" disabled={!quickCaptureText.trim() || loading} onClick={() => void saveQuickCapture()} className="rounded-xl bg-[#6F7B64] hover:bg-[#626E58] text-white py-3 text-sm font-black disabled:opacity-40">
+                {loading ? 'Enregistrement…' : `Créer ${quickCaptureKind === 'task' ? 'la tâche' : 'la note'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCleanupModal && (
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 animate-fade-in border-4 border-blue-500">
             <div className="flex justify-between items-center border-b pb-2">
-              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><span>🧹</span> Nettoyage {cleanupMode === 'archive' ? 'archive' : ''}</h2>
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><span>🧹</span> Nettoyage</h2>
               <button onClick={() => setShowCleanupModal(false)} className="text-gray-400 hover:text-black font-bold text-xl transition-colors">✖</button>
             </div>
             <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
               <span className="text-sm font-semibold text-gray-700">Ancienneté requise :</span>
-              <select value={cleanupThresholdDays} onChange={(e) => { const val = Number(e.target.value); setCleanupThresholdDays(val); loadCleanupNotes(val, cleanupMode); }} className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1">
+              <select value={cleanupThresholdDays} onChange={(e) => { const val = Number(e.target.value); setCleanupThresholdDays(val); loadCleanupNotes(val); }} className="border border-gray-300 p-1.5 rounded text-sm font-bold text-black bg-white flex-1">
                 <option value={0}>👁️ Tout visualiser</option>
                 <option value={14}>+ de 2 semaines</option>
                 <option value={30}>+ de 1 mois</option>
@@ -6784,10 +6667,9 @@ export default function Home() {
                   <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
                   <span className="text-[10px] text-gray-400 mt-4 text-right font-semibold">Créée le {new Date(cleanupNotes[currentCleanupIndex].created_at || '').toLocaleDateString('fr-FR')}</span>
                 </div>
-                <div className={`grid gap-2 mt-2 ${cleanupMode === 'actif' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                <div className="grid grid-cols-2 gap-2 mt-2">
                   <button onClick={() => handleCleanupAction('delete', cleanupNotes[currentCleanupIndex])} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">🗑️</span> <span className="text-[10px] uppercase">Supprimer</span></button>
                   <button onClick={() => handleCleanupAction('keep', cleanupNotes[currentCleanupIndex])} className="bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">✅</span> <span className="text-[10px] uppercase">Conserver</span></button>
-                  {cleanupMode === 'actif' && (<button onClick={() => handleCleanupAction('archive', cleanupNotes[currentCleanupIndex])} className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 py-3 rounded-xl font-bold flex flex-col items-center gap-1 transition-colors shadow-sm"><span className="text-xl">📦</span> <span className="text-[10px] uppercase">Archiver</span></button>)}
                 </div>
               </div>
             ) : (
@@ -6835,8 +6717,8 @@ export default function Home() {
                   <p className="mt-1">Le mode Focus affiche une seule tâche à la fois, en commençant par les urgentes puis les importantes et les normales. Tu peux la terminer ou la remettre à plus tard pour passer à la suivante.</p>
                 </div>
                 <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
-                  <strong className="text-[#4E5847]">✅ Terminer / archiver</strong>
-                  <p className="mt-1">Une tâche terminée quitte la liste active. Tu peux ensuite la retrouver dans l'historique, la réactiver ou la supprimer.</p>
+                  <strong className="text-[#4E5847]">✅ Terminer / supprimer</strong>
+                  <p className="mt-1">Une tâche retirée quitte la liste active. Tu peux la retrouver dans l’historique pendant 30 jours, puis la réactiver ou l’effacer définitivement.</p>
                 </div>
               </div>
             ) : (
@@ -7264,72 +7146,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* ================= VUE : HUB PRINCIPAL ================= */}
-      {mainMode === 'hub' && (
-        <div className="relative min-h-[80vh] w-full flex flex-col items-center justify-center animate-fade-in py-8">
-          <h1
-            className="text-[40px] sm:text-[48px] leading-none text-[#4B5843] text-center mb-10 font-semibold"
-            style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
-          >
-            Mes outils
-          </h1>
-
-          <div className="w-full max-w-sm flex flex-col gap-3">
-            <button
-              onClick={() => window.location.hash = 'notes-create'}
-              className="w-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(78,88,66,0.10)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C8D0B8]"
-            >
-              <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📝</span>
-              <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Tâches &amp; Rappels</span>
-                <span className="text-xs font-semibold text-[#687260] mt-0.5">Planifier une action et recevoir le bon rappel</span>
-              </span>
-            </button>
-
-            <button
-              onClick={() => window.location.hash = 'planning'}
-              className="w-full bg-[#E7D9C9] hover:bg-[#DDCDBA] text-[#58493C] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(92,74,57,0.09)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#DAC9B5]"
-            >
-              <span className="w-11 h-11 rounded-full bg-white/55 flex items-center justify-center text-xl flex-shrink-0">📅</span>
-              <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Planning</span>
-                <span className="text-xs font-semibold text-[#786858] mt-0.5">Créer et réutiliser tes semaines types</span>
-              </span>
-            </button>
-
-            <button
-              onClick={() => window.location.hash = 'memos'}
-              className="w-full bg-[#DFE8E3] hover:bg-[#D2E0D9] text-[#40574E] px-5 py-4 rounded-[22px] shadow-[0_5px_18px_rgba(67,91,81,0.08)] transition-all active:scale-[0.98] flex items-center gap-4 text-left border border-[#C9D8D1]"
-            >
-              <span className="w-11 h-11 rounded-full bg-white/60 flex items-center justify-center text-xl flex-shrink-0">📌</span>
-              <span className="flex flex-col min-w-0">
-                <span className="text-base font-black">Notes, Mémos &amp; Listes</span>
-                <span className="text-xs font-semibold text-[#687B73] mt-0.5">Conserver tes idées, mémos et listes</span>
-              </span>
-            </button>
-          </div>
-
-          {DEMO_MODE && (
-            <div className="w-full max-w-sm mt-5 rounded-[22px] border border-[#D7D0C4] bg-[#F7F3EC] px-4 py-3 text-[#625B52] shadow-[0_4px_14px_rgba(78,70,58,0.06)]">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-black uppercase tracking-[0.12em] text-[#7B725F]">Mode démonstration</p>
-                  <p className="text-[11px] font-semibold text-[#81786C] mt-1">Données fictives uniquement. E-mail, notifications et IA sont désactivés.</p>
-                </div>
-                <button
-                  type="button"
-                  disabled={demoResetting}
-                  onClick={requestDemoReset}
-                  className="flex-shrink-0 rounded-xl bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#3F4938] px-3 py-2 text-xs font-black border border-[#C8D0B8] disabled:opacity-50"
-                >
-                  {demoResetting ? 'Patiente…' : '↻ Réinitialiser'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* ================= VUE : NOTES, MÉMOS & LISTES ================= */}
       {mainMode === 'memos' && (
         <DndContext
@@ -7342,27 +7158,13 @@ export default function Home() {
           onDragEnd={handleMemoDndEnd}
           onDragCancel={handleMemoDndCancel}
         >
-        <div
-          className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto"
-          onTouchStart={handleMemoSwipeStart}
-          onTouchMove={handleMemoSwipeMove}
-          onTouchEnd={handleMemoSwipeEnd}
-          onTouchCancel={() => { memoSwipeStartRef.current = null; }}
-          style={{ touchAction: 'pan-y' }}
-        >
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 mb-5">
-            <button
-              type="button"
-              onClick={() => window.location.hash = 'hub'}
-              className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm"
-            >
-              ← Menu
-            </button>
+        <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
+          <div className="grid grid-cols-[1fr_auto] items-center gap-2 mb-5">
             <h1
-              className="text-[31px] sm:text-[38px] leading-none text-[#4B5843] text-center font-semibold"
+              className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] font-semibold"
               style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
             >
-              Notes, Mémos &amp; Listes
+              Notes
             </h1>
             <button
               type="button"
@@ -7373,44 +7175,28 @@ export default function Home() {
             >?</button>
           </div>
 
-          {selectedMemoIds.size > 0 && (
-            <div className="fixed left-1/2 -translate-x-1/2 top-[max(10px,env(safe-area-inset-top))] z-[12950] bg-[#EEF1E8]/95 backdrop-blur-md border border-[#C9D1C0] rounded-2xl shadow-[0_8px_28px_rgba(66,76,58,0.22)] px-2 py-2 flex items-center gap-2">
-              {!showMemoArchived && (
-                <button
-                  type="button"
-                  onClick={() => void setSelectedMemosPinned()}
-                  className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
-                  aria-label={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
-                  title={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
-                >
-                  📌
-                </button>
-              )}
-              {showMemoArchived && (
-                <button
-                  type="button"
-                  onClick={() => { setMemoFolderPickerMode('move'); setShowMemoMoveFolder(true); }}
-                  className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
-                  aria-label="Déplacer dans un dossier"
-                  title="Déplacer dans un dossier"
-                >
-                  📁
-                </button>
-              )}
+          {!showMemoArchived && (
+            <div className="flex items-center justify-center mb-4 h-12">
               <button
                 type="button"
-                onClick={() => {
-                  if (showMemoArchived) void setSelectedMemosArchived();
-                  else {
-                    setMemoFolderPickerMode('archive');
-                    setShowMemoMoveFolder(true);
-                  }
-                }}
+                onClick={() => openNewMemo('text')}
+                className={`${primaryAddButtonClass} ${selectedMemoIds.size > 0 ? 'invisible pointer-events-none' : ''}`}
+                aria-label="Créer une nouvelle note"
+                title="Nouvelle note"
+              >＋</button>
+            </div>
+          )}
+
+          {!showMemoArchived && selectedMemoIds.size > 0 && (
+            <div className="fixed left-1/2 -translate-x-1/2 top-[max(10px,env(safe-area-inset-top))] z-[12950] bg-[#EEF1E8]/95 backdrop-blur-md border border-[#C9D1C0] rounded-2xl shadow-[0_8px_28px_rgba(66,76,58,0.22)] px-2 py-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void setSelectedMemosPinned()}
                 className="w-11 h-11 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-[19px] font-black shadow-sm active:scale-95 flex items-center justify-center"
-                aria-label={showMemoArchived ? (activeMemoFolder ? 'Sortir du dossier' : 'Déplacer vers les notes actives') : 'Archiver et choisir le dossier'}
-                title={showMemoArchived ? (activeMemoFolder ? 'Sortir du dossier en restant dans les archives' : 'Déplacer vers les notes actives') : 'Archiver et choisir le dossier'}
+                aria-label={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
+                title={getSelectedMemos().every(memo => memo.pinned) ? 'Désépingler' : 'Épingler'}
               >
-                {showMemoArchived ? (activeMemoFolder ? '📤' : '📝') : '📦'}
+                📌
               </button>
               <button
                 type="button"
@@ -7424,6 +7210,13 @@ export default function Home() {
             </div>
           )}
 
+          {showMemoArchived && (
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <button type="button" onClick={() => leaveMemoArchives(true)} className="text-[#6A6258] hover:text-[#4F4A43] font-black text-sm">← Retour aux notes</button>
+              {visibleMemos.length > 0 && <button type="button" onClick={deleteAllMemoHistory} className="text-[#A5524A] hover:text-[#843E38] font-black text-xs">🗑 Tout supprimer</button>}
+            </div>
+          )}
+
           <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
             <div className="flex items-center gap-2">
               <div className="flex-1 relative">
@@ -7432,88 +7225,19 @@ export default function Home() {
                   type="text"
                   value={memoSearch}
                   onChange={(e) => setMemoSearch(e.target.value)}
-                  placeholder="Rechercher dans Notes, Mémos & Listes"
+                  placeholder={showMemoArchived ? 'Rechercher dans l’historique' : 'Rechercher dans les notes'}
                   className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => showMemoArchived ? leaveMemoArchives(true) : enterMemoArchives()}
-                className={`flex-shrink-0 h-10 px-3 rounded-xl text-xs font-black border transition-colors ${showMemoArchived ? 'bg-[#E2D6C7] text-[#59493B] border-[#D7C7B5]' : 'bg-white text-[#6A6258] border-[#DED5C8] hover:bg-[#F1ECE3]'}`}
-              >
-                {showMemoArchived ? '↩ Notes actives' : '📦 Archives'}
-              </button>
             </div>
           </div>
 
-          {showMemoArchived && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  {activeMemoFolder ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => leaveMemoArchiveFolder(true)}
-                        className="w-9 h-9 rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] text-[#665E53] font-black flex items-center justify-center"
-                        title="Retour aux archives"
-                      >←</button>
-                      <span className="font-black text-sm truncate">📁 {activeMemoFolder.name}</span>
-                    </>
-                  ) : (
-                    <span className="font-black text-sm">Dossiers d’archives</span>
-                  )}
-                </div>
-                {!activeMemoFolder && (
-                  <button
-                    type="button"
-                    onClick={() => { setMemoFolderName(''); setShowMemoFolderCreate(true); }}
-                    className="h-9 px-3 rounded-xl bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-xs font-black"
-                  >＋ Dossier</button>
-                )}
-              </div>
-
-              {!activeMemoFolder && memoFolders.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
-                  {memoFolders.map(folder => (
-                    <MemoArchiveFolderDroppable
-                      key={folder.id}
-                      folder={folder}
-                      count={memoFolderCounts.get(folder.id) || 0}
-                      hovering={memoFolderDragHoverId === folder.id}
-                      onOpen={() => enterMemoArchiveFolder(folder.id)}
-                      onRename={() => void renameMemoFolder(folder)}
-                      onDelete={() => deleteMemoFolder(folder)}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {!activeMemoFolder && memoFolders.length > 0 && (
-                <div className="text-[10px] font-black uppercase tracking-[0.12em] text-[#82796C] mb-2 px-1">Sans dossier</div>
-              )}
-            </div>
-          )}
-
-          {!showMemoArchived && (
-            <div className="flex items-center justify-center mb-3 h-12">
-              <button
-                type="button"
-                onClick={() => openNewMemo('text')}
-                className={`w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] text-[27px] leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] active:scale-[0.94] transition-[transform,opacity] flex items-center justify-center ${selectedMemoIds.size > 0 ? 'invisible pointer-events-none' : ''}`}
-                aria-label="Créer une note, une liste ou un dessin"
-                title="Créer"
-              >
-                ＋
-              </button>
-            </div>
-          )}
-
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
-              <div className="text-4xl mb-3">{showMemoArchived ? '📦' : '🗒️'}</div>
-              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? (activeMemoFolder ? 'Ce dossier est vide' : memoFolders.length ? 'Aucune note sans dossier' : 'Aucune note archivée') : 'Aucun mémo pour le moment'}</p>
-              {!memoSearch && !showMemoArchived && <p className="text-xs font-semibold mt-1">Crée une note, un mémo ou une liste que tu pourras garder et réutiliser.</p>}
+              <div className="text-4xl mb-3">{showMemoArchived ? '🕰️' : '🗒️'}</div>
+              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? 'Aucune note supprimée' : 'Aucune note pour le moment'}</p>
+              {!memoSearch && !showMemoArchived && <p className="text-xs font-semibold mt-1">Touche + pour conserver une idée, un mémo ou une liste.</p>}
+              {!memoSearch && showMemoArchived && <p className="text-xs font-semibold mt-1">Les notes supprimées restent ici pendant 30 jours.</p>}
             </div>
           ) : (
             <div className="flex flex-col gap-7">
@@ -7551,10 +7275,23 @@ export default function Home() {
             </div>
           )}
 
-          <MemoTrashDroppable
-            active={!!draggingMemoId && memoDndMoved && selectedMemoIds.size === 0}
-            hovering={memoTrashHover}
-          />
+          {!showMemoArchived && (
+            <div className="mt-12 mb-6 text-center">
+              <button
+                type="button"
+                onClick={enterMemoArchives}
+                className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
+              >🕰️ Consulter l’historique des notes supprimées</button>
+              <p className="mt-1 text-[10px] font-semibold text-gray-400">Suppression automatique après 30 jours.</p>
+            </div>
+          )}
+
+          {!showMemoArchived && (
+            <MemoTrashDroppable
+              active={!!draggingMemoId && memoDndMoved && selectedMemoIds.size === 0}
+              hovering={memoTrashHover}
+            />
+          )}
 
           <DragOverlay dropAnimation={{ duration: 180, easing: 'ease-out' }}>
             {draggingMemoId && memoDndMoved && (() => {
@@ -7582,51 +7319,13 @@ export default function Home() {
                       ))}
                     </div>
                   )}
-                  <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : memoFolderDragHoverId ? 'bg-[#6F7B64]' : 'bg-[#4B5843]'}`}>
-                    {memoTrashHover ? 'Relâche pour supprimer' : memoFolderDragHoverId ? `Relâche pour classer dans ${memoFolders.find(folder => folder.id === memoFolderDragHoverId)?.name || 'ce dossier'}` : 'Relâche pour placer'}
+                  <div className={`absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full text-white px-2.5 py-1 text-[9px] font-black shadow-lg ${memoTrashHover ? 'bg-[#B85D55]' : 'bg-[#4B5843]'}`}>
+                    {memoTrashHover ? 'Relâche pour supprimer' : 'Relâche pour placer'}
                   </div>
                 </div>
               );
             })()}
           </DragOverlay>
-
-          {showMemoFolderCreate && (
-            <div className="fixed inset-0 z-[13020] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemoFolderCreate(false)}>
-              <div className="w-full max-w-sm rounded-[24px] bg-[#F7F4ED] border border-[#E0D8CB] shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
-                <h3 className="font-black text-base text-[#4B5843] mb-3">Nouveau dossier</h3>
-                <input
-                  type="text"
-                  value={memoFolderName}
-                  onChange={(e) => setMemoFolderName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void createMemoFolder(); } }}
-                  placeholder="Nom du dossier"
-                  className="w-full bg-white border border-[#DED5C8] rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
-                />
-                <div className="flex gap-2 mt-4">
-                  <button type="button" onClick={() => setShowMemoFolderCreate(false)} className="flex-1 py-2.5 rounded-xl bg-white border border-[#DED5C8] text-xs font-black">Annuler</button>
-                  <button type="button" onClick={() => void createMemoFolder()} className="flex-1 py-2.5 rounded-xl bg-[#819076] text-white text-xs font-black">Créer</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {showMemoMoveFolder && (
-            <div className="fixed inset-0 z-[13010] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemoMoveFolder(false)}>
-              <div className="w-full max-w-sm rounded-[24px] bg-[#F7F4ED] border border-[#E0D8CB] shadow-2xl p-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <h3 className="font-black text-base text-[#4B5843]">{memoFolderPickerMode === 'archive' ? 'Archiver dans…' : 'Déplacer vers…'}</h3>
-                  <button type="button" onClick={() => setShowMemoMoveFolder(false)} className="w-8 h-8 rounded-full bg-white border border-[#DED5C8] font-black">×</button>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <button type="button" onClick={() => void moveSelectedMemosToFolder(null)} className="w-full text-left rounded-xl bg-white border border-[#DED5C8] px-3 py-3 text-sm font-black">📄 {memoFolderPickerMode === 'archive' ? 'Archiver sans dossier' : 'Sans dossier'}</button>
-                  {memoFolders.map(folder => (
-                    <button key={folder.id} type="button" onClick={() => void moveSelectedMemosToFolder(folder.id)} className="w-full text-left rounded-xl bg-[#EEE8DD] border border-[#D9D0C2] px-3 py-3 text-sm font-black">📁 {memoFolderPickerMode === 'archive' ? 'Archiver dans ' : ''}{folder.name}</button>
-                  ))}
-                  <button type="button" onClick={() => { setShowMemoMoveFolder(false); setMemoFolderName(''); setShowMemoFolderCreate(true); }} className="w-full text-left rounded-xl bg-[#D8DEC9] border border-[#C8D0B8] px-3 py-3 text-sm font-black text-[#394433]">＋ Nouveau dossier</button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {showMemosHelp && (
             <div className="fixed inset-0 z-[13030] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemosHelp(false)}>
@@ -7636,13 +7335,12 @@ export default function Home() {
                   <button type="button" onClick={() => setShowMemosHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
                 </div>
                 <div className="space-y-3 text-sm leading-relaxed text-[#655E54]">
-                  <p><strong>＋ Créer :</strong> ajoute une note, une liste réutilisable ou un DrawNote.</p>
-                  <p><strong>📌 Épingler :</strong> dans les notes actives, fais un appui long sur une carte puis touche l’épingle. Touche directement la punaise d’une note épinglée pour la désépingler. Les archives ne sont jamais épinglées.</p>
+                  <p><strong>＋ Créer :</strong> ajoute directement une note, puis choisis si besoin le format liste ou DrawNote.</p>
+                  <p><strong>📌 Épingler :</strong> fais un appui long sur une carte puis touche l’épingle. Touche directement la punaise affichée pour la désépingler.</p>
                   <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre.</p>
-                  <p><strong>📦 Archiver :</strong> une note peut être archivée dès sa création. Après une sélection simple ou multiple, le bouton Archives permet de choisir immédiatement le dossier.</p>
-                  <p><strong>📁 Dossiers d’archives :</strong> dans Archives, crée et renomme des dossiers. Depuis « Sans dossier », fais glisser une note archivée directement sur un dossier pour la classer. Tu peux aussi utiliser la sélection multiple puis l’icône dossier.</p>
+                  <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
                   <p><strong>→ Tâches &amp; Rappels :</strong> transforme une note ou les éléments non cochés d’une liste en tâche sans supprimer le mémo d’origine.</p>
-                  <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. Sous l’aide de dessin, tu peux choisir la couleur de fond, archiver, classer ou supprimer le dessin.</p>
+                  <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
                 </div>
               </div>
             </div>
@@ -7761,27 +7459,7 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (memoDraftArchived && memoDraftArchiveFolderId) {
-                        // Sortir d'un dossier conserve toujours la note dans les archives.
-                        setMemoDraftArchiveFolderId(null);
-                        return;
-                      }
-                      setMemoDraftArchived(value => {
-                        const next = !value;
-                        if (!next) setMemoDraftArchiveFolderId(null);
-                        return next;
-                      });
-                    }}
-                    aria-pressed={memoDraftArchived}
-                    aria-label={memoDraftArchived ? (memoDraftArchiveFolderId ? 'Sortir du dossier en restant dans les archives' : 'Déplacer vers les notes actives') : 'Archiver cette note'}
-                    title={memoDraftArchived ? (memoDraftArchiveFolderId ? 'Sortir du dossier' : 'Déplacer vers les notes actives') : 'Archiver'}
-                    className={`h-10 px-3 rounded-xl text-xs font-black border flex items-center justify-center gap-1.5 transition-all active:scale-95 ${memoDraftArchived ? 'bg-[#819076] text-white border-[#74836A] shadow-sm' : 'bg-white/35 border-black/5 hover:bg-white/65'}`}
-                  >{memoDraftArchived ? (memoDraftArchiveFolderId ? '📤 Sortir du dossier' : '📝 Déplacer vers notes actives') : '📦 Archiver'}</button>
-
+                <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
                   <div className="flex items-center gap-1.5">
                     {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
                       <button
@@ -7794,21 +7472,6 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
-
-                {memoDraftArchived && (
-                  <div className="mt-3 rounded-2xl bg-white/45 border border-black/10 p-3">
-                    <div className="text-[10px] font-black uppercase tracking-[0.12em] opacity-55 mb-2">Classer dans les archives</div>
-                    <select
-                      value={memoDraftArchiveFolderId || ''}
-                      onChange={(e) => setMemoDraftArchiveFolderId(e.target.value || null)}
-                      className="w-full bg-white/80 border border-black/10 rounded-xl px-3 py-2.5 text-sm font-bold text-[#4A463F]"
-                    >
-                      <option value="">Sans dossier</option>
-                      {memoFolders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-                    </select>
-                    {memoFolders.length === 0 && <p className="text-[10px] font-semibold opacity-55 mt-2">Tu peux créer des dossiers depuis l’écran Archives.</p>}
-                  </div>
-                )}
 
                 {editingMemoId && (() => {
                   const originalMemo = memoEntries.find(memo => memo.id === editingMemoId);
@@ -7850,10 +7513,7 @@ export default function Home() {
               key={drawEditorSeed.sessionKey}
               initialData={drawEditorSeed.drawing}
               initialTitle={drawEditorSeed.title}
-              initialArchived={drawEditorSeed.archived}
-              initialArchiveFolderId={drawEditorSeed.archiveFolderId}
               initialColor={drawEditorSeed.color}
-              folders={memoFolders}
               onSave={saveDrawMemo}
               registerAutoSave={(handler) => { drawEditorAutoSaveRef.current = handler; }}
               onDelete={() => {
@@ -7876,13 +7536,15 @@ export default function Home() {
       {/* ================= VUE : GALERIE DES PLANNINGS ================= */}
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
-           <div className="grid grid-cols-[1fr_auto_1fr] items-center mb-3 gap-2">
-             <button onClick={() => window.location.hash = 'hub'} className="justify-self-start text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
-             <h1 className="text-2xl font-black text-[#4B5843] text-center">Mes plannings</h1>
+           <div className="mb-3">
+             <h1 className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold" style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}>Planning</h1>
+           </div>
+
+           <div className="flex justify-center mb-1">
              <button
                type="button"
                onClick={openBlankPlanning}
-               className="justify-self-end w-11 h-11 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-2xl font-light shadow-sm transition-transform active:scale-95 flex items-center justify-center"
+               className={primaryAddButtonClass}
                title="Nouveau planning"
                aria-label="Créer un nouveau planning"
              >＋</button>
@@ -8486,22 +8148,15 @@ export default function Home() {
 
       {/* ================= VUE : TÂCHES ET RAPPELS ================= */}
       {mainMode === 'notes' && (
-        <div
-          className="animate-fade-in text-[#4A463F]"
-          onTouchStart={handleNotesSwipeStart}
-          onTouchEnd={handleNotesSwipeEnd}
-        >
+        <div className="animate-fade-in text-[#4A463F]">
           <div className="relative mb-5">
             {!isFocusMode ? (
-              <>
-                <button onClick={navigateNotesHub} className="absolute left-0 top-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm flex items-center gap-2 transition-colors">← Menu</button>
-                <h1
-                  className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold px-14"
-                  style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
-                >
-                  Tâches &amp; Rappels
-                </h1>
-              </>
+              <h1
+                className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold"
+                style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+              >
+                Tâches
+              </h1>
             ) : (
               <div className="flex flex-col items-center">
                 <h1 className="text-2xl font-black text-[#4B5843]">Mode Focus 🎯</h1>
@@ -8515,20 +8170,25 @@ export default function Home() {
                   setSkippedFocusIds([]);
                   setShowArchived(false);
                   setFocusPhase('rouge');
-                  if (isFocusMode) navigateNotesChild('#notes-list');
-                  else navigateNotesChild('#notes-focus');
+                  if (isFocusMode) navigateNotesChild('#tasks');
+                  else navigateNotesChild('#tasks-focus');
                 }}
-                className="min-w-[132px] h-14 px-5 rounded-2xl text-sm font-black shadow-md transition-all whitespace-nowrap bg-[#D8DEC9] hover:bg-[#CCD5BC] text-[#394433] border border-[#C8D0B8] flex items-center justify-center active:scale-95"
+                className="h-10 px-3 rounded-xl text-xs font-black shadow-sm transition-all whitespace-nowrap bg-[#EEE8DD] hover:bg-[#E5DED2] text-[#62594E] border border-[#D9D0C2] flex items-center justify-center active:scale-95"
               >
                 {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
               </button>
             </div>
           </div>
 
-          {!isFocusMode && (
-            <div className="flex bg-[#EEE8DD] rounded-2xl p-1 mb-6 w-full max-w-md mx-auto border border-[#DED5C8]">
-              <button type="button" onClick={navigateNotesCreate} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'create' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>✍️ Créer</button>
-              <button type="button" onClick={() => navigateNotesChild('#notes-list')} className={`flex-1 py-2.5 text-sm font-black rounded-xl transition-all ${activeTab === 'notes' ? 'bg-[#D8DEC9] text-[#394433] shadow-sm' : 'text-[#756E63] hover:text-[#4F4A43]'}`}>📑 Tâches</button>
+          {activeTab === 'notes' && !isFocusMode && (
+            <div className="flex justify-center mb-4">
+              <button
+                type="button"
+                onClick={navigateNotesCreate}
+                className={primaryAddButtonClass}
+                title="Nouvelle tâche"
+                aria-label="Créer une nouvelle tâche"
+              >＋</button>
             </div>
           )}
 
@@ -8541,6 +8201,7 @@ export default function Home() {
 
           {activeTab === 'create' && !isFocusMode && (
             <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
+              <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour aux tâches</button>
               <div className="flex flex-col gap-2">
                 <div className="relative flex items-center w-full">
                   <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
@@ -8698,12 +8359,6 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {successMessage && (
-                <div className="mt-2 p-2 bg-green-100 border border-green-300 text-green-800 text-center font-bold text-xs rounded-lg transition-all">
-                  {successMessage}
-                </div>
-              )}
-
               <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la tâche'}</button>
             </form>
           )}
@@ -8724,7 +8379,7 @@ export default function Home() {
                   <h2 className="text-2xl font-black text-gray-800">Urgences terminées !</h2>
                   <p className="text-gray-600 font-medium">As-tu l'énergie de continuer sur les tâches importantes ?</p>
                   <div className="flex w-full gap-3 mt-4">
-                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('orange')} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on continue</button>
                   </div>
                 </div>
@@ -8734,7 +8389,7 @@ export default function Home() {
                   <h2 className="text-2xl font-black text-gray-800">Tâches importantes finies !</h2>
                   <p className="text-gray-600 font-medium">Veux-tu terminer avec les tâches normales ?</p>
                   <div className="flex w-full gap-3 mt-4">
-                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
+                    <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('vert')} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on termine</button>
                   </div>
                 </div>
@@ -8760,7 +8415,7 @@ export default function Home() {
                 // ÉCRAN DE FIN TOTALE
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-md text-center flex flex-col items-center gap-4 border-2 border-dashed border-gray-200">
                   <span className="text-6xl">🎉</span><h2 className="text-2xl font-black text-gray-800">Super, plus aucune tâche à traiter !</h2><p className="text-gray-500 font-medium text-sm">Tu as vidé ta liste de concentration.</p>
-                  <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#notes-list'); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
+                  <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="mt-6 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-black transition-colors shadow-md">Quitter le Mode Focus</button>
                 </div>
               )}
             </div>
@@ -8770,21 +8425,11 @@ export default function Home() {
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
                   <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-[#C8D2BC] text-[#35412F]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📂 Actives</button>
                   {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-[#E6D8AE] text-[#66562F]' : 'bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]'}`}>💤 Masqué</button>}
-                  <button onClick={() => setShowArchived(true)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === true ? 'bg-[#E2D6C7] text-[#59493B]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📦 Archives</button>
                 </div>
-                <button onClick={() => openCleanupModal(showArchived === true ? 'archive' : 'actif')} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage {showArchived === true ? 'archive' : ''}</button>
+                <button onClick={openCleanupModal} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage</button>
               </div>
 
-              {showArchived === true ? (
-                <div className="flex flex-col bg-[#F8F5EF] p-3 rounded-2xl border border-[#E1D9CE]">
-                  <div className="w-full flex items-center justify-between mb-2 border-b border-gray-200 pb-1 text-gray-800"><span className="text-base font-bold">📦 Toutes les archives ({displayedNotes.length})</span></div>
-                  <ul className="space-y-3">
-                    {displayedNotes.length === 0 && <p className="text-gray-400 font-medium text-xs text-center py-4 bg-white rounded-lg border border-dashed border-gray-300">Dossier vide</p>}
-                    {displayedNotes.map(renderNoteItem)}
-                  </ul>
-                </div>
-              ) : (
-                <>
+              <>
                   {displayedNotes.length > 1 && (
                     <p className="text-center text-[10px] font-bold text-[#8A8175] mb-3">Maintiens une tâche puis déplace-la pour changer son ordre ou sa priorité.</p>
                   )}
@@ -8836,11 +8481,11 @@ export default function Home() {
                       </div>
                     );
                   })()}
-                </>
-              )}
+              </>
 
               <div className="mt-12 mb-8 text-center">
-                <button onClick={() => navigateNotesChild('#notes-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l'historique des tâches terminées</button>
+                <button onClick={() => navigateNotesChild('#tasks-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l’historique des tâches terminées ou supprimées</button>
+                <p className="mt-1 text-[10px] font-semibold text-gray-400">Suppression automatique après 30 jours.</p>
               </div>
             </>
           )}
@@ -8848,7 +8493,7 @@ export default function Home() {
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => navigateNotesChild('#notes-list')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux tâches actives</button>
+                 <button onClick={() => navigateNotesChild('#tasks')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux tâches actives</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
               <div className="bg-[#FBFAF7] p-3 rounded-2xl border border-[#DED7CC] flex items-center gap-2">
@@ -8857,18 +8502,18 @@ export default function Home() {
                 {historySearch && <button onClick={() => setHistorySearch('')} className="text-gray-400 hover:text-gray-600 font-bold px-2">✖</button>}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune tâche dans l'historique.</p>}
+                {historyNotes.length === 0 && <p className="col-span-full text-center text-gray-400 font-medium py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">Aucune tâche dans l’historique.</p>}
                 {historyNotes.map(note => (
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-2xl bg-[#F2EEE7] border border-[#D9D1C5] opacity-85">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
                     <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
                     <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-                      {note.completed_at && <span>Terminée le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
+                      {note.completed_at && <span>Retirée de la liste le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
                     </div>
                     <div className="flex justify-end gap-2 mt-1">
                       <button onClick={() => updateNote(note.id, 'completed', false)} className="bg-white border border-gray-300 text-blue-600 px-3 py-1 rounded text-xs font-bold hover:bg-blue-50 hover:border-blue-200 transition-colors">↩ Réactiver</button>
-                      <button onClick={() => deleteNote(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">🗑️ Supprimer</button>
+                      <button onClick={() => deleteNotePermanently(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">🗑️ Définitif</button>
                     </div>
                   </div>
                 ))}
@@ -8891,6 +8536,54 @@ export default function Home() {
           )}
         </div>
       )}
+
+      {(mainMode === 'memos' || mainMode === 'notes') && !memoEditorOpen && !drawEditorOpen && (
+        <button
+          type="button"
+          onClick={openQuickCapture}
+          className="fixed right-4 bottom-[86px] z-[8500] w-11 h-11 rounded-full bg-[#F3EDD6]/95 backdrop-blur border border-[#D9CBAF] text-lg shadow-lg active:scale-95 transition-transform"
+          aria-label="Ouvrir la saisie rapide Note ou Tâche"
+          title="Saisie rapide Note ou Tâche"
+        >⚡</button>
+      )}
+
+      <nav
+        className="fixed left-1/2 -translate-x-1/2 bottom-0 z-[9000] w-full max-w-7xl border-t border-[#D8D0C4] bg-[#FBF9F4]/95 backdrop-blur-xl shadow-[0_-8px_24px_rgba(78,70,60,0.10)]"
+        aria-label="Navigation principale"
+      >
+        <div className="grid grid-cols-3 px-2 pt-2 pb-[max(8px,env(safe-area-inset-bottom))]">
+          <button
+            type="button"
+            onClick={() => {
+              if (showMemoArchived) leaveMemoArchives(false);
+              window.location.hash = 'notes';
+            }}
+            className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${mainMode === 'memos' ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
+            aria-current={mainMode === 'memos' ? 'page' : undefined}
+          >
+            <span className="text-xl" aria-hidden="true">📝</span>
+            Notes
+          </button>
+          <button
+            type="button"
+            onClick={() => { window.location.hash = 'tasks'; }}
+            className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${mainMode === 'notes' ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
+            aria-current={mainMode === 'notes' ? 'page' : undefined}
+          >
+            <span className="text-xl" aria-hidden="true">✓</span>
+            Tâches
+          </button>
+          <button
+            type="button"
+            onClick={() => { window.location.hash = 'planning'; }}
+            className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${(mainMode === 'planning' || mainMode === 'planning_gallery') ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
+            aria-current={(mainMode === 'planning' || mainMode === 'planning_gallery') ? 'page' : undefined}
+          >
+            <span className="text-xl" aria-hidden="true">▦</span>
+            Planning
+          </button>
+        </div>
+      </nav>
     </main>
   );
 }
