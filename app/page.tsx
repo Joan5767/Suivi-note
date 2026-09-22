@@ -187,6 +187,9 @@ const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
 type QuickCaptureKind = 'note' | 'task';
 
+type MemoSortMode = 'manual' | 'newest' | 'oldest' | 'updated';
+type MemoTypeFilter = 'all' | 'text' | 'list' | 'drawing';
+
 const detectQuickCaptureKind = (value: string): QuickCaptureKind => {
   const text = value.trim().toLocaleLowerCase('fr-FR');
   if (!text) return 'note';
@@ -200,6 +203,73 @@ const detectQuickCaptureKind = (value: string): QuickCaptureKind => {
 };
 
 const quickCaptureHasTimeSignal = (value: string) => /\b(aujourd['’]hui|demain|après-demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|ce soir|ce matin|cet après-midi|à\s+\d{1,2}\s*(?:h|heure))\b/i.test(value);
+
+const transformDrawObject = (object: DrawObject, scale: number, offsetX: number, offsetY: number): DrawObject => {
+  if (object.type === 'path' || object.type === 'polygon') {
+    return {
+      ...object,
+      points: object.points.map(point => ({ x: point.x * scale + offsetX, y: point.y * scale + offsetY })),
+      strokeWidth: Math.max(1, object.strokeWidth * scale),
+    };
+  }
+  if (object.type === 'line' || object.type === 'dimension') {
+    return {
+      ...object,
+      x1: object.x1 * scale + offsetX,
+      y1: object.y1 * scale + offsetY,
+      x2: object.x2 * scale + offsetX,
+      y2: object.y2 * scale + offsetY,
+      strokeWidth: Math.max(1, object.strokeWidth * scale),
+    };
+  }
+  if (object.type === 'text') {
+    return {
+      ...object,
+      x: object.x * scale + offsetX,
+      y: object.y * scale + offsetY,
+      fontSize: Math.max(12, object.fontSize * scale),
+    };
+  }
+  return {
+    ...object,
+    x: object.x * scale + offsetX,
+    y: object.y * scale + offsetY,
+    width: object.width * scale,
+    height: object.height * scale,
+    strokeWidth: Math.max(1, object.strokeWidth * scale),
+  };
+};
+
+const mergeDrawNotes = (drawings: DrawNoteData[]): DrawNoteData => {
+  const normalized = drawings
+    .map(normalizeDrawNoteData)
+    .filter(drawing => drawing.objects.length > 0);
+  if (normalized.length === 0) return { ...EMPTY_DRAW_NOTE, objects: [] };
+  if (normalized.length === 1) return { ...EMPTY_DRAW_NOTE, objects: normalized[0].objects };
+
+  // Plusieurs dessins sont répartis dans une grille afin de ne pas se superposer.
+  const columns = normalized.length <= 2 ? 1 : 2;
+  const rows = Math.ceil(normalized.length / columns);
+  const cellWidth = EMPTY_DRAW_NOTE.width / columns;
+  const cellHeight = EMPTY_DRAW_NOTE.height / rows;
+  const padding = 24;
+  const scale = Math.min(
+    (cellWidth - padding * 2) / EMPTY_DRAW_NOTE.width,
+    (cellHeight - padding * 2) / EMPTY_DRAW_NOTE.height,
+  );
+
+  const objects = normalized.flatMap((drawing, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const renderedWidth = EMPTY_DRAW_NOTE.width * scale;
+    const renderedHeight = EMPTY_DRAW_NOTE.height * scale;
+    const offsetX = column * cellWidth + (cellWidth - renderedWidth) / 2;
+    const offsetY = row * cellHeight + (cellHeight - renderedHeight) / 2;
+    return drawing.objects.map(object => transformDrawObject({ ...object, id: crypto.randomUUID() }, scale, offsetX, offsetY));
+  });
+
+  return { ...EMPTY_DRAW_NOTE, objects };
+};
 
 // Activé uniquement sur le projet Vercel de démonstration.
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
@@ -469,15 +539,18 @@ type DrawEditorProps = {
   initialData: DrawNoteData;
   initialTitle: string;
   initialColor: MemoColor;
-  onSave: (payload: { title: string; color: MemoColor; drawing: DrawNoteData }) => Promise<boolean>;
+  initialPinned: boolean;
+  canPin: boolean;
+  onSave: (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean }) => Promise<boolean>;
   onDelete?: () => void;
   registerAutoSave: (handler: () => Promise<boolean>) => void;
   onClose: () => void;
 };
 
-function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
+function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned, canPin, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
   const [title, setTitle] = useState(initialTitle);
   const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
+  const [pinned, setPinned] = useState(initialPinned);
   const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
   const [tool, setTool] = useState<DrawTool | null>('pen');
   const [strokeWidth, setStrokeWidth] = useState<DrawStrokeWidth>(4);
@@ -497,9 +570,21 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
   const [undoStack, setUndoStack] = useState<DrawObject[][]>([]);
   const [redoStack, setRedoStack] = useState<DrawObject[][]>([]);
   const [saving, setSaving] = useState(false);
+  const [drawZoom, setDrawZoom] = useState(1);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const drawViewportRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const selectNewTextOnFocusRef = useRef(false);
+  const pinchRollbackRef = useRef<{ objects: DrawObject[]; polygon: DrawPoint[]; polygonRedo: DrawPoint[] } | null>(null);
+  const pinchRef = useRef<{
+    active: boolean;
+    startDistance: number;
+    startZoom: number;
+    contentX: number;
+    contentY: number;
+    viewportX: number;
+    viewportY: number;
+  } | null>(null);
   const interactionRef = useRef<
     | null
     | { kind: 'draw'; id: string; tool: Exclude<DrawTool, 'polygon' | 'text'>; start: DrawPoint; before: DrawObject[] }
@@ -610,6 +695,9 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
       selectNewTextOnFocusRef.current = true;
       setObjects(current => [...current, { id, type: 'text', x: point.x, y: point.y, text: 'Texte', color: toolColors.text, fontSize: 42 }]);
       setSelectedTextId(id);
+      // L'outil Texte fonctionne par insertion unique : un nouveau texte exige
+      // de retoucher le bouton Texte, ce qui évite les créations accidentelles.
+      setTool(null);
       pushHistory(before);
       return;
     }
@@ -736,7 +824,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
   const save = async (closeAfterSave = true) => {
     setSaving(true);
     try {
-      const ok = await onSave({ title: title.trim(), color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() } });
+      const ok = await onSave({ title: title.trim(), color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() }, pinned });
       if (ok && closeAfterSave) onClose();
       return ok;
     } finally {
@@ -746,7 +834,84 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
 
   useEffect(() => {
     registerAutoSave(() => save(false));
-  }, [title, memoColor, objects]);
+  }, [title, memoColor, objects, pinned]);
+
+  const getTouchGeometry = (touches: React.TouchList) => {
+    const first = touches[0];
+    const second = touches[1];
+    return {
+      distance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
+      centerX: (first.clientX + second.clientX) / 2,
+      centerY: (first.clientY + second.clientY) / 2,
+    };
+  };
+
+  const handleDrawTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 1) {
+      pinchRollbackRef.current = {
+        objects: snapshot(),
+        polygon: polygonDraft.map(point => ({ ...point })),
+        polygonRedo: polygonRedoPoints.map(point => ({ ...point })),
+      };
+      return;
+    }
+    if (event.touches.length !== 2) return;
+    event.preventDefault();
+    const viewport = drawViewportRef.current;
+    if (!viewport) return;
+
+    // Le premier doigt a éventuellement commencé un trait : l'arrivée du second
+    // l'annule immédiatement et transforme le geste en zoom de la feuille.
+    const rollback = pinchRollbackRef.current;
+    if (rollback) {
+      setObjects(snapshot(rollback.objects));
+      setPolygonDraft(rollback.polygon);
+      setPolygonRedoPoints(rollback.polygonRedo);
+    } else if (interactionRef.current) {
+      setObjects(snapshot(interactionRef.current.before));
+    }
+    interactionRef.current = null;
+    setSelectedTextId(null);
+
+    const geometry = getTouchGeometry(event.touches);
+    const rect = viewport.getBoundingClientRect();
+    const viewportX = geometry.centerX - rect.left;
+    const viewportY = geometry.centerY - rect.top;
+    pinchRef.current = {
+      active: true,
+      startDistance: geometry.distance,
+      startZoom: drawZoom,
+      contentX: (viewport.scrollLeft + viewportX) / drawZoom,
+      contentY: (viewport.scrollTop + viewportY) / drawZoom,
+      viewportX,
+      viewportY,
+    };
+  };
+
+  const handleDrawTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    const pinch = pinchRef.current;
+    if (!pinch?.active || event.touches.length !== 2) return;
+    event.preventDefault();
+    const viewport = drawViewportRef.current;
+    if (!viewport) return;
+    const geometry = getTouchGeometry(event.touches);
+    const nextZoom = Math.max(1, Math.min(4, pinch.startZoom * geometry.distance / pinch.startDistance));
+    const rect = viewport.getBoundingClientRect();
+    const currentViewportX = geometry.centerX - rect.left;
+    const currentViewportY = geometry.centerY - rect.top;
+    setDrawZoom(nextZoom);
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = Math.max(0, pinch.contentX * nextZoom - currentViewportX);
+      viewport.scrollTop = Math.max(0, pinch.contentY * nextZoom - currentViewportY);
+    });
+  };
+
+  const handleDrawTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length < 2 && pinchRef.current?.active) {
+      pinchRef.current = null;
+    }
+    if (event.touches.length === 0) pinchRollbackRef.current = null;
+  };
 
   const saveAndClose = async () => {
     if (saving) return;
@@ -831,17 +996,28 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
         )}
       </div>
 
-      <div className={`flex-1 overflow-auto p-3 flex justify-center items-start ${memoBackgroundClass}`}>
-        <div className="w-full max-w-[760px] shadow-xl bg-white border border-[#D8D0C5]">
+      <div
+        ref={drawViewportRef}
+        className={`flex-1 overflow-auto p-3 ${memoBackgroundClass}`}
+        style={{ overscrollBehavior: 'contain', touchAction: 'pan-x pan-y' }}
+        onTouchStartCapture={handleDrawTouchStart}
+        onTouchMoveCapture={handleDrawTouchMove}
+        onTouchEndCapture={handleDrawTouchEnd}
+        onTouchCancelCapture={handleDrawTouchEnd}
+      >
+        <div
+          className="mx-auto shadow-xl bg-white border border-[#D8D0C5]"
+          style={{ width: `${drawZoom * 100}%`, maxWidth: `${760 * drawZoom}px` }}
+        >
           <svg
             ref={svgRef}
             viewBox="0 0 1000 1400"
             className="block w-full h-auto bg-white"
-            style={{ touchAction: tool ? 'none' : 'pan-x pan-y pinch-zoom' }}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={finishInteraction}
-            onPointerCancel={finishInteraction}
+            style={{ touchAction: tool ? 'none' : 'pan-x pan-y' }}
+            onPointerDown={(event) => { if (!pinchRef.current?.active) handlePointerDown(event); }}
+            onPointerMove={(event) => { if (!pinchRef.current?.active) handlePointerMove(event); }}
+            onPointerUp={() => { if (!pinchRef.current?.active) finishInteraction(); }}
+            onPointerCancel={() => { if (!pinchRef.current?.active) finishInteraction(); }}
             onContextMenu={(e) => e.preventDefault()}
           >
             <rect x="0" y="0" width="1000" height="1400" fill="white" />
@@ -878,7 +1054,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
 
       <div className="bg-[#F8F5EF] border-t border-[#D8D0C5] px-3 py-2 flex flex-col gap-2 flex-shrink-0">
         <div className="text-[10px] font-bold text-[#81786C]">
-          {!tool ? 'Aucun outil sélectionné : pince avec deux doigts pour zoomer/dézoomer.' : tool === 'pen' ? 'Dessine à main levée. Retouche Stylo pour le désélectionner.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer. ↶ retire le dernier point.' : tool === 'text' ? 'Touche la feuille pour ajouter du texte.' : 'Glisse sur la feuille pour créer la forme. Retouche l’outil pour le désélectionner.'}
+          {!tool ? 'Pince avec deux doigts pour zoomer uniquement sur la feuille.' : tool === 'pen' ? 'Dessine à main levée. Le zoom à deux doigts reste disponible.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer. ↶ retire le dernier point.' : tool === 'text' ? 'Touche la feuille une fois pour placer le texte.' : 'Glisse sur la feuille pour créer la forme. Le zoom à deux doigts reste disponible.'}
         </div>
 
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -901,7 +1077,19 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, onSave, onDel
             ))}
           </div>
 
-          {onDelete && <button type="button" onClick={onDelete} className="w-10 h-10 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0" title="Supprimer ce DrawNote">🗑</button>}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-xl bg-white/70 border border-[#DDD5C9] px-1.5 py-1" aria-label="Zoom de la feuille">
+              <button type="button" onClick={() => setDrawZoom(value => Math.max(1, Number((value - 0.25).toFixed(2))))} disabled={drawZoom <= 1} className="w-7 h-7 rounded-lg font-black disabled:opacity-30">−</button>
+              <span className="min-w-[42px] text-center text-[10px] font-black text-[#6F685E]">{Math.round(drawZoom * 100)} %</span>
+              <button type="button" onClick={() => setDrawZoom(value => Math.min(4, Number((value + 0.25).toFixed(2))))} disabled={drawZoom >= 4} className="w-7 h-7 rounded-lg font-black disabled:opacity-30">＋</button>
+            </div>
+            {canPin && (
+              <button type="button" onClick={() => setPinned(value => !value)} className={`h-10 px-3 rounded-xl border text-xs font-black flex-shrink-0 ${pinned ? 'bg-[#D8DEC9] border-[#B8C2A9] text-[#43503C]' : 'bg-white border-[#DDD5C9] text-[#6F685E]'}`} title={pinned ? 'Désépingler' : 'Épingler'}>
+                📌 {pinned ? 'Épinglée' : 'Épingler'}
+              </button>
+            )}
+            {onDelete && <button type="button" onClick={onDelete} className="w-10 h-10 rounded-xl bg-[#F3E2DD] border border-[#E1C9C1] flex-shrink-0" title="Supprimer ce DrawNote">🗑</button>}
+          </div>
         </div>
       </div>
     </div>
@@ -926,12 +1114,19 @@ export default function Home() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [quickCaptureText, setQuickCaptureText] = useState('');
-  const [quickCaptureKind, setQuickCaptureKind] = useState<QuickCaptureKind>('note');
+  const [quickCaptureKind, setQuickCaptureKind] = useState<QuickCaptureKind | null>(null);
   const [quickCaptureOverridden, setQuickCaptureOverridden] = useState(false);
+  const quickCaptureOpenRef = useRef(false);
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
   const [memoSearch, setMemoSearch] = useState('');
+  const [memoFiltersOpen, setMemoFiltersOpen] = useState(false);
+  const [memoSortMode, setMemoSortMode] = useState<MemoSortMode>('manual');
+  const [memoTypeFilter, setMemoTypeFilter] = useState<MemoTypeFilter>('all');
+  const [memoPinnedFilter, setMemoPinnedFilter] = useState<'all' | 'pinned' | 'unpinned'>('all');
+  const [memoDateFrom, setMemoDateFrom] = useState('');
+  const [memoDateTo, setMemoDateTo] = useState('');
   const [showMemoArchived, setShowMemoArchived] = useState(false);
   const showMemoArchivedRef = useRef(false);
   const [showMemosHelp, setShowMemosHelp] = useState(false);
@@ -943,14 +1138,22 @@ export default function Home() {
   const [memoDraftItems, setMemoDraftItems] = useState<MemoListItem[]>([]);
   const [memoNewItem, setMemoNewItem] = useState('');
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
+  const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const memoNewItemRef = useRef<HTMLTextAreaElement | null>(null);
+  const memoItemInputRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+  const [showMemoCleanupModal, setShowMemoCleanupModal] = useState(false);
+  const [memoCleanupThresholdDays, setMemoCleanupThresholdDays] = useState(30);
+  const [memoCleanupEntries, setMemoCleanupEntries] = useState<MemoEntry[]>([]);
+  const [currentMemoCleanupIndex, setCurrentMemoCleanupIndex] = useState(0);
   const [drawEditorOpen, setDrawEditorOpen] = useState(false);
   const [drawEditorSeed, setDrawEditorSeed] = useState<{
     sessionKey: string;
     memoId: string | null;
     title: string;
     color: MemoColor;
+    pinned: boolean;
     drawing: DrawNoteData;
-  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', color: 'sage', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
+  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', color: 'sage', pinned: false, drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
   const drawEditorOpenRef = useRef(false);
   const drawEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
@@ -2003,6 +2206,16 @@ export default function Home() {
     const handleMemoSelectionPopState = () => {
       if (memoIgnoreNextPopRef.current) {
         memoIgnoreNextPopRef.current = false;
+        return;
+      }
+
+      // Retour Android : la saisie rapide se ferme sans quitter la page courante.
+      if (quickCaptureOpenRef.current) {
+        quickCaptureOpenRef.current = false;
+        setQuickCaptureOpen(false);
+        setQuickCaptureText('');
+        setQuickCaptureKind(null);
+        setQuickCaptureOverridden(false);
         return;
       }
 
@@ -3229,24 +3442,45 @@ export default function Home() {
 
   const openQuickCapture = () => {
     setQuickCaptureText('');
-    setQuickCaptureKind('note');
+    setQuickCaptureKind(null);
     setQuickCaptureOverridden(false);
+    if (typeof window !== 'undefined' && !window.history.state?.quickCapture) {
+      window.history.pushState({ ...(window.history.state || {}), quickCapture: true }, '', window.location.href);
+    }
+    quickCaptureOpenRef.current = true;
     setQuickCaptureOpen(true);
   };
 
-  const closeQuickCapture = () => {
+  const closeQuickCapture = (consumeHistory = true) => {
+    quickCaptureOpenRef.current = false;
     setQuickCaptureOpen(false);
     setQuickCaptureText('');
-    setQuickCaptureKind('note');
+    setQuickCaptureKind(null);
     setQuickCaptureOverridden(false);
+    if (typeof window !== 'undefined' && window.history.state?.quickCapture) {
+      if (consumeHistory) {
+        memoIgnoreNextPopRef.current = true;
+        window.history.back();
+      } else {
+        const nextState = { ...(window.history.state || {}) };
+        delete nextState.quickCapture;
+        window.history.replaceState(nextState, '', window.location.href);
+      }
+    }
   };
 
   const changeQuickCaptureText = (value: string) => {
     setQuickCaptureText(value);
+    if (!value.trim()) {
+      setQuickCaptureKind(null);
+      setQuickCaptureOverridden(false);
+      return;
+    }
     if (!quickCaptureOverridden) setQuickCaptureKind(detectQuickCaptureKind(value));
   };
 
   const chooseQuickCaptureKind = (kind: QuickCaptureKind) => {
+    if (!quickCaptureText.trim()) return;
     setQuickCaptureKind(kind);
     setQuickCaptureOverridden(true);
   };
@@ -3256,13 +3490,13 @@ export default function Home() {
     setNewTitle(title);
     setNewContent(content);
     setImportance('vert');
-    closeQuickCapture();
+    closeQuickCapture(false);
     navigateNotesCreate();
   };
 
   const saveQuickCapture = async () => {
     const value = quickCaptureText.trim();
-    if (!value || loading) return;
+    if (!value || !quickCaptureKind || loading) return;
     const { title, content } = splitQuickCapture(value);
     setLoading(true);
     try {
@@ -3306,7 +3540,7 @@ export default function Home() {
         window.location.hash = 'tasks';
         setSuccessMessage('✅ Tâche enregistrée.');
       }
-      closeQuickCapture();
+      closeQuickCapture(false);
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
       showAppMessage('Erreur lors de la saisie rapide : ' + (error?.message || 'erreur inconnue'));
@@ -3750,12 +3984,14 @@ export default function Home() {
     showMemoArchivedRef.current = true;
     setShowMemoArchived(true);
     setMemoSearch('');
+    setMemoPinnedFilter('all');
   };
 
   const leaveMemoArchives = (consumeHistory = true) => {
     showMemoArchivedRef.current = false;
     setShowMemoArchived(false);
     setMemoSearch('');
+    setMemoPinnedFilter('all');
     if (consumeHistory && typeof window !== 'undefined' && window.history.state?.memoArchive) {
       window.history.back();
     }
@@ -3795,7 +4031,8 @@ export default function Home() {
       toggleMemoSelection(memo.id);
       return;
     }
-    if (memo.is_drawing) {
+    const isPureDrawing = memo.is_drawing && memo.memo_type === 'text' && !memo.content.trim() && memo.items.length === 0;
+    if (isPureDrawing) {
       openDrawEditor(memo);
       return;
     }
@@ -3810,6 +4047,7 @@ export default function Home() {
     setMemoDraftItems([]);
     setMemoNewItem('');
     setMemoDraftColor('sage');
+    setMemoDraftPinned(false);
   };
 
   const openNewMemo = (type: 'text' | 'list') => {
@@ -3826,6 +4064,7 @@ export default function Home() {
       memoId: target?.id || null,
       title: target?.title || '',
       color: target?.color || 'sage',
+      pinned: target?.pinned || false,
       drawing: target ? normalizeDrawNoteData(target.drawing_data) : { ...EMPTY_DRAW_NOTE, objects: [] },
     });
     armDrawEditorHistory();
@@ -3852,20 +4091,21 @@ export default function Home() {
       memoId: null,
       title: memoDraftTitle.trim(),
       color: memoDraftColor,
+      pinned: false,
       drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
     drawEditorOpenRef.current = true;
     setDrawEditorOpen(true);
   };
 
-  const saveDrawMemo = async (payload: { title: string; color: MemoColor; drawing: DrawNoteData }) => {
+  const saveDrawMemo = async (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean }) => {
     setLoading(true);
     try {
       const currentId = drawEditorSeed.memoId;
       if (!currentId && !payload.title.trim() && normalizeDrawNoteData(payload.drawing).objects.length === 0) return true;
       const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
       const archived = false;
-      const pinned = existingMemo?.pinned ?? false;
+      const pinned = existingMemo ? payload.pinned : false;
       const archiveFolderId = null;
       const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === archived && (existingMemo.archive_folder_id || null) === archiveFolderId);
       const sortOrder = keepExistingOrder && existingMemo
@@ -3873,9 +4113,11 @@ export default function Home() {
         : nextMemoSortOrder(pinned, archived, currentId || undefined, archiveFolderId);
       const dbPayload = {
         title: payload.title,
-        content: '',
-        memo_type: 'text',
-        items: [],
+        // Une note fusionnée peut contenir à la fois du texte, une liste et un dessin.
+        // La retouche du dessin ne doit donc jamais effacer les autres contenus.
+        content: existingMemo?.content || '',
+        memo_type: existingMemo?.memo_type || 'text',
+        items: existingMemo?.items || [],
         is_drawing: true,
         drawing_data: normalizeDrawNoteData(payload.drawing),
         color: payload.color,
@@ -3909,6 +4151,7 @@ export default function Home() {
     setMemoDraftItems(normalizeMemoItems(memo.items));
     setMemoNewItem('');
     setMemoDraftColor(memo.color);
+    setMemoDraftPinned(memo.pinned);
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
@@ -3919,6 +4162,26 @@ export default function Home() {
     if (!text) return;
     setMemoDraftItems(prev => [...prev, { id: crypto.randomUUID(), text, completed: false }]);
     setMemoNewItem('');
+    window.requestAnimationFrame(() => {
+      const input = memoNewItemRef.current;
+      if (!input) return;
+      input.style.height = 'auto';
+      input.focus();
+    });
+  };
+
+  const resizeMemoListTextarea = (element: HTMLTextAreaElement | null) => {
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${Math.max(40, element.scrollHeight)}px`;
+  };
+
+  const focusNextMemoListLine = (index: number) => {
+    const next = memoDraftItems[index + 1];
+    window.requestAnimationFrame(() => {
+      if (next) memoItemInputRefs.current.get(next.id)?.focus();
+      else memoNewItemRef.current?.focus();
+    });
   };
 
   const persistMemoDraft = async () => {
@@ -3940,7 +4203,7 @@ export default function Home() {
     try {
       const existingMemo = editingMemoId ? memoEntriesRef.current.find(memo => memo.id === editingMemoId) : null;
       const targetArchived = false;
-      const pinned = existingMemo?.pinned ?? false;
+      const pinned = existingMemo ? memoDraftPinned : false;
       const targetArchiveFolderId = null;
       const keepExistingOrder = Boolean(existingMemo && existingMemo.pinned === pinned && existingMemo.archived === targetArchived && (existingMemo.archive_folder_id || null) === targetArchiveFolderId);
       const sortOrder = keepExistingOrder && existingMemo
@@ -3981,6 +4244,38 @@ export default function Home() {
   // Le gestionnaire du bouton Retour est enregistré une seule fois ; cette ref lui
   // donne toujours accès à la version courante du brouillon à sauvegarder.
   memoEditorAutoSaveRef.current = persistMemoDraft;
+
+  const switchExistingMemoToDraw = async (memo: MemoEntry) => {
+    const saved = await persistMemoDraft();
+    if (!saved) return;
+    const latest = memoEntriesRef.current.find(item => item.id === memo.id) || {
+      ...memo,
+      title: memoDraftTitle.trim(),
+      content: memoDraftContent.trim(),
+      memo_type: memoDraftType,
+      items: memoDraftItems,
+      color: memoDraftColor,
+      pinned: memoDraftPinned,
+    };
+
+    memoEditorOpenRef.current = false;
+    setMemoEditorOpen(false);
+    resetMemoDraft();
+    if (typeof window !== 'undefined') {
+      const currentState = window.history.state || {};
+      window.history.replaceState({ ...currentState, memoEditor: false, drawEditor: true }, '', window.location.href);
+    }
+    setDrawEditorSeed({
+      sessionKey: crypto.randomUUID(),
+      memoId: latest.id,
+      title: latest.title,
+      color: latest.color,
+      pinned: latest.pinned,
+      drawing: normalizeDrawNoteData(latest.drawing_data),
+    });
+    drawEditorOpenRef.current = true;
+    setDrawEditorOpen(true);
+  };
 
   const updateMemo = async (id: string, payload: Partial<Pick<MemoEntry, 'pinned' | 'archived' | 'items' | 'sort_order' | 'archive_folder_id'>>) => {
     const currentMemo = memoEntriesRef.current.find(memo => memo.id === id);
@@ -4113,6 +4408,38 @@ export default function Home() {
     });
   };
 
+  const loadMemoCleanupEntries = (threshold: number) => {
+    const cutoff = Date.now() - threshold * 24 * 60 * 60 * 1000;
+    const entries = memoEntriesRef.current
+      .filter(memo => !memo.archived && (threshold === 0 || getSafeTime(memo.created_at || memo.updated_at) <= cutoff))
+      .sort((a, b) => getSafeTime(a.created_at || a.updated_at) - getSafeTime(b.created_at || b.updated_at));
+    setMemoCleanupEntries(entries);
+    setCurrentMemoCleanupIndex(0);
+  };
+
+  const openMemoCleanup = () => {
+    loadMemoCleanupEntries(memoCleanupThresholdDays);
+    setShowMemoCleanupModal(true);
+  };
+
+  const handleMemoCleanupAction = async (action: 'delete' | 'keep', memo: MemoEntry) => {
+    if (action === 'delete') {
+      const deletedAt = new Date().toISOString();
+      const { error } = await supabase.from('memo_notes').update({
+        archived: true,
+        pinned: false,
+        archive_folder_id: null,
+        updated_at: deletedAt,
+      }).eq('id', memo.id);
+      if (error) {
+        showAppMessage('Erreur pendant le nettoyage : ' + error.message);
+        return;
+      }
+      await fetchMemos();
+    }
+    setCurrentMemoCleanupIndex(index => index + 1);
+  };
+
   const getSelectedMemos = () => {
     const ids = selectedMemoIdsRef.current;
     return memoEntriesRef.current.filter(memo => ids.has(memo.id));
@@ -4186,6 +4513,76 @@ export default function Home() {
     }
     clearMemoSelection();
     await fetchMemos();
+  };
+
+  const mergeSelectedMemos = async () => {
+    const selected = getSelectedMemos();
+    if (selected.length < 2 || showMemoArchivedRef.current) return;
+
+    const sourceTitles = selected.map(memo => memo.title.trim()).filter(Boolean);
+    const suggestedTitle = sourceTitles.length
+      ? sourceTitles.slice(0, 2).join(' + ') + (sourceTitles.length > 2 ? ` + ${sourceTitles.length - 2}` : '')
+      : 'Notes fusionnées';
+    const chosenTitle = await askAppPrompt({
+      title: `Fusionner ${selected.length} notes`,
+      message: 'Les contenus seront regroupés dans une seule note. Les originaux resteront récupérables 30 jours dans l’historique.',
+      confirmLabel: 'Fusionner',
+      placeholder: 'Titre de la note fusionnée',
+      defaultValue: suggestedTitle,
+    });
+    if (chosenTitle === null) return;
+
+    const contentSections = selected.flatMap(memo => {
+      const parts = [memo.title.trim(), memo.content.trim()].filter(Boolean);
+      return parts.length ? [parts.join('\n')] : [];
+    });
+    const mergedItems = selected.flatMap(memo => memo.memo_type === 'list'
+      ? memo.items.map(item => ({ ...item, id: crypto.randomUUID() }))
+      : []);
+    const drawings = selected.filter(memo => memo.is_drawing).map(memo => memo.drawing_data);
+    const mergedDrawing = mergeDrawNotes(drawings);
+    const pinned = selected.some(memo => memo.pinned);
+    const now = new Date().toISOString();
+    const sourceIds = selected.map(memo => memo.id);
+
+    setLoading(true);
+    try {
+      const { data: inserted, error: insertError } = await supabase.from('memo_notes').insert([{
+        title: chosenTitle.trim() || suggestedTitle,
+        content: contentSections.join('\n\n────────\n\n'),
+        memo_type: mergedItems.length ? 'list' : 'text',
+        items: mergedItems,
+        is_drawing: mergedDrawing.objects.length > 0,
+        drawing_data: mergedDrawing,
+        color: selected[0]?.color || 'sage',
+        pinned,
+        archived: false,
+        archive_folder_id: null,
+        sort_order: nextMemoSortOrder(pinned, false),
+        updated_at: now,
+      }]).select('id').single();
+      if (insertError) throw insertError;
+
+      const { error: archiveError } = await supabase.from('memo_notes').update({
+        archived: true,
+        pinned: false,
+        archive_folder_id: null,
+        updated_at: now,
+      }).in('id', sourceIds);
+      if (archiveError) {
+        if (inserted?.id) await supabase.from('memo_notes').delete().eq('id', inserted.id);
+        throw archiveError;
+      }
+
+      clearMemoSelection();
+      await fetchMemos();
+      setSuccessMessage(`✅ ${selected.length} notes fusionnées.`);
+      window.setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error: any) {
+      showAppMessage('Erreur pendant la fusion : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const transferMemoToTasks = (memo: MemoEntry) => {
@@ -6194,28 +6591,46 @@ export default function Home() {
   }[color]);
 
   const normalizedMemoSearch = memoSearch.trim().toLocaleLowerCase('fr-FR');
+  const memoAdvancedFiltersActive = memoSortMode !== 'manual' || memoTypeFilter !== 'all' || memoPinnedFilter !== 'all' || !!memoDateFrom || !!memoDateTo;
+  const memoDateFromTime = memoDateFrom ? new Date(`${memoDateFrom}T00:00:00`).getTime() : 0;
+  const memoDateToTime = memoDateTo ? new Date(`${memoDateTo}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
   const visibleMemos = memoEntries.filter(memo => {
     if (memo.archived !== showMemoArchived) return false;
-    if (!normalizedMemoSearch) return true;
-    const searchable = [memo.title, memo.content, ...memo.items.map(item => item.text)]
-      .join(' ')
-      .toLocaleLowerCase('fr-FR');
-    return searchable.includes(normalizedMemoSearch);
+    if (normalizedMemoSearch) {
+      const searchable = [memo.title, memo.content, ...memo.items.map(item => item.text)]
+        .join(' ')
+        .toLocaleLowerCase('fr-FR');
+      if (!searchable.includes(normalizedMemoSearch)) return false;
+    }
+    if (memoTypeFilter === 'drawing' && !memo.is_drawing) return false;
+    if (memoTypeFilter === 'list' && memo.memo_type !== 'list') return false;
+    if (memoTypeFilter === 'text' && (memo.memo_type !== 'text' || memo.is_drawing)) return false;
+    if (!showMemoArchived && memoPinnedFilter === 'pinned' && !memo.pinned) return false;
+    if (!showMemoArchived && memoPinnedFilter === 'unpinned' && memo.pinned) return false;
+    const createdTime = getSafeTime(memo.created_at || memo.updated_at);
+    if (memoDateFrom && (!createdTime || createdTime < memoDateFromTime)) return false;
+    if (memoDateTo && (!createdTime || createdTime > memoDateToTime)) return false;
+    return true;
+  });
+  const sortVisibleMemos = (entries: MemoEntry[]) => [...entries].sort((a, b) => {
+    if (memoSortMode === 'oldest') return getSafeTime(a.created_at || a.updated_at) - getSafeTime(b.created_at || b.updated_at);
+    if (memoSortMode === 'newest') return getSafeTime(b.created_at || b.updated_at) - getSafeTime(a.created_at || a.updated_at);
+    if (memoSortMode === 'updated') return getSafeTime(b.updated_at || b.created_at) - getSafeTime(a.updated_at || a.created_at);
+    return showMemoArchived
+      ? getSafeTime(b.updated_at || b.created_at) - getSafeTime(a.updated_at || a.created_at)
+      : a.sort_order - b.sort_order;
   });
   const pinnedMemos = showMemoArchived
     ? []
-    : visibleMemos.filter(memo => memo.pinned).sort((a, b) => a.sort_order - b.sort_order);
-  const otherMemos = (showMemoArchived ? visibleMemos : visibleMemos.filter(memo => !memo.pinned))
-    .sort((a, b) => showMemoArchived
-      ? getSafeTime(b.updated_at || b.created_at) - getSafeTime(a.updated_at || a.created_at)
-      : a.sort_order - b.sort_order);
+    : sortVisibleMemos(visibleMemos.filter(memo => memo.pinned));
+  const otherMemos = sortVisibleMemos(showMemoArchived ? visibleMemos : visibleMemos.filter(memo => !memo.pinned));
   const pinnedMemoColumns = buildMemoMasonryColumns(pinnedMemos);
   const otherMemoColumns = buildMemoMasonryColumns(otherMemos);
 
   const renderMemoCard = (memo: MemoEntry) => {
     const isSelected = selectedMemoIds.has(memo.id);
     const hideOriginal = draggingMemoId === memo.id && memoDndMoved;
-    const dragDisabled = showMemoArchived || selectedMemoIds.size > 0 || !!memoSearch.trim();
+    const dragDisabled = showMemoArchived || selectedMemoIds.size > 0 || !!memoSearch.trim() || memoAdvancedFiltersActive;
 
     return (
       <MemoDndCard
@@ -6588,18 +7003,17 @@ export default function Home() {
       )}
 
       {quickCaptureOpen && (
-        <div className="fixed inset-0 z-[14000] bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={closeQuickCapture}>
+        <div className="fixed inset-0 z-[14000] bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => closeQuickCapture()}>
           <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-lg font-black text-[#46513F]">Saisie rapide</h2>
                 <p className="text-xs font-semibold text-[#81786C] mt-0.5">Écris ce que tu as en tête.</p>
               </div>
-              <button type="button" onClick={closeQuickCapture} className="w-9 h-9 rounded-full bg-[#EEE8DD] text-[#62594E] font-black">×</button>
+              <button type="button" onClick={() => closeQuickCapture()} className="w-9 h-9 rounded-full bg-[#EEE8DD] text-[#62594E] font-black">×</button>
             </div>
 
             <textarea
-              autoFocus
               value={quickCaptureText}
               onChange={(event) => changeQuickCaptureText(event.target.value)}
               placeholder="Ex. Appeler le garage demain à 10 h"
@@ -6607,18 +7021,24 @@ export default function Home() {
             />
 
             <div className="mt-4 rounded-2xl bg-[#F1EEE7] border border-[#DDD5C7] p-3">
-              <div className="text-xs font-black text-[#5E574D] mb-2">
-                Reconnu comme : <span className="text-[#40503A]">{quickCaptureKind === 'task' ? 'Tâche' : 'Note'}</span>
-              </div>
+              {quickCaptureText.trim() && quickCaptureKind ? (
+                <div className="text-xs font-black text-[#5E574D] mb-2">
+                  Reconnu comme : <span className="text-[#40503A]">{quickCaptureKind === 'task' ? 'Tâche' : 'Note'}</span>
+                </div>
+              ) : (
+                <div className="text-xs font-bold text-[#6F685E] mb-2">Le contenu sera classé en Note ou en Tâche selon ce que tu écris.</div>
+              )}
               <div className="grid grid-cols-2 gap-2" role="group" aria-label="Choisir la destination de la saisie">
                 <button
                   type="button"
                   onClick={() => chooseQuickCaptureKind('note')}
+                  disabled={!quickCaptureText.trim()}
                   className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'note' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
                 >📝 Note</button>
                 <button
                   type="button"
                   onClick={() => chooseQuickCaptureKind('task')}
+                  disabled={!quickCaptureText.trim()}
                   className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'task' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
                 >✓ Tâche</button>
               </div>
@@ -6634,9 +7054,9 @@ export default function Home() {
             )}
 
             <div className="grid grid-cols-2 gap-2 mt-4">
-              <button type="button" onClick={closeQuickCapture} className="rounded-xl bg-white border border-[#DDD5C7] py-3 text-sm font-black text-[#756E63]">Annuler</button>
-              <button type="button" disabled={!quickCaptureText.trim() || loading} onClick={() => void saveQuickCapture()} className="rounded-xl bg-[#6F7B64] hover:bg-[#626E58] text-white py-3 text-sm font-black disabled:opacity-40">
-                {loading ? 'Enregistrement…' : `Créer ${quickCaptureKind === 'task' ? 'la tâche' : 'la note'}`}
+              <button type="button" onClick={() => closeQuickCapture()} className="rounded-xl bg-white border border-[#DDD5C7] py-3 text-sm font-black text-[#756E63]">Annuler</button>
+              <button type="button" disabled={!quickCaptureText.trim() || !quickCaptureKind || loading} onClick={() => void saveQuickCapture()} className="rounded-xl bg-[#6F7B64] hover:bg-[#626E58] text-white py-3 text-sm font-black disabled:opacity-40">
+                {loading ? 'Enregistrement…' : quickCaptureKind ? `Créer ${quickCaptureKind === 'task' ? 'la tâche' : 'la note'}` : 'Créer'}
               </button>
             </div>
           </div>
@@ -7198,6 +7618,18 @@ export default function Home() {
               >
                 📌
               </button>
+              {selectedMemoIds.size >= 2 && (
+                <button
+                  type="button"
+                  onClick={() => void mergeSelectedMemos()}
+                  disabled={loading}
+                  className="h-11 px-3 rounded-xl bg-white border border-[#D3DACB] text-[#56614E] text-xs font-black shadow-sm active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  aria-label="Fusionner les notes sélectionnées"
+                  title="Fusionner en une seule note"
+                >
+                  <span className="text-base">⤨</span> Fusionner
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void deleteSelectedMemos()}
@@ -7218,7 +7650,7 @@ export default function Home() {
           )}
 
           <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <div className="flex-1 relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
                 <input
@@ -7229,15 +7661,79 @@ export default function Home() {
                   className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
                 />
               </div>
+              <button
+                type="button"
+                onClick={() => setMemoFiltersOpen(value => !value)}
+                className={`h-10 px-3 rounded-full border text-xs font-black whitespace-nowrap ${memoFiltersOpen || memoAdvancedFiltersActive ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
+              >⚙️ Filtres{memoAdvancedFiltersActive ? ' •' : ''}</button>
+              {!showMemoArchived && (
+                <button type="button" onClick={openMemoCleanup} className="h-10 px-3 rounded-full bg-white border border-[#DED5C8] text-[#6D655A] text-xs font-black whitespace-nowrap">🧹 Nettoyage</button>
+              )}
             </div>
+
+            {memoFiltersOpen && (
+              <div className="mt-2.5 rounded-2xl bg-white/75 border border-[#DED5C8] p-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-[#756D62]">
+                  Trier
+                  <select value={memoSortMode} onChange={(e) => setMemoSortMode(e.target.value as MemoSortMode)} className="h-10 rounded-xl border border-[#D8D0C4] bg-white px-3 text-xs font-bold normal-case tracking-normal text-[#4A463F]">
+                    <option value="manual">Ordre personnalisé</option>
+                    <option value="newest">Plus récent au plus ancien</option>
+                    <option value="oldest">Plus ancien au plus récent</option>
+                    <option value="updated">Dernière modification</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-[#756D62]">
+                  Type
+                  <select value={memoTypeFilter} onChange={(e) => setMemoTypeFilter(e.target.value as MemoTypeFilter)} className="h-10 rounded-xl border border-[#D8D0C4] bg-white px-3 text-xs font-bold normal-case tracking-normal text-[#4A463F]">
+                    <option value="all">Tous les types</option>
+                    <option value="text">Notes texte</option>
+                    <option value="list">Listes</option>
+                    <option value="drawing">DrawNotes</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-[#756D62]">
+                  Créée à partir du
+                  <input type="date" value={memoDateFrom} onChange={(e) => setMemoDateFrom(e.target.value)} className="h-10 rounded-xl border border-[#D8D0C4] bg-white px-3 text-xs font-bold normal-case tracking-normal text-[#4A463F]" />
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-[#756D62]">
+                  Créée jusqu’au
+                  <input type="date" value={memoDateTo} onChange={(e) => setMemoDateTo(e.target.value)} className="h-10 rounded-xl border border-[#D8D0C4] bg-white px-3 text-xs font-bold normal-case tracking-normal text-[#4A463F]" />
+                </label>
+                {!showMemoArchived && (
+                  <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-[#756D62]">
+                    Épinglage
+                    <select value={memoPinnedFilter} onChange={(e) => setMemoPinnedFilter(e.target.value as 'all' | 'pinned' | 'unpinned')} className="h-10 rounded-xl border border-[#D8D0C4] bg-white px-3 text-xs font-bold normal-case tracking-normal text-[#4A463F]">
+                      <option value="all">Toutes</option>
+                      <option value="pinned">Épinglées</option>
+                      <option value="unpinned">Non épinglées</option>
+                    </select>
+                  </label>
+                )}
+                <div className="flex items-end justify-between gap-2 sm:col-span-2">
+                  <span className="text-[10px] font-bold text-[#81786C]">{visibleMemos.length} résultat{visibleMemos.length > 1 ? 's' : ''}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMemoSortMode('manual');
+                      setMemoTypeFilter('all');
+                      setMemoPinnedFilter('all');
+                      setMemoDateFrom('');
+                      setMemoDateTo('');
+                    }}
+                    disabled={!memoAdvancedFiltersActive}
+                    className="h-9 px-3 rounded-xl bg-[#EEE8DD] text-[#62594E] text-xs font-black disabled:opacity-40"
+                  >Réinitialiser les filtres</button>
+                </div>
+              </div>
+            )}
           </div>
 
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
               <div className="text-4xl mb-3">{showMemoArchived ? '🕰️' : '🗒️'}</div>
-              <p className="font-black text-sm">{memoSearch ? 'Aucun résultat' : showMemoArchived ? 'Aucune note supprimée' : 'Aucune note pour le moment'}</p>
-              {!memoSearch && !showMemoArchived && <p className="text-xs font-semibold mt-1">Touche + pour conserver une idée, un mémo ou une liste.</p>}
-              {!memoSearch && showMemoArchived && <p className="text-xs font-semibold mt-1">Les notes supprimées restent ici pendant 30 jours.</p>}
+              <p className="font-black text-sm">{memoSearch || memoAdvancedFiltersActive ? 'Aucun résultat' : showMemoArchived ? 'Aucune note supprimée' : 'Aucune note pour le moment'}</p>
+              {!memoSearch && !memoAdvancedFiltersActive && !showMemoArchived && <p className="text-xs font-semibold mt-1">Touche + pour conserver une idée, un mémo ou une liste.</p>}
+              {!memoSearch && !memoAdvancedFiltersActive && showMemoArchived && <p className="text-xs font-semibold mt-1">Les notes supprimées restent ici pendant 30 jours.</p>}
             </div>
           ) : (
             <div className="flex flex-col gap-7">
@@ -7327,6 +7823,67 @@ export default function Home() {
             })()}
           </DragOverlay>
 
+          {showMemoCleanupModal && (
+            <div className="fixed inset-0 z-[13040] bg-black/45 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemoCleanupModal(false)}>
+              <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(event) => event.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 border-b border-[#E1D9CE] pb-3">
+                  <h2 className="text-xl font-black text-[#46513F]">🧹 Nettoyage des notes</h2>
+                  <button type="button" onClick={() => setShowMemoCleanupModal(false)} className="w-9 h-9 rounded-full bg-[#EEE8DD] text-[#62594E] font-black">×</button>
+                </div>
+
+                <label className="mt-3 flex items-center gap-3 rounded-2xl bg-[#F1EEE7] border border-[#DDD5C7] p-3 text-xs font-bold">
+                  <span className="flex-1">Ancienneté :</span>
+                  <select
+                    value={memoCleanupThresholdDays}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      setMemoCleanupThresholdDays(value);
+                      loadMemoCleanupEntries(value);
+                    }}
+                    className="rounded-xl border border-[#D8D0C4] bg-white px-2 py-2 text-xs font-black"
+                  >
+                    <option value={0}>Toutes les notes</option>
+                    <option value={14}>Plus de 2 semaines</option>
+                    <option value={30}>Plus de 1 mois</option>
+                    <option value={90}>Plus de 3 mois</option>
+                    <option value={365}>Plus de 1 an</option>
+                  </select>
+                </label>
+
+                {currentMemoCleanupIndex < memoCleanupEntries.length ? (() => {
+                  const memo = memoCleanupEntries[currentMemoCleanupIndex];
+                  return (
+                    <div className="mt-4 flex flex-col gap-3">
+                      <div className="text-center text-[10px] font-black uppercase tracking-[0.14em] text-[#81786C]">Note {currentMemoCleanupIndex + 1} sur {memoCleanupEntries.length}</div>
+                      <div className={`rounded-2xl border p-4 max-h-[48vh] overflow-y-auto ${memoColorClasses(memo.color)}`}>
+                        <h3 className="font-black text-lg whitespace-pre-wrap break-words">{memo.title || 'Sans titre'}</h3>
+                        {memo.content && <p className="mt-2 text-sm font-semibold whitespace-pre-wrap break-words opacity-80">{memo.content}</p>}
+                        {memo.is_drawing && <DrawingPreview data={memo.drawing_data} className="mt-3 max-h-[210px]" />}
+                        {memo.memo_type === 'list' && memo.items.length > 0 && (
+                          <div className="mt-3 flex flex-col gap-1.5">
+                            {memo.items.map(item => <div key={item.id} className={`text-xs font-semibold break-words ${item.completed ? 'line-through opacity-50' : ''}`}>{item.completed ? '☑' : '☐'} {item.text}</div>)}
+                          </div>
+                        )}
+                        <div className="mt-3 text-right text-[9px] font-bold opacity-55">Créée le {new Date(memo.created_at || memo.updated_at || '').toLocaleDateString('fr-FR')}</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => void handleMemoCleanupAction('delete', memo)} className="rounded-xl bg-[#F3DEDA] border border-[#DFBBB4] py-3 text-[#94554D] text-xs font-black">🗑 Supprimer</button>
+                        <button type="button" onClick={() => void handleMemoCleanupAction('keep', memo)} className="rounded-xl bg-[#E4E9DC] border border-[#C8D2BC] py-3 text-[#46513F] text-xs font-black">✓ Conserver</button>
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <div className="py-9 text-center">
+                    <div className="text-5xl">✨</div>
+                    <p className="mt-3 text-lg font-black">Tout est propre !</p>
+                    <p className="mt-1 text-xs font-semibold text-[#81786C]">Il ne reste plus de note à trier pour cette durée.</p>
+                    <button type="button" onClick={() => setShowMemoCleanupModal(false)} className="mt-5 rounded-xl bg-[#6F7B64] px-6 py-3 text-white text-sm font-black">Fermer</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {showMemosHelp && (
             <div className="fixed inset-0 z-[13030] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => setShowMemosHelp(false)}>
               <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -7337,6 +7894,9 @@ export default function Home() {
                 <div className="space-y-3 text-sm leading-relaxed text-[#655E54]">
                   <p><strong>＋ Créer :</strong> ajoute directement une note, puis choisis si besoin le format liste ou DrawNote.</p>
                   <p><strong>📌 Épingler :</strong> fais un appui long sur une carte puis touche l’épingle. Touche directement la punaise affichée pour la désépingler.</p>
+                  <p><strong>⤨ Fusionner :</strong> sélectionne au moins deux notes pour réunir textes, listes et dessins dans une seule note.</p>
+                  <p><strong>🔎 Rechercher :</strong> filtre aussi par date, type, épinglage ou ordre de création.</p>
+                  <p><strong>🧹 Nettoyage :</strong> passe rapidement en revue les anciennes notes pour les conserver ou les supprimer.</p>
                   <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre.</p>
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
                   <p><strong>→ Tâches &amp; Rappels :</strong> transforme une note ou les éléments non cochés d’une liste en tâche sans supprimer le mémo d’origine.</p>
@@ -7369,10 +7929,17 @@ export default function Home() {
                     >☑ Liste</button>
                     <button
                       type="button"
-                      onClick={() => editingMemoId ? showAppMessage('Pour éviter de perdre le contenu existant, crée un nouveau DrawNote avec le bouton +.') : switchNewMemoToDraw()}
+                      onClick={() => {
+                        if (!editingMemoId) {
+                          switchNewMemoToDraw();
+                          return;
+                        }
+                        const original = memoEntriesRef.current.find(memo => memo.id === editingMemoId);
+                        if (original) void switchExistingMemoToDraw(original);
+                      }}
                       className="px-3 py-1.5 rounded-xl text-xs font-black border bg-white/30 border-transparent hover:bg-white/55"
-                      title="Créer un DrawNote"
-                    >✏️ DrawNote</button>
+                      title={editingMemoId ? 'Ajouter ou modifier le dessin' : 'Créer un DrawNote'}
+                    >✏️ Dessin</button>
                   </div>
                   <button
                     type="button"
@@ -7396,6 +7963,22 @@ export default function Home() {
                     aria-label="Dicter le titre"
                   >🎙️</button>
                 </div>
+
+                {editingMemoId && (() => {
+                  const original = memoEntries.find(memo => memo.id === editingMemoId);
+                  if (!original?.is_drawing) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => void switchExistingMemoToDraw(original)}
+                      className="mt-3 w-full rounded-2xl overflow-hidden border border-black/10 bg-white/50 text-left"
+                      title="Modifier le dessin"
+                    >
+                      <DrawingPreview data={original.drawing_data} className="max-h-[170px]" />
+                      <span className="block px-3 py-2 text-[10px] font-black text-center opacity-70">✏️ Toucher pour modifier le dessin</span>
+                    </button>
+                  );
+                })()}
 
                 {memoDraftType === 'text' ? (
                   <div className="relative mt-2">
@@ -7422,24 +8005,46 @@ export default function Home() {
                           onChange={() => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, completed: !current.completed } : current))}
                           className="accent-[#829076]"
                         />
-                        <input
-                          type="text"
+                        <textarea
+                          ref={(element) => {
+                            if (element) {
+                              memoItemInputRefs.current.set(item.id, element);
+                              resizeMemoListTextarea(element);
+                            } else memoItemInputRefs.current.delete(item.id);
+                          }}
+                          rows={1}
                           value={item.text}
-                          onChange={(e) => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, text: e.target.value } : current))}
-                          className={`flex-1 bg-transparent border-none outline-none text-sm font-semibold ${item.completed ? 'line-through opacity-55' : ''}`}
+                          onChange={(e) => {
+                            setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, text: e.target.value } : current));
+                            resizeMemoListTextarea(e.currentTarget);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) {
+                              e.preventDefault();
+                              focusNextMemoListLine(index);
+                            }
+                          }}
+                          className={`min-w-0 flex-1 min-h-[40px] bg-transparent border-none outline-none text-sm font-semibold resize-none overflow-hidden whitespace-pre-wrap break-words py-2 ${item.completed ? 'line-through opacity-55' : ''}`}
                         />
                         <button type="button" onClick={() => setMemoDraftItems(prev => prev.filter((_, i) => i !== index))} className="w-7 h-7 rounded-full hover:bg-white/70 text-[#875E55] font-black">×</button>
                       </div>
                     ))}
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
-                        <input
-                          type="text"
+                        <textarea
+                          ref={(element) => {
+                            memoNewItemRef.current = element;
+                            resizeMemoListTextarea(element);
+                          }}
+                          rows={1}
                           value={memoNewItem}
-                          onChange={(e) => setMemoNewItem(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addMemoDraftItem(); } }}
+                          onChange={(e) => {
+                            setMemoNewItem(e.target.value);
+                            resizeMemoListTextarea(e.currentTarget);
+                          }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) { e.preventDefault(); addMemoDraftItem(); } }}
                           placeholder="Ajouter un élément..."
-                          className="w-full bg-white/65 border border-black/10 rounded-xl pl-3 pr-12 py-2.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-black/10"
+                          className="block w-full min-h-[42px] bg-white/65 border border-black/10 rounded-xl pl-3 pr-12 py-2.5 text-sm font-semibold resize-none overflow-hidden whitespace-pre-wrap break-words focus:outline-none focus:ring-2 focus:ring-black/10"
                         />
                         <button
                           type="button"
@@ -7459,7 +8064,14 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  {editingMemoId ? (
+                    <button
+                      type="button"
+                      onClick={() => setMemoDraftPinned(value => !value)}
+                      className={`h-9 px-3 rounded-xl border text-xs font-black ${memoDraftPinned ? 'bg-white/80 border-black/15' : 'bg-white/35 border-black/10'}`}
+                    >📌 {memoDraftPinned ? 'Épinglée' : 'Épingler'}</button>
+                  ) : <span />}
                   <div className="flex items-center gap-1.5">
                     {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
                       <button
@@ -7514,6 +8126,8 @@ export default function Home() {
               initialData={drawEditorSeed.drawing}
               initialTitle={drawEditorSeed.title}
               initialColor={drawEditorSeed.color}
+              initialPinned={drawEditorSeed.pinned}
+              canPin={!!drawEditorSeed.memoId}
               onSave={saveDrawMemo}
               registerAutoSave={(handler) => { drawEditorAutoSaveRef.current = handler; }}
               onDelete={() => {
@@ -8376,8 +8990,8 @@ export default function Home() {
               {focusPhase === 'ask_orange' ? (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-orange-400">
                   <span className="text-5xl">🔥</span>
-                  <h2 className="text-2xl font-black text-gray-800">Urgences terminées !</h2>
-                  <p className="text-gray-600 font-medium">As-tu l'énergie de continuer sur les tâches importantes ?</p>
+                  <h2 className="text-2xl font-black text-gray-800">Aucune tâche urgente</h2>
+                  <p className="text-gray-600 font-medium">Veux-tu continuer avec les tâches importantes ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('orange')} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on continue</button>
@@ -8386,8 +9000,8 @@ export default function Home() {
               ) : focusPhase === 'ask_vert' ? (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-green-400">
                   <span className="text-5xl">🔋</span>
-                  <h2 className="text-2xl font-black text-gray-800">Tâches importantes finies !</h2>
-                  <p className="text-gray-600 font-medium">Veux-tu terminer avec les tâches normales ?</p>
+                  <h2 className="text-2xl font-black text-gray-800">Aucune tâche urgente ni importante</h2>
+                  <p className="text-gray-600 font-medium">Veux-tu continuer vers les tâches normales ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
                     <button onClick={() => setFocusPhase('vert')} className="flex-1 bg-green-500 hover:bg-green-600 text-white font-black py-4 rounded-xl text-lg shadow-md transition-transform hover:scale-105 active:scale-95">Oui, on termine</button>
@@ -8423,8 +9037,11 @@ export default function Home() {
             <>
               <div className="flex items-center justify-between mb-6 w-full gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-                  <button onClick={() => setShowArchived(false)} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === false ? 'bg-[#C8D2BC] text-[#35412F]' : 'bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]'}`}>📂 Actives</button>
-                  {hasSnoozedNotes && <button onClick={() => setShowArchived('snoozed')} className={`whitespace-nowrap px-4 py-2 text-sm rounded font-bold transition-colors ${showArchived === 'snoozed' ? 'bg-[#E6D8AE] text-[#66562F]' : 'bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]'}`}>💤 Masqué</button>}
+                  {showArchived === 'snoozed' ? (
+                    <button onClick={() => setShowArchived(false)} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]">← Retour aux tâches</button>
+                  ) : hasSnoozedNotes ? (
+                    <button onClick={() => setShowArchived('snoozed')} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]">💤 Tâches masquées</button>
+                  ) : <span />}
                 </div>
                 <button onClick={openCleanupModal} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage</button>
               </div>
