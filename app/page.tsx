@@ -585,6 +585,11 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
     tool: DrawTool | null;
   } | null>(null);
   const pinchOccurredRef = useRef(false);
+  // Android peut déclencher pointerdown avant que le second doigt fasse
+  // reconnaître le pincement. On garde donc l'état précédant le TOUT premier
+  // contact afin que l'éventuel point résiduel reste toujours annulable.
+  const touchDrawBeforeRef = useRef<DrawObject[] | null>(null);
+  const pinchUndoBeforeRef = useRef<DrawObject[] | null>(null);
   const pinchRef = useRef<{
     active: boolean;
     startDistance: number;
@@ -714,6 +719,9 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
     event.preventDefault();
     setSelectedTextId(null);
     const before = snapshot();
+    if (event.pointerType === 'touch' && !touchDrawBeforeRef.current) {
+      touchDrawBeforeRef.current = snapshot(before);
+    }
     const id = crypto.randomUUID();
     let object: DrawObject;
     if (tool === 'pen') object = { id, type: 'path', points: [point, point], stroke: toolColors.pen, strokeWidth };
@@ -870,6 +878,13 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
   const handleDrawTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (event.touches.length === 1) {
       pinchOccurredRef.current = false;
+      pinchUndoBeforeRef.current = null;
+      // Selon le navigateur, pointerdown se produit juste avant ou juste après
+      // touchstart. Si l'interaction existe déjà, sa copie « before » est la
+      // référence la plus fiable ; sinon handlePointerDown la renseignera.
+      touchDrawBeforeRef.current = interactionRef.current?.kind === 'draw'
+        ? snapshot(interactionRef.current.before)
+        : null;
       pinchRollbackRef.current = {
         objects: snapshot(),
         polygon: polygonDraft.map(point => ({ ...point })),
@@ -889,6 +904,12 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
     // Le premier doigt a éventuellement commencé un trait : l'arrivée du second
     // l'annule immédiatement et transforme le geste en zoom de la feuille.
     pinchOccurredRef.current = true;
+    const interruptedInteraction = interactionRef.current;
+    pinchUndoBeforeRef.current = touchDrawBeforeRef.current
+      ? snapshot(touchDrawBeforeRef.current)
+      : interruptedInteraction?.kind === 'draw'
+        ? snapshot(interruptedInteraction.before)
+        : null;
     if (pinchRollbackRef.current) {
       restoreStateBeforePinch();
     } else if (interactionRef.current) {
@@ -941,7 +962,17 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
       interactionRef.current = null;
     }
     if (event.touches.length === 0) {
+      const undoBefore = pinchUndoBeforeRef.current;
+      // Dès qu'un pincement a interrompu un tracé tactile, son état antérieur
+      // devient la dernière action de l'historique. Même si Android termine
+      // tardivement le premier pointerdown, ↶ revient donc avant ce point.
+      if (pinchOccurredRef.current && undoBefore) {
+        setUndoStack(stack => [...stack.slice(-39), snapshot(undoBefore)]);
+        setRedoStack([]);
+      }
       pinchRollbackRef.current = null;
+      pinchUndoBeforeRef.current = null;
+      touchDrawBeforeRef.current = null;
       pinchOccurredRef.current = false;
     }
   };
