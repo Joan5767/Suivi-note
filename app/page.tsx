@@ -575,7 +575,16 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
   const drawViewportRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const selectNewTextOnFocusRef = useRef(false);
-  const pinchRollbackRef = useRef<{ objects: DrawObject[]; polygon: DrawPoint[]; polygonRedo: DrawPoint[] } | null>(null);
+  const pinchRollbackRef = useRef<{
+    objects: DrawObject[];
+    polygon: DrawPoint[];
+    polygonRedo: DrawPoint[];
+    undoStack: DrawObject[][];
+    redoStack: DrawObject[][];
+    selectedTextId: string | null;
+    tool: DrawTool | null;
+  } | null>(null);
+  const pinchOccurredRef = useRef(false);
   const pinchRef = useRef<{
     active: boolean;
     startDistance: number;
@@ -846,12 +855,29 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
     };
   };
 
+  const restoreStateBeforePinch = () => {
+    const rollback = pinchRollbackRef.current;
+    if (!rollback) return;
+    setObjects(snapshot(rollback.objects));
+    setPolygonDraft(rollback.polygon.map(point => ({ ...point })));
+    setPolygonRedoPoints(rollback.polygonRedo.map(point => ({ ...point })));
+    setUndoStack(rollback.undoStack.map(entry => snapshot(entry)));
+    setRedoStack(rollback.redoStack.map(entry => snapshot(entry)));
+    setSelectedTextId(rollback.selectedTextId);
+    setTool(rollback.tool);
+  };
+
   const handleDrawTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (event.touches.length === 1) {
+      pinchOccurredRef.current = false;
       pinchRollbackRef.current = {
         objects: snapshot(),
         polygon: polygonDraft.map(point => ({ ...point })),
         polygonRedo: polygonRedoPoints.map(point => ({ ...point })),
+        undoStack: undoStack.map(entry => snapshot(entry)),
+        redoStack: redoStack.map(entry => snapshot(entry)),
+        selectedTextId,
+        tool,
       };
       return;
     }
@@ -862,16 +888,13 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
 
     // Le premier doigt a éventuellement commencé un trait : l'arrivée du second
     // l'annule immédiatement et transforme le geste en zoom de la feuille.
-    const rollback = pinchRollbackRef.current;
-    if (rollback) {
-      setObjects(snapshot(rollback.objects));
-      setPolygonDraft(rollback.polygon);
-      setPolygonRedoPoints(rollback.polygonRedo);
+    pinchOccurredRef.current = true;
+    if (pinchRollbackRef.current) {
+      restoreStateBeforePinch();
     } else if (interactionRef.current) {
       setObjects(snapshot(interactionRef.current.before));
     }
     interactionRef.current = null;
-    setSelectedTextId(null);
 
     const geometry = getTouchGeometry(event.touches);
     const rect = viewport.getBoundingClientRect();
@@ -910,7 +933,17 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
     if (event.touches.length < 2 && pinchRef.current?.active) {
       pinchRef.current = null;
     }
-    if (event.touches.length === 0) pinchRollbackRef.current = null;
+    // Une seconde restauration à la fin du pincement neutralise aussi les
+    // pointerup/pointercancel tardifs du premier doigt. Aucun point fantôme
+    // ni entrée Annuler parasite ne peut ainsi survivre au zoom.
+    if (pinchOccurredRef.current) {
+      restoreStateBeforePinch();
+      interactionRef.current = null;
+    }
+    if (event.touches.length === 0) {
+      pinchRollbackRef.current = null;
+      pinchOccurredRef.current = false;
+    }
   };
 
   const saveAndClose = async () => {
@@ -1013,7 +1046,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
             ref={svgRef}
             viewBox="0 0 1000 1400"
             className="block w-full h-auto bg-white"
-            style={{ touchAction: tool ? 'none' : 'pan-x pan-y' }}
+            style={{ touchAction: tool || selectedText ? 'none' : 'pan-x pan-y' }}
             onPointerDown={(event) => { if (!pinchRef.current?.active) handlePointerDown(event); }}
             onPointerMove={(event) => { if (!pinchRef.current?.active) handlePointerMove(event); }}
             onPointerUp={() => { if (!pinchRef.current?.active) finishInteraction(); }}
@@ -1024,7 +1057,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
             {objects.map(object => {
               const selected = object.type === 'text' && object.id === selectedTextId;
               return (
-                <g key={object.id} onPointerDown={object.type === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
+                <g key={object.id} style={object.type === 'text' ? { touchAction: 'none', pointerEvents: 'all' } : undefined} onPointerDown={object.type === 'text' ? (event) => { setSelectedTextId(object.id); beginTextMoveOrResize(event, object, 'move'); } : undefined}>
                   <DrawingObjectSvg object={object} selected={selected} />
                 </g>
               );
@@ -1044,7 +1077,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
                   [selectedTextBounds.x - 10, selectedTextBounds.y + selectedTextBounds.height + 10],
                   [selectedTextBounds.x + selectedTextBounds.width + 10, selectedTextBounds.y + selectedTextBounds.height + 10],
                 ].map(([x, y], index) => (
-                  <circle key={index} cx={x} cy={y} r="14" fill="#F8F5EF" stroke="#819076" strokeWidth="4" onPointerDown={(event) => beginTextMoveOrResize(event, selectedText, 'resize')} />
+                  <circle key={index} cx={x} cy={y} r="18" fill="#F8F5EF" stroke="#819076" strokeWidth="4" style={{ touchAction: 'none', pointerEvents: 'all' }} onPointerDown={(event) => beginTextMoveOrResize(event, selectedText, 'resize')} />
                 ))}
               </g>
             )}
@@ -1122,6 +1155,7 @@ export default function Home() {
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
   const [memoSearch, setMemoSearch] = useState('');
   const [memoFiltersOpen, setMemoFiltersOpen] = useState(false);
+  const memoFiltersOpenRef = useRef(false);
   const [memoSortMode, setMemoSortMode] = useState<MemoSortMode>('manual');
   const [memoTypeFilter, setMemoTypeFilter] = useState<MemoTypeFilter>('all');
   const [memoPinnedFilter, setMemoPinnedFilter] = useState<'all' | 'pinned' | 'unpinned'>('all');
@@ -1370,6 +1404,11 @@ export default function Home() {
   // On mémorise seulement le point de départ : le changement de page n'est déclenché
   // que si le geste est clairement horizontal afin de ne pas gêner le scroll vertical.
   const [focusPhase, setFocusPhase] = useState<'rouge' | 'ask_orange' | 'orange' | 'ask_vert' | 'vert' | 'done'>('rouge');
+  const [focusTransitionReason, setFocusTransitionReason] = useState<
+    'no_urgent' | 'urgent_finished' | 'no_urgent_or_important' | 'urgent_finished_no_important' | 'important_finished'
+  >('no_urgent');
+  const focusHadUrgentRef = useRef(false);
+  const focusHadImportantRef = useRef(false);
   const [skippedFocusIds, setSkippedFocusIds] = useState<string[]>([]);
   
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -1483,7 +1522,7 @@ export default function Home() {
   const [activeTemplateName, setActiveTemplateName] = useState('');
   const [planningSavedSnapshot, setPlanningSavedSnapshot] = useState<string | null>(null);
   const [showClosePlanningModal, setShowClosePlanningModal] = useState(false);
-  const [planningExitTarget, setPlanningExitTarget] = useState<'home' | 'gallery'>('home');
+  const [planningExitTarget, setPlanningExitTarget] = useState<'home' | 'gallery' | 'notes'>('home');
   const [showPlanningAbout, setShowPlanningAbout] = useState(false);
   const [showPlanningGestures, setShowPlanningGestures] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -2111,10 +2150,10 @@ export default function Home() {
           : routeState.weeklyBlockCount > 0;
 
         if (hasUnsavedChanges) {
-          setPlanningExitTarget(hash === '#planning-gallery' ? 'gallery' : 'home');
+          setPlanningExitTarget(hash === '#planning-gallery' ? 'gallery' : (hash === '#notes' || hash === '#memos') ? 'notes' : 'home');
           setShowClosePlanningModal(true);
 
-          if (hash === '#planning') {
+          if (hash === '#planning' || hash === '#notes' || hash === '#memos') {
             window.setTimeout(() => window.history.forward(), 0);
           } else {
             const editorUrl = `${window.location.pathname}${window.location.search}#planning-editor`;
@@ -2160,6 +2199,11 @@ export default function Home() {
       drawEditorOpenRef.current = false;
       setDrawEditorOpen(false);
 
+      if (hash !== '#notes' && hash !== '#memos') {
+        memoFiltersOpenRef.current = false;
+        setMemoFiltersOpen(false);
+      }
+
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
       if (directNoteMatch) {
         const noteId = decodeURIComponent(directNoteMatch[1]);
@@ -2199,13 +2243,29 @@ export default function Home() {
       }
     };
 
-    if (!window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + '#notes');
+    const initialHash = window.location.hash;
+    const notesUrl = `${window.location.pathname}${window.location.search}#notes`;
+    if (!initialHash) {
+      window.history.replaceState({ ...(window.history.state || {}), primaryAway: false }, '', notesUrl);
+    } else if (initialHash === '#notes' || initialHash === '#memos') {
+      window.history.replaceState({ ...(window.history.state || {}), primaryAway: false }, '', window.location.href);
+    } else if (!window.history.state?.primaryAway) {
+      const requestedUrl = window.location.href;
+      window.history.replaceState({ primaryAway: false }, '', notesUrl);
+      window.history.pushState({ primaryAway: true }, '', requestedUrl);
     }
 
     const handleMemoSelectionPopState = () => {
       if (memoIgnoreNextPopRef.current) {
         memoIgnoreNextPopRef.current = false;
+        return;
+      }
+
+      // Le panneau de filtres est un niveau d'interface à part entière : le
+      // bouton Retour Android le replie avant toute navigation de page.
+      if (memoFiltersOpenRef.current) {
+        memoFiltersOpenRef.current = false;
+        setMemoFiltersOpen(false);
         return;
       }
 
@@ -2349,73 +2409,101 @@ export default function Home() {
     showAppMessage(`ℹ️ ${label} est désactivée en mode démonstration.`);
   };
 
-  // Navigation de Tâches & Rappels sans empiler chaque clic dans l'historique.
-  const isNotesChildHash = (hash: string) =>
-    hash === '#tasks-create' || hash === '#tasks-focus' || hash === '#tasks-history' ||
-    hash === '#notes-create' || hash === '#notes-list' || hash === '#notes-focus' || hash === '#notes-history' ||
-    hash.startsWith('#note-');
+  // Notes est la racine stable de l'application. Tâches, Focus, création et
+  // Planning partagent une seule entrée « extérieure » : changer de rubrique
+  // remplace cette entrée au lieu d'empiler la chronologie de tous les clics.
+  const clearTransientHistoryFlags = (state: Record<string, any>) => {
+    const next = { ...state };
+    delete next.quickCapture;
+    delete next.memoFilters;
+    delete next.memoArchive;
+    delete next.memoSelection;
+    delete next.memoEditor;
+    delete next.drawEditor;
+    delete next.tasksChild;
+    delete next.planningChild;
+    return next;
+  };
 
-  const navigateNotesChild = (targetHash: '#tasks' | '#tasks-focus' | '#tasks-history') => {
-    const currentHash = window.location.hash;
+  const navigateAwayRoute = (targetHash: '#tasks' | '#tasks-create' | '#tasks-focus' | '#tasks-history' | '#planning' | '#planning-editor' | '#planning-gallery') => {
+    const currentState = window.history.state || {};
     const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
+    const nextState = { ...clearTransientHistoryFlags(currentState), primaryAway: true };
+    const isNotesInterfaceChild = !!(
+      currentState.memoFilters || currentState.memoArchive || currentState.memoSelection ||
+      currentState.memoEditor || currentState.drawEditor || currentState.quickCapture
+    );
 
-    if (targetHash === '#tasks') {
-      if (isNotesChildHash(currentHash) && window.history.state?.tasksChild) {
-        window.history.back();
-        return;
-      }
-      window.history.replaceState({ ...(window.history.state || {}), tasksChild: false }, '', targetUrl);
-      refreshRouteFromCurrentHash();
-      return;
-    }
+    memoFiltersOpenRef.current = false;
+    setMemoFiltersOpen(false);
+    showMemoArchivedRef.current = false;
+    setShowMemoArchived(false);
+    selectedMemoIdsRef.current = new Set();
+    setSelectedMemoIds(new Set());
+    memoSelectionHistoryArmedRef.current = false;
 
-    if (isNotesChildHash(currentHash)) {
-      window.history.replaceState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
+    if (currentState.primaryAway || isNotesInterfaceChild) {
+      window.history.replaceState(nextState, '', targetUrl);
     } else {
-      window.history.pushState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
+      window.history.pushState(nextState, '', targetUrl);
     }
     refreshRouteFromCurrentHash();
   };
 
-  const navigateNotesCreate = () => {
-    const currentHash = window.location.hash;
-    const targetUrl = `${window.location.pathname}${window.location.search}#tasks-create`;
-    if (currentHash === '#tasks-create') return;
-    window.history.pushState({ ...(window.history.state || {}), tasksChild: true }, '', targetUrl);
-    refreshRouteFromCurrentHash();
-  };
+  const navigatePrimarySection = (targetHash: '#notes' | '#tasks' | '#planning') => {
+    const currentState = window.history.state || {};
 
-  const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
-    const currentHash = window.location.hash;
-    const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
-
-    if (currentHash === '#planning-editor') {
-      // Depuis l'éditeur, revenir à la galerie remplace l'étape d'édition.
-      window.history.replaceState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
-      refreshRouteFromCurrentHash();
+    if (targetHash !== '#notes') {
+      navigateAwayRoute(targetHash);
       return;
     }
 
-    // Depuis l'une des URL de galerie (#planning ou ancienne #planning-gallery),
-    // l'éditeur devient un vrai niveau enfant pour que Retour retrouve la galerie.
-    window.history.pushState({ ...(window.history.state || {}), planningChild: true }, '', targetUrl);
-    refreshRouteFromCurrentHash();
-  };
-
-  const navigatePlanningHome = () => {
-    const currentHash = window.location.hash;
-    const currentIsPlanningChild = currentHash === '#planning-editor' || currentHash === '#planning-gallery';
-
-    if (currentIsPlanningChild && window.history.state?.planningChild) {
-      // L'accueil Planning est juste derrière l'enfant dans l'historique contrôlé.
+    memoFiltersOpenRef.current = false;
+    setMemoFiltersOpen(false);
+    if (
+      currentState.primaryAway || currentState.memoFilters || currentState.memoArchive ||
+      currentState.memoSelection || currentState.memoEditor || currentState.drawEditor || currentState.quickCapture
+    ) {
       window.history.back();
       return;
     }
 
-    // Cas de secours (ex. ouverture directe / refresh sur une URL enfant).
-    const targetUrl = `${window.location.pathname}${window.location.search}#planning`;
-    window.history.replaceState({ ...(window.history.state || {}), planningChild: false }, '', targetUrl);
+    const targetUrl = `${window.location.pathname}${window.location.search}#notes`;
+    window.history.replaceState({ ...clearTransientHistoryFlags(currentState), primaryAway: false }, '', targetUrl);
     refreshRouteFromCurrentHash();
+  };
+
+  const toggleMemoFilters = () => {
+    if (memoFiltersOpenRef.current) {
+      memoFiltersOpenRef.current = false;
+      setMemoFiltersOpen(false);
+      if (window.history.state?.memoFilters) {
+        memoIgnoreNextPopRef.current = true;
+        window.history.back();
+      }
+      return;
+    }
+
+    window.history.pushState({ ...(window.history.state || {}), memoFilters: true }, '', window.location.href);
+    memoFiltersOpenRef.current = true;
+    setMemoFiltersOpen(true);
+  };
+
+  const navigateNotesChild = (targetHash: '#tasks' | '#tasks-focus' | '#tasks-history') => {
+    navigateAwayRoute(targetHash);
+  };
+
+  const navigateNotesCreate = () => {
+    if (window.location.hash === '#tasks-create') return;
+    navigateAwayRoute('#tasks-create');
+  };
+
+  const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
+    navigateAwayRoute(targetHash);
+  };
+
+  const navigatePlanningHome = () => {
+    navigateAwayRoute('#planning');
   };
 
   // ==========================================
@@ -3490,8 +3578,8 @@ export default function Home() {
     setNewTitle(title);
     setNewContent(content);
     setImportance('vert');
-    closeQuickCapture(false);
     navigateNotesCreate();
+    closeQuickCapture(false);
   };
 
   const saveQuickCapture = async () => {
@@ -3518,7 +3606,7 @@ export default function Home() {
         if (error) throw error;
         await fetchMemos();
         if (showMemoArchivedRef.current) leaveMemoArchives(false);
-        window.location.hash = 'notes';
+        navigatePrimarySection('#notes');
         setSuccessMessage('✅ Note enregistrée.');
       } else {
         const { error } = await supabase.from('notes').insert([{
@@ -3537,7 +3625,7 @@ export default function Home() {
         }]);
         if (error) throw error;
         await fetchNotes();
-        window.location.hash = 'tasks';
+        navigatePrimarySection('#tasks');
         setSuccessMessage('✅ Tâche enregistrée.');
       }
       closeQuickCapture(false);
@@ -4611,9 +4699,7 @@ export default function Home() {
     setTargetDate('');
     setShowAdvancedSettings(false);
 
-    const targetUrl = `${window.location.pathname}${window.location.search}#notes-create`;
-    window.history.pushState({ fromMemo: memo.id }, '', targetUrl);
-    refreshRouteFromCurrentHash();
+    navigateAwayRoute('#tasks-create');
     setSuccessMessage('Mémo copié dans Tâches & Rappels. Ajoute maintenant le rappel si nécessaire.');
     window.setTimeout(() => setSuccessMessage(null), 4500);
   };
@@ -4682,13 +4768,37 @@ export default function Home() {
     const importantCount = currentFocusable.filter(n => n.importance === 'orange').length;
     const normalCount = currentFocusable.filter(n => n.importance === 'vert').length;
 
-    if (focusPhase === 'rouge' && urgentCount === 0) {
-       if (importantCount > 0) setFocusPhase('ask_orange');
-       else if (normalCount > 0) setFocusPhase('ask_vert');
-       else setFocusPhase('done');
-    } else if (focusPhase === 'orange' && importantCount === 0) {
-       if (normalCount > 0) setFocusPhase('ask_vert');
-       else setFocusPhase('done');
+    if (focusPhase === 'rouge') {
+      if (urgentCount > 0) {
+        focusHadUrgentRef.current = true;
+        return;
+      }
+      if (importantCount > 0) {
+        setFocusTransitionReason(focusHadUrgentRef.current ? 'urgent_finished' : 'no_urgent');
+        setFocusPhase('ask_orange');
+      } else if (normalCount > 0) {
+        setFocusTransitionReason(focusHadUrgentRef.current ? 'urgent_finished_no_important' : 'no_urgent_or_important');
+        setFocusPhase('ask_vert');
+      } else {
+        setFocusPhase('done');
+      }
+    } else if (focusPhase === 'orange') {
+      if (importantCount > 0) {
+        focusHadImportantRef.current = true;
+        return;
+      }
+      if (normalCount > 0) {
+        setFocusTransitionReason(
+          focusHadImportantRef.current
+            ? 'important_finished'
+            : focusHadUrgentRef.current
+              ? 'urgent_finished_no_important'
+              : 'no_urgent_or_important'
+        );
+        setFocusPhase('ask_vert');
+      } else {
+        setFocusPhase('done');
+      }
     } else if (focusPhase === 'vert' && normalCount === 0) {
        setFocusPhase('done');
     }
@@ -5223,12 +5333,14 @@ export default function Home() {
     }
   };
 
-  const finishPlanningExit = (target: 'home' | 'gallery') => {
+  const finishPlanningExit = (target: 'home' | 'gallery' | 'notes') => {
     planningExitInProgressRef.current = true;
     clearPlanningEditorState();
     setShowClosePlanningModal(false);
 
-    if (target === 'gallery') {
+    if (target === 'notes') {
+      navigatePrimarySection('#notes');
+    } else if (target === 'gallery') {
       navigatePlanningChild('#planning-gallery');
     } else {
       navigatePlanningHome();
@@ -7663,7 +7775,7 @@ export default function Home() {
               </div>
               <button
                 type="button"
-                onClick={() => setMemoFiltersOpen(value => !value)}
+                onClick={toggleMemoFilters}
                 className={`h-10 px-3 rounded-full border text-xs font-black whitespace-nowrap ${memoFiltersOpen || memoAdvancedFiltersActive ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
               >⚙️ Filtres{memoAdvancedFiltersActive ? ' •' : ''}</button>
               {!showMemoArchived && (
@@ -8784,10 +8896,13 @@ export default function Home() {
                   setSkippedFocusIds([]);
                   setShowArchived(false);
                   setFocusPhase('rouge');
+                  setFocusTransitionReason('no_urgent');
+                  focusHadUrgentRef.current = false;
+                  focusHadImportantRef.current = false;
                   if (isFocusMode) navigateNotesChild('#tasks');
                   else navigateNotesChild('#tasks-focus');
                 }}
-                className="h-10 px-3 rounded-xl text-xs font-black shadow-sm transition-all whitespace-nowrap bg-[#EEE8DD] hover:bg-[#E5DED2] text-[#62594E] border border-[#D9D0C2] flex items-center justify-center active:scale-95"
+                className="min-w-[150px] h-14 px-6 rounded-2xl text-base font-black shadow-md transition-all whitespace-nowrap bg-[#EEE8DD] hover:bg-[#E5DED2] text-[#62594E] border border-[#D9D0C2] flex items-center justify-center active:scale-95"
               >
                 {isFocusMode ? 'Quitter Focus' : '🎯 Focus'}
               </button>
@@ -8990,7 +9105,9 @@ export default function Home() {
               {focusPhase === 'ask_orange' ? (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-orange-400">
                   <span className="text-5xl">🔥</span>
-                  <h2 className="text-2xl font-black text-gray-800">Aucune tâche urgente</h2>
+                  <h2 className="text-2xl font-black text-gray-800">
+                    {focusTransitionReason === 'urgent_finished' ? 'Plus de tâches urgentes' : 'Aucune tâche urgente'}
+                  </h2>
                   <p className="text-gray-600 font-medium">Veux-tu continuer avec les tâches importantes ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
@@ -9000,7 +9117,13 @@ export default function Home() {
               ) : focusPhase === 'ask_vert' ? (
                 <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl text-center flex flex-col items-center gap-4 border-2 border-green-400">
                   <span className="text-5xl">🔋</span>
-                  <h2 className="text-2xl font-black text-gray-800">Aucune tâche urgente ni importante</h2>
+                  <h2 className="text-2xl font-black text-gray-800">
+                    {focusTransitionReason === 'important_finished'
+                      ? 'Plus de tâches importantes'
+                      : focusTransitionReason === 'urgent_finished_no_important'
+                        ? 'Plus de tâches urgentes ni importantes'
+                        : 'Aucune tâche urgente ni importante'}
+                  </h2>
                   <p className="text-gray-600 font-medium">Veux-tu continuer vers les tâches normales ?</p>
                   <div className="flex w-full gap-3 mt-4">
                     <button onClick={() => { setSkippedFocusIds([]); navigateNotesChild('#tasks'); }} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl text-lg shadow-sm border border-gray-200 transition-transform hover:scale-105 active:scale-95">Non, stop</button>
@@ -9173,7 +9296,7 @@ export default function Home() {
             type="button"
             onClick={() => {
               if (showMemoArchived) leaveMemoArchives(false);
-              window.location.hash = 'notes';
+              navigatePrimarySection('#notes');
             }}
             className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${mainMode === 'memos' ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
             aria-current={mainMode === 'memos' ? 'page' : undefined}
@@ -9183,7 +9306,7 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => { window.location.hash = 'tasks'; }}
+            onClick={() => navigatePrimarySection('#tasks')}
             className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${mainMode === 'notes' ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
             aria-current={mainMode === 'notes' ? 'page' : undefined}
           >
@@ -9192,7 +9315,7 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => { window.location.hash = 'planning'; }}
+            onClick={() => navigatePrimarySection('#planning')}
             className={`min-h-[58px] rounded-2xl flex flex-col items-center justify-center gap-0.5 text-xs font-black transition-colors ${(mainMode === 'planning' || mainMode === 'planning_gallery') ? 'bg-[#D8DEC9] text-[#35412F]' : 'text-[#756E63] hover:bg-[#F0EBE2]'}`}
             aria-current={(mainMode === 'planning' || mainMode === 'planning_gallery') ? 'page' : undefined}
           >
