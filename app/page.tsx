@@ -335,6 +335,64 @@ function MemoTrashDroppable({ active, hovering }: { active: boolean; hovering: b
   );
 }
 
+type MemoDraftListRowProps = {
+  item: MemoListItem;
+  index: number;
+  onToggle: () => void;
+  onChange: (value: string, element: HTMLTextAreaElement) => void;
+  onEnter: () => void;
+  onRemove: () => void;
+  registerInput: (element: HTMLTextAreaElement | null) => void;
+};
+
+function MemoDraftListRow({ item, index, onToggle, onChange, onEnter, onRemove, registerInput }: MemoDraftListRowProps) {
+  const dragId = `memo-list-item:${item.id}`;
+  const draggable = useDraggable({ id: dragId });
+  const droppable = useDroppable({ id: dragId });
+
+  const setNodeRef = (node: HTMLElement | null) => {
+    draggable.setNodeRef(node);
+    droppable.setNodeRef(node);
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`flex items-center gap-2 bg-white/50 rounded-xl p-2 border transition-all ${droppable.isOver && !draggable.isDragging ? 'border-[#829076] ring-2 ring-[#AEBB9E]/50' : 'border-black/5'} ${draggable.isDragging ? 'opacity-30' : ''}`}
+    >
+      <button
+        type="button"
+        {...draggable.attributes}
+        {...draggable.listeners}
+        className="w-8 h-10 rounded-lg flex-shrink-0 flex items-center justify-center text-lg font-black opacity-55 hover:opacity-90 hover:bg-white/70 cursor-grab active:cursor-grabbing select-none"
+        style={{ touchAction: 'none', WebkitTouchCallout: 'none' }}
+        aria-label={`Maintenir puis déplacer la ligne ${index + 1}`}
+        title="Maintenir puis glisser pour déplacer"
+      >⠿</button>
+      <input
+        type="checkbox"
+        checked={item.completed}
+        onChange={onToggle}
+        className="accent-[#829076]"
+      />
+      <textarea
+        ref={registerInput}
+        rows={1}
+        value={item.text}
+        onChange={(event) => onChange(event.target.value, event.currentTarget)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !(event.nativeEvent as any).isComposing) {
+            event.preventDefault();
+            onEnter();
+          }
+        }}
+        className={`min-w-0 flex-1 min-h-[40px] bg-transparent border-none outline-none text-sm font-semibold resize-none overflow-hidden whitespace-pre-wrap break-words py-2 ${item.completed ? 'line-through opacity-55' : ''}`}
+      />
+      <button type="button" onClick={onRemove} className="w-7 h-7 rounded-full hover:bg-white/70 text-[#875E55] font-black">×</button>
+    </div>
+  );
+}
+
 
 type PlanningDndCardProps = {
   template: PlanningTemplate;
@@ -1184,7 +1242,9 @@ export default function Home() {
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
+  const [memoSearchOpen, setMemoSearchOpen] = useState(false);
   const [memoSearch, setMemoSearch] = useState('');
+  const memoSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [memoFiltersOpen, setMemoFiltersOpen] = useState(false);
   const memoFiltersOpenRef = useRef(false);
   const [memoSortMode, setMemoSortMode] = useState<MemoSortMode>('manual');
@@ -1202,6 +1262,7 @@ export default function Home() {
   const [memoDraftContent, setMemoDraftContent] = useState('');
   const [memoDraftItems, setMemoDraftItems] = useState<MemoListItem[]>([]);
   const [memoNewItem, setMemoNewItem] = useState('');
+  const [memoListDraggingId, setMemoListDraggingId] = useState<string | null>(null);
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
   const memoNewItemRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1227,6 +1288,10 @@ export default function Home() {
   const memoEditorOpenRef = useRef(false);
   const memoEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const memoIgnoreNextPopRef = useRef(false);
+  const memoListDndSensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 240, tolerance: 12 } }),
+  );
 
   // Moteur DnD Kit : remplace la gestion tactile maison pour Notes/Mémos.
   // La sélection reste un appui long sans déplacement ; dès qu'on déplace,
@@ -2440,6 +2505,34 @@ export default function Home() {
     showAppMessage(`ℹ️ ${label} est désactivée en mode démonstration.`);
   };
 
+  const resetMemoAdvancedFilters = () => {
+    setMemoSortMode('manual');
+    setMemoTypeFilter('all');
+    setMemoPinnedFilter('all');
+    setMemoDateFrom('');
+    setMemoDateTo('');
+  };
+
+  const toggleMemoSearch = () => {
+    if (memoSearchOpen) {
+      setMemoSearchOpen(false);
+      setMemoSearch('');
+      resetMemoAdvancedFilters();
+      if (memoFiltersOpenRef.current) {
+        memoFiltersOpenRef.current = false;
+        setMemoFiltersOpen(false);
+        if (window.history.state?.memoFilters) {
+          memoIgnoreNextPopRef.current = true;
+          window.history.back();
+        }
+      }
+      return;
+    }
+
+    setMemoSearchOpen(true);
+    window.requestAnimationFrame(() => memoSearchInputRef.current?.focus());
+  };
+
   // Notes est la racine stable de l'application. Tâches, Focus, création et
   // Planning partagent une seule entrée « extérieure » : changer de rubrique
   // remplace cette entrée au lieu d'empiler la chronologie de tous les clics.
@@ -2467,6 +2560,9 @@ export default function Home() {
 
     memoFiltersOpenRef.current = false;
     setMemoFiltersOpen(false);
+    setMemoSearchOpen(false);
+    setMemoSearch('');
+    resetMemoAdvancedFilters();
     showMemoArchivedRef.current = false;
     setShowMemoArchived(false);
     selectedMemoIdsRef.current = new Set();
@@ -2515,6 +2611,7 @@ export default function Home() {
       return;
     }
 
+    setMemoSearchOpen(true);
     window.history.pushState({ ...(window.history.state || {}), memoFilters: true }, '', window.location.href);
     memoFiltersOpenRef.current = true;
     setMemoFiltersOpen(true);
@@ -4165,6 +4262,7 @@ export default function Home() {
     setMemoDraftContent('');
     setMemoDraftItems([]);
     setMemoNewItem('');
+    setMemoListDraggingId(null);
     setMemoDraftColor('sage');
     setMemoDraftPinned(false);
   };
@@ -4269,11 +4367,43 @@ export default function Home() {
     setMemoDraftContent(memo.content);
     setMemoDraftItems(normalizeMemoItems(memo.items));
     setMemoNewItem('');
+    setMemoListDraggingId(null);
     setMemoDraftColor(memo.color);
     setMemoDraftPinned(memo.pinned);
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
+  };
+
+  const memoListItemIdFromDragId = (dragId: string | number) => {
+    const value = String(dragId);
+    return value.startsWith('memo-list-item:') ? value.slice('memo-list-item:'.length) : value;
+  };
+
+  const handleMemoListDragStart = (event: DragStartEvent) => {
+    setMemoListDraggingId(memoListItemIdFromDragId(event.active.id));
+  };
+
+  const handleMemoListDragEnd = (event: DragEndEvent) => {
+    setMemoListDraggingId(null);
+    if (!event.over) return;
+    const activeId = memoListItemIdFromDragId(event.active.id);
+    const overId = memoListItemIdFromDragId(event.over.id);
+    if (activeId === overId) return;
+
+    setMemoDraftItems(current => {
+      const fromIndex = current.findIndex(item => item.id === activeId);
+      const toIndex = current.findIndex(item => item.id === overId);
+      if (fromIndex < 0 || toIndex < 0) return current;
+      const reordered = [...current];
+      const [movedItem] = reordered.splice(fromIndex, 1);
+      reordered.splice(toIndex, 0, movedItem);
+      return reordered;
+    });
+  };
+
+  const handleMemoListDragCancel = () => {
+    setMemoListDraggingId(null);
   };
 
   const addMemoDraftItem = () => {
@@ -7792,11 +7922,26 @@ export default function Home() {
             </div>
           )}
 
-          <div className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex-1 relative">
+          <div className="flex items-center justify-end gap-2 mb-3 flex-wrap">
+            <button
+              type="button"
+              onClick={toggleMemoSearch}
+              className={`h-10 px-3 rounded-full border text-xs font-black whitespace-nowrap ${memoSearchOpen ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
+              aria-expanded={memoSearchOpen}
+              aria-controls="memo-search-panel"
+            >🔎 Recherche</button>
+            {!showMemoArchived && (
+              <button type="button" onClick={openMemoCleanup} className="h-10 px-3 rounded-full bg-white border border-[#DED5C8] text-[#6D655A] text-xs font-black whitespace-nowrap">🧹 Nettoyage</button>
+            )}
+          </div>
+
+          {memoSearchOpen && (
+          <div id="memo-search-panel" className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 relative min-w-0">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
                 <input
+                  ref={memoSearchInputRef}
                   type="text"
                   value={memoSearch}
                   onChange={(e) => setMemoSearch(e.target.value)}
@@ -7807,11 +7952,10 @@ export default function Home() {
               <button
                 type="button"
                 onClick={toggleMemoFilters}
-                className={`h-10 px-3 rounded-full border text-xs font-black whitespace-nowrap ${memoFiltersOpen || memoAdvancedFiltersActive ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
-              >⚙️ Filtres{memoAdvancedFiltersActive ? ' •' : ''}</button>
-              {!showMemoArchived && (
-                <button type="button" onClick={openMemoCleanup} className="h-10 px-3 rounded-full bg-white border border-[#DED5C8] text-[#6D655A] text-xs font-black whitespace-nowrap">🧹 Nettoyage</button>
-              )}
+                className={`relative w-10 h-10 rounded-full border text-base font-black flex-shrink-0 ${memoFiltersOpen || memoAdvancedFiltersActive ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
+                aria-label="Afficher les filtres avancés"
+                title="Filtres avancés"
+              >⚙️{memoAdvancedFiltersActive && <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-[#B85D55]" />}</button>
             </div>
 
             {memoFiltersOpen && (
@@ -7856,13 +8000,7 @@ export default function Home() {
                   <span className="text-[10px] font-bold text-[#81786C]">{visibleMemos.length} résultat{visibleMemos.length > 1 ? 's' : ''}</span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setMemoSortMode('manual');
-                      setMemoTypeFilter('all');
-                      setMemoPinnedFilter('all');
-                      setMemoDateFrom('');
-                      setMemoDateTo('');
-                    }}
+                    onClick={resetMemoAdvancedFilters}
                     disabled={!memoAdvancedFiltersActive}
                     className="h-9 px-3 rounded-xl bg-[#EEE8DD] text-[#62594E] text-xs font-black disabled:opacity-40"
                   >Réinitialiser les filtres</button>
@@ -7870,6 +8008,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          )}
 
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
@@ -8040,7 +8179,7 @@ export default function Home() {
                   <p><strong>⤨ Fusionner :</strong> sélectionne au moins deux notes pour réunir textes, listes et dessins dans une seule note.</p>
                   <p><strong>🔎 Rechercher :</strong> filtre aussi par date, type, épinglage ou ordre de création.</p>
                   <p><strong>🧹 Nettoyage :</strong> passe rapidement en revue les anciennes notes pour les conserver ou les supprimer.</p>
-                  <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre.</p>
+                  <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre. Dans une liste, maintiens la poignée ⠿ d’une ligne pour la déplacer.</p>
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
                   <p><strong>→ Tâches &amp; Rappels :</strong> transforme une note ou les éléments non cochés d’une liste en tâche sans supprimer le mémo d’origine.</p>
                   <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
@@ -8140,38 +8279,53 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="mt-3 flex flex-col gap-2">
-                    {memoDraftItems.map((item, index) => (
-                      <div key={item.id} className="flex items-center gap-2 bg-white/50 rounded-xl p-2 border border-black/5">
-                        <input
-                          type="checkbox"
-                          checked={item.completed}
-                          onChange={() => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, completed: !current.completed } : current))}
-                          className="accent-[#829076]"
-                        />
-                        <textarea
-                          ref={(element) => {
-                            if (element) {
-                              memoItemInputRefs.current.set(item.id, element);
-                              resizeMemoListTextarea(element);
-                            } else memoItemInputRefs.current.delete(item.id);
-                          }}
-                          rows={1}
-                          value={item.text}
-                          onChange={(e) => {
-                            setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, text: e.target.value } : current));
-                            resizeMemoListTextarea(e.currentTarget);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) {
-                              e.preventDefault();
-                              focusNextMemoListLine(index);
-                            }
-                          }}
-                          className={`min-w-0 flex-1 min-h-[40px] bg-transparent border-none outline-none text-sm font-semibold resize-none overflow-hidden whitespace-pre-wrap break-words py-2 ${item.completed ? 'line-through opacity-55' : ''}`}
-                        />
-                        <button type="button" onClick={() => setMemoDraftItems(prev => prev.filter((_, i) => i !== index))} className="w-7 h-7 rounded-full hover:bg-white/70 text-[#875E55] font-black">×</button>
-                      </div>
-                    ))}
+                    {memoDraftItems.length > 0 && (
+                      <DndContext
+                        sensors={memoListDndSensors}
+                        collisionDetection={closestCenter}
+                        onDragStart={handleMemoListDragStart}
+                        onDragEnd={handleMemoListDragEnd}
+                        onDragCancel={handleMemoListDragCancel}
+                      >
+                        <div className="flex flex-col gap-2">
+                          {memoDraftItems.map((item, index) => (
+                            <MemoDraftListRow
+                              key={item.id}
+                              item={item}
+                              index={index}
+                              onToggle={() => setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, completed: !current.completed } : current))}
+                              onChange={(value, element) => {
+                                setMemoDraftItems(prev => prev.map(current => current.id === item.id ? { ...current, text: value } : current));
+                                resizeMemoListTextarea(element);
+                              }}
+                              onEnter={() => focusNextMemoListLine(index)}
+                              onRemove={() => setMemoDraftItems(prev => prev.filter(current => current.id !== item.id))}
+                              registerInput={(element) => {
+                                if (element) {
+                                  memoItemInputRefs.current.set(item.id, element);
+                                  resizeMemoListTextarea(element);
+                                } else memoItemInputRefs.current.delete(item.id);
+                              }}
+                            />
+                          ))}
+                        </div>
+                        <DragOverlay dropAnimation={{ duration: 160, easing: 'ease-out' }}>
+                          {memoListDraggingId && (() => {
+                            const draggedItem = memoDraftItems.find(item => item.id === memoListDraggingId);
+                            if (!draggedItem) return null;
+                            return (
+                              <div className="rounded-xl border border-[#829076] bg-[#FBFAF7] px-3 py-3 shadow-xl flex items-center gap-2 text-sm font-black text-[#4A463F] max-w-[360px]">
+                                <span className="text-lg opacity-60">⠿</span>
+                                <span className="break-words">{draggedItem.text || 'Ligne vide'}</span>
+                              </div>
+                            );
+                          })()}
+                        </DragOverlay>
+                      </DndContext>
+                    )}
+                    {memoDraftItems.length > 1 && (
+                      <p className="px-1 text-[10px] font-bold opacity-55">Maintiens la poignée ⠿ puis glisse pour changer l’ordre.</p>
+                    )}
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
                         <textarea
