@@ -110,6 +110,53 @@ interface MemoEntry {
   updated_at?: string | null;
 }
 
+interface MemoTransferPayload {
+  version: 1;
+  memo_type: 'text' | 'list';
+  items: MemoListItem[];
+  is_drawing: boolean;
+  drawing_data: DrawNoteData;
+  color: MemoColor;
+}
+
+const MEMO_TRANSFER_PREFIX = '[[RAPPEL_NOTES_MEMO_V1:';
+
+const encodeMemoTransferPayload = (payload: MemoTransferPayload) => {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let binary = '';
+  bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+  return `${MEMO_TRANSFER_PREFIX}${btoa(binary)}]]`;
+};
+
+const splitTaskContent = (value: string) => {
+  const content = typeof value === 'string' ? value : '';
+  const markerIndex = content.lastIndexOf(MEMO_TRANSFER_PREFIX);
+  if (markerIndex < 0 || !content.endsWith(']]')) {
+    return { visibleContent: content, memoPayload: null as MemoTransferPayload | null };
+  }
+
+  try {
+    const encoded = content.slice(markerIndex + MEMO_TRANSFER_PREFIX.length, -2);
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as MemoTransferPayload;
+    if (parsed?.version !== 1) throw new Error('Version inconnue');
+    return {
+      visibleContent: content.slice(0, markerIndex).trimEnd(),
+      memoPayload: parsed,
+    };
+  } catch (_) {
+    return { visibleContent: content, memoPayload: null as MemoTransferPayload | null };
+  }
+};
+
+const joinTaskContent = (visibleContent: string, payload: MemoTransferPayload | null) =>
+  payload
+    ? [visibleContent.trim(), encodeMemoTransferPayload(payload)].filter(Boolean).join('\n\n')
+    : visibleContent.trim();
+
+const getVisibleTaskContent = (value?: string | null) => splitTaskContent(value || '').visibleContent;
+
 interface DragSlot {
   id: string;
   left: number;
@@ -185,24 +232,8 @@ const formatDuration = (totalMinutes: number) => {
 const NOTE_DRAFT_STORAGE_KEY = 'rappel-notes-note-draft-v1';
 const PLANNING_DRAFT_STORAGE_KEY = 'rappel-notes-planning-draft-v1';
 
-type QuickCaptureKind = 'note' | 'task';
-
 type MemoSortMode = 'manual' | 'newest' | 'oldest' | 'updated';
 type MemoTypeFilter = 'all' | 'text' | 'list' | 'drawing';
-
-const detectQuickCaptureKind = (value: string): QuickCaptureKind => {
-  const text = value.trim().toLocaleLowerCase('fr-FR');
-  if (!text) return 'note';
-
-  const startsWithAction = /^(appeler|acheter|envoyer|faire|prendre|réserver|payer|rappeler|contacter|terminer|préparer|commander|récupérer|aller|vérifier|répondre|relancer|penser à|ne pas oublier)\b/.test(text);
-  const explicitTask = /\b(à faire|todo|tâche|rappelle[- ]moi|penser à|ne pas oublier)\b/.test(text);
-  const timeSignal = /\b(aujourd['’]hui|demain|après-demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|ce soir|ce matin|cet après-midi|à\s+\d{1,2}\s*(?:h|heure)|avant\s+\d{1,2}\s*(?:h|heure))\b/.test(text);
-
-  // En cas de doute, la note reste le choix par défaut.
-  return explicitTask || startsWithAction || (timeSignal && /\b(dois|faut|prévoir|rendez-vous|rdv)\b/.test(text)) ? 'task' : 'note';
-};
-
-const quickCaptureHasTimeSignal = (value: string) => /\b(aujourd['’]hui|demain|après-demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|ce soir|ce matin|cet après-midi|à\s+\d{1,2}\s*(?:h|heure))\b/i.test(value);
 
 const transformDrawObject = (object: DrawObject, scale: number, offsetX: number, offsetY: number): DrawObject => {
   if (object.type === 'path' || object.type === 'polygon') {
@@ -273,6 +304,54 @@ const mergeDrawNotes = (drawings: DrawNoteData[]): DrawNoteData => {
 
 // Activé uniquement sur le projet Vercel de démonstration.
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+
+type PrimaryAppSection = 'memos' | 'notes' | 'planning';
+const PRIMARY_APP_SECTIONS: PrimaryAppSection[] = ['memos', 'notes', 'planning'];
+
+function PrimarySwipePreview({ section }: { section: PrimaryAppSection }) {
+  const config = section === 'memos'
+    ? { title: 'Notes', icon: '📝', subtitle: 'Idées, mémos et listes' }
+    : section === 'notes'
+      ? { title: 'À faire', icon: '✓', subtitle: 'Ce que je dois faire' }
+      : { title: 'Planning', icon: '▦', subtitle: 'Plannings sauvegardés' };
+
+  return (
+    <div className="h-full min-h-[72vh] bg-[#F8F5EF] px-4 py-5 text-[#4A463F]" aria-hidden="true">
+      <div className="flex flex-col items-center pt-2">
+        <div className="w-12 h-12 rounded-2xl bg-[#D8DEC9] border border-[#C5CEB8] flex items-center justify-center text-2xl shadow-sm">{config.icon}</div>
+        <h2 className="mt-3 text-[34px] leading-none text-[#4B5843] font-semibold" style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}>{config.title}</h2>
+        <p className="mt-1.5 text-xs font-bold text-[#81786C]">{config.subtitle}</p>
+      </div>
+
+      {section === 'memos' ? (
+        <div className="grid grid-cols-2 gap-3 mt-8 opacity-80">
+          <div className="h-28 rounded-2xl bg-[#E6ECDD] border border-[#CAD5BE] shadow-sm p-3"><div className="w-2/3 h-3 rounded-full bg-[#76836B]/25" /><div className="mt-3 w-full h-2 rounded-full bg-[#76836B]/15" /><div className="mt-2 w-4/5 h-2 rounded-full bg-[#76836B]/15" /></div>
+          <div className="h-40 rounded-2xl bg-[#F1E4D2] border border-[#DEC9AD] shadow-sm p-3"><div className="w-1/2 h-3 rounded-full bg-[#8B7257]/25" />{[0, 1, 2, 3].map(line => <div key={line} className="mt-3 flex gap-2"><span className="w-3 h-3 rounded border border-[#8B7257]/30" /><span className="flex-1 h-2 mt-0.5 rounded-full bg-[#8B7257]/15" /></div>)}</div>
+          <div className="h-32 -mt-10 rounded-2xl bg-[#DFE8EC] border border-[#C2D3DA] shadow-sm p-3"><div className="w-3/4 h-3 rounded-full bg-[#58717B]/20" /><div className="mt-3 w-full h-2 rounded-full bg-[#58717B]/15" /></div>
+        </div>
+      ) : section === 'notes' ? (
+        <div className="grid grid-cols-3 gap-2 mt-8 opacity-80">
+          {['#FAECE7', '#F6EAD9', '#EDF1E7'].map((color, column) => (
+            <div key={color} className="rounded-2xl border border-[#DED7CC] bg-[#FBFAF7] p-2 min-h-64">
+              <div className="h-3 w-4/5 mx-auto rounded-full bg-[#746D63]/20" />
+              {[0, 1].map(card => <div key={card} className="mt-3 h-20 rounded-xl border border-black/5 shadow-sm" style={{ backgroundColor: color }}><div className="m-2 h-2 w-2/3 rounded-full bg-black/10" /><div className="m-2 h-2 w-4/5 rounded-full bg-black/5" /></div>)}
+              {column === 1 && <div className="mt-3 h-14 rounded-xl bg-[#F6EAD9] border border-black/5" />}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 mt-8 opacity-80">
+          {[0, 1, 2, 3].map(card => (
+            <div key={card} className="h-36 rounded-2xl bg-[#FBFAF7] border border-[#DED7CC] shadow-sm overflow-hidden">
+              <div className="h-9 bg-[#EEE8DD] border-b border-[#DED7CC] px-3 flex items-center"><span className="w-1/2 h-2.5 rounded-full bg-[#746D63]/20" /></div>
+              <div className="grid grid-cols-3 gap-1 p-2">{[0, 1, 2, 3, 4, 5].map(block => <span key={block} className={`h-8 rounded-md ${block % 3 === 0 ? 'bg-[#D8DEC9]' : block % 3 === 1 ? 'bg-[#DFE8EC]' : 'bg-[#F1E4D2]'}`} />)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type MemoDndCardProps = {
   memo: MemoEntry;
@@ -362,6 +441,7 @@ function MemoDraftListRow({ item, index, onToggle, onChange, onEnter, onRemove, 
     >
       <button
         type="button"
+        data-main-swipe-block="true"
         {...draggable.attributes}
         {...draggable.listeners}
         className="w-8 h-10 rounded-lg flex-shrink-0 flex items-center justify-center text-lg font-black opacity-55 hover:opacity-90 hover:bg-white/70 cursor-grab active:cursor-grabbing select-none"
@@ -598,17 +678,21 @@ type DrawEditorProps = {
   initialTitle: string;
   initialColor: MemoColor;
   initialPinned: boolean;
+  initialIsTodo: boolean;
+  initialImportance: 'vert' | 'orange' | 'rouge';
   canPin: boolean;
-  onSave: (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean }) => Promise<boolean>;
+  onSave: (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean; isTodo: boolean; importance: 'vert' | 'orange' | 'rouge' }) => Promise<boolean>;
   onDelete?: () => void;
   registerAutoSave: (handler: () => Promise<boolean>) => void;
   onClose: () => void;
 };
 
-function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned, canPin, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
+function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned, initialIsTodo, initialImportance, canPin, onSave, onDelete, registerAutoSave, onClose }: DrawEditorProps) {
   const [title, setTitle] = useState(initialTitle);
   const [memoColor, setMemoColor] = useState<MemoColor>(initialColor);
   const [pinned, setPinned] = useState(initialPinned);
+  const [isTodo, setIsTodo] = useState(initialIsTodo);
+  const [drawImportance, setDrawImportance] = useState<'vert' | 'orange' | 'rouge'>(initialImportance);
   const [objects, setObjects] = useState<DrawObject[]>(() => normalizeDrawNoteData(initialData).objects);
   const [tool, setTool] = useState<DrawTool | null>('pen');
   const [strokeWidth, setStrokeWidth] = useState<DrawStrokeWidth>(4);
@@ -899,7 +983,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
   const save = async (closeAfterSave = true) => {
     setSaving(true);
     try {
-      const ok = await onSave({ title: title.trim(), color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() }, pinned });
+      const ok = await onSave({ title: title.trim(), color: memoColor, drawing: { ...EMPTY_DRAW_NOTE, objects: snapshot() }, pinned, isTodo, importance: drawImportance });
       if (ok && closeAfterSave) onClose();
       return ok;
     } finally {
@@ -909,7 +993,7 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
 
   useEffect(() => {
     registerAutoSave(() => save(false));
-  }, [title, memoColor, objects, pinned]);
+  }, [title, memoColor, objects, pinned, isTodo, drawImportance]);
 
   const getTouchGeometry = (touches: React.TouchList) => {
     const first = touches[0];
@@ -1179,6 +1263,20 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
           {!tool ? 'Pince avec deux doigts pour zoomer uniquement sur la feuille.' : tool === 'pen' ? 'Dessine à main levée. Le zoom à deux doigts reste disponible.' : tool === 'polygon' ? 'Place les points puis touche le premier pour fermer. ↶ retire le dernier point.' : tool === 'text' ? 'Touche la feuille une fois pour placer le texte.' : 'Glisse sur la feuille pour créer la forme. Le zoom à deux doigts reste disponible.'}
         </div>
 
+        <div className="flex items-center gap-2 rounded-xl bg-white/70 border border-[#DDD5C9] px-2.5 py-2">
+          <label className="flex items-center gap-2 text-xs font-black text-[#4B5843] cursor-pointer flex-1">
+            <input type="checkbox" checked={isTodo} onChange={(event) => setIsTodo(event.target.checked)} className="w-4 h-4 accent-[#6F7B64]" />
+            ✓ À faire
+          </label>
+          {isTodo && (
+            <select value={drawImportance} onChange={(event) => setDrawImportance(event.target.value as 'vert' | 'orange' | 'rouge')} className="h-8 rounded-lg border border-[#D8D0C4] bg-white px-2 text-[10px] font-black text-[#4A463F]">
+              <option value="vert">🟢 Normale</option>
+              <option value="orange">🟠 Importante</option>
+              <option value="rouge">🔴 Urgente</option>
+            </select>
+          )}
+        </div>
+
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-1.5" aria-label="Couleur de fond de la note">
             {(['sage', 'sand', 'rose', 'blue', 'lavender', 'white'] as MemoColor[]).map(color => (
@@ -1221,6 +1319,18 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
 
 export default function Home() {
   const [mainMode, setMainMode] = useState<'notes' | 'memos' | 'planning' | 'planning_gallery'>('memos');
+  const mainSwipeViewportRef = useRef<HTMLDivElement | null>(null);
+  const mainSwipeTrackRef = useRef<HTMLDivElement | null>(null);
+  const mainSwipeAnimationTimerRef = useRef<number | null>(null);
+  const mainSwipeGestureRef = useRef<{
+    startX: number;
+    startY: number;
+    lastX: number;
+    startedAt: number;
+    axis: 'pending' | 'horizontal' | 'vertical';
+    offsetX: number;
+    width: number;
+  } | null>(null);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
@@ -1233,12 +1343,8 @@ export default function Home() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
+  const [newEntryIsTodo, setNewEntryIsTodo] = useState(true);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
-  const [quickCaptureText, setQuickCaptureText] = useState('');
-  const [quickCaptureKind, setQuickCaptureKind] = useState<QuickCaptureKind | null>(null);
-  const [quickCaptureOverridden, setQuickCaptureOverridden] = useState(false);
-  const quickCaptureOpenRef = useRef(false);
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
   const [memoEntries, setMemoEntries] = useState<MemoEntry[]>([]);
@@ -1265,6 +1371,8 @@ export default function Home() {
   const [memoListDraggingId, setMemoListDraggingId] = useState<string | null>(null);
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const [memoDraftIsTodo, setMemoDraftIsTodo] = useState(false);
+  const [memoDraftImportance, setMemoDraftImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const memoNewItemRef = useRef<HTMLTextAreaElement | null>(null);
   const memoItemInputRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
   const [showMemoCleanupModal, setShowMemoCleanupModal] = useState(false);
@@ -1276,10 +1384,15 @@ export default function Home() {
     sessionKey: string;
     memoId: string | null;
     title: string;
+    content: string;
+    memoType: 'text' | 'list';
+    items: MemoListItem[];
     color: MemoColor;
     pinned: boolean;
+    isTodo: boolean;
+    importance: 'vert' | 'orange' | 'rouge';
     drawing: DrawNoteData;
-  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', color: 'sage', pinned: false, drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
+  }>(() => ({ sessionKey: 'initial', memoId: null, title: '', content: '', memoType: 'text', items: [], color: 'sage', pinned: false, isTodo: false, importance: 'vert', drawing: { ...EMPTY_DRAW_NOTE, objects: [] } }));
   const drawEditorOpenRef = useRef(false);
   const drawEditorAutoSaveRef = useRef<() => Promise<boolean>>(async () => true);
   const [selectedMemoIds, setSelectedMemoIds] = useState<Set<string>>(() => new Set());
@@ -1858,6 +1971,7 @@ export default function Home() {
           setNewListItems(draft.newListItems.filter((item: unknown): item is string => typeof item === 'string'));
         }
         if (typeof draft.currentNewListItem === 'string') setCurrentNewListItem(draft.currentNewListItem);
+        if (typeof draft.newEntryIsTodo === 'boolean') setNewEntryIsTodo(draft.newEntryIsTodo);
 
         if (typeof draft.showAdvancedSettings === 'boolean') setShowAdvancedSettings(draft.showAdvancedSettings);
         if (typeof draft.sendImmediateEmail === 'boolean') setSendImmediateEmail(draft.sendImmediateEmail);
@@ -1912,6 +2026,7 @@ export default function Home() {
           noteMode,
           newListItems,
           currentNewListItem,
+          newEntryIsTodo,
           showAdvancedSettings,
           sendImmediateEmail,
           showPopupConfig,
@@ -1940,6 +2055,7 @@ export default function Home() {
     noteMode,
     newListItems,
     currentNewListItem,
+    newEntryIsTodo,
     showAdvancedSettings,
     sendImmediateEmail,
     showPopupConfig,
@@ -2365,16 +2481,6 @@ export default function Home() {
         return;
       }
 
-      // Retour Android : la saisie rapide se ferme sans quitter la page courante.
-      if (quickCaptureOpenRef.current) {
-        quickCaptureOpenRef.current = false;
-        setQuickCaptureOpen(false);
-        setQuickCaptureText('');
-        setQuickCaptureKind(null);
-        setQuickCaptureOverridden(false);
-        return;
-      }
-
       // Retour Android : DrawNote se sauvegarde et se ferme d'abord, puis l'éditeur,
       // la sélection et enfin l'historique des notes supprimées.
       if (drawEditorOpenRef.current) {
@@ -2538,7 +2644,6 @@ export default function Home() {
   // remplace cette entrée au lieu d'empiler la chronologie de tous les clics.
   const clearTransientHistoryFlags = (state: Record<string, any>) => {
     const next = { ...state };
-    delete next.quickCapture;
     delete next.memoFilters;
     delete next.memoArchive;
     delete next.memoSelection;
@@ -2555,7 +2660,7 @@ export default function Home() {
     const nextState = { ...clearTransientHistoryFlags(currentState), primaryAway: true };
     const isNotesInterfaceChild = !!(
       currentState.memoFilters || currentState.memoArchive || currentState.memoSelection ||
-      currentState.memoEditor || currentState.drawEditor || currentState.quickCapture
+      currentState.memoEditor || currentState.drawEditor
     );
 
     memoFiltersOpenRef.current = false;
@@ -2589,7 +2694,7 @@ export default function Home() {
     setMemoFiltersOpen(false);
     if (
       currentState.primaryAway || currentState.memoFilters || currentState.memoArchive ||
-      currentState.memoSelection || currentState.memoEditor || currentState.drawEditor || currentState.quickCapture
+      currentState.memoSelection || currentState.memoEditor || currentState.drawEditor
     ) {
       window.history.back();
       return;
@@ -2626,6 +2731,16 @@ export default function Home() {
     navigateAwayRoute('#tasks-create');
   };
 
+  const openTodoCreation = () => {
+    setNewEntryIsTodo(true);
+    setNoteMode('text');
+    setNewTitle('');
+    setNewContent('');
+    setNewListItems([]);
+    setCurrentNewListItem('');
+    navigateNotesCreate();
+  };
+
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
     navigateAwayRoute(targetHash);
   };
@@ -2633,6 +2748,151 @@ export default function Home() {
   const navigatePlanningHome = () => {
     navigateAwayRoute('#planning');
   };
+
+  // Carrousel principal Notes -> Tâches -> Planning. Le contenu courant et
+  // l'aperçu voisin suivent directement le doigt, puis s'alignent ou reviennent
+  // en place selon la distance et la vitesse du geste.
+  useEffect(() => {
+    const viewport = mainSwipeViewportRef.current;
+    const track = mainSwipeTrackRef.current;
+    if (!viewport || !track) return;
+
+    const currentSection: PrimaryAppSection = mainMode === 'memos'
+      ? 'memos'
+      : mainMode === 'notes'
+        ? 'notes'
+        : 'planning';
+    const currentIndex = PRIMARY_APP_SECTIONS.indexOf(currentSection);
+    const routeAllowsSwipe = mainMode === 'memos' || mainMode === 'planning_gallery' || (mainMode === 'notes' && activeTab === 'notes' && !isFocusMode);
+
+    const resetTrack = (animated: boolean) => {
+      track.style.transition = animated ? 'transform 190ms cubic-bezier(0.22, 0.75, 0.25, 1)' : 'none';
+      track.style.transform = 'translate3d(0px, 0, 0)';
+      if (animated) {
+        window.setTimeout(() => {
+          if (!mainSwipeGestureRef.current) {
+            track.style.transition = 'none';
+            track.style.willChange = 'auto';
+          }
+        }, 200);
+      } else {
+        track.style.willChange = 'auto';
+      }
+    };
+
+    const targetBlocksSwipe = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return true;
+      if (target.closest('input, textarea, select, button, a, [contenteditable="true"], [data-main-swipe-block="true"], .fixed')) return true;
+
+      let element: Element | null = target;
+      while (element && element !== viewport) {
+        if (element instanceof HTMLElement) {
+          const style = window.getComputedStyle(element);
+          if ((style.overflowX === 'auto' || style.overflowX === 'scroll') && element.scrollWidth > element.clientWidth + 2) return true;
+        }
+        element = element.parentElement;
+      }
+      return false;
+    };
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (!routeAllowsSwipe || event.touches.length !== 1 || mainSwipeAnimationTimerRef.current !== null) return;
+      if (selectedMemoIdsRef.current.size > 0 || targetBlocksSwipe(event.target)) return;
+      const touch = event.touches[0];
+      mainSwipeGestureRef.current = {
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        startedAt: performance.now(),
+        axis: 'pending',
+        offsetX: 0,
+        width: Math.max(1, viewport.clientWidth),
+      };
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const gesture = mainSwipeGestureRef.current;
+      if (!gesture || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - gesture.startX;
+      const dy = touch.clientY - gesture.startY;
+      gesture.lastX = touch.clientX;
+
+      if (gesture.axis === 'pending') {
+        if (Math.hypot(dx, dy) < 7) return;
+        gesture.axis = Math.abs(dx) > Math.abs(dy) * 1.18 ? 'horizontal' : 'vertical';
+      }
+      if (gesture.axis !== 'horizontal') return;
+
+      event.preventDefault();
+      const requestedDirection = dx < 0 ? 1 : -1;
+      const hasNeighbour = currentIndex + requestedDirection >= 0 && currentIndex + requestedDirection < PRIMARY_APP_SECTIONS.length;
+      const resistedDx = hasNeighbour ? dx : dx * 0.18;
+      gesture.offsetX = Math.max(-gesture.width, Math.min(gesture.width, resistedDx));
+      track.style.transition = 'none';
+      track.style.willChange = 'transform';
+      track.style.transform = `translate3d(${gesture.offsetX}px, 0, 0)`;
+    };
+
+    const finishGesture = (cancelled = false) => {
+      const gesture = mainSwipeGestureRef.current;
+      if (!gesture) return;
+      mainSwipeGestureRef.current = null;
+      if (gesture.axis !== 'horizontal' || cancelled) {
+        resetTrack(gesture.axis === 'horizontal');
+        return;
+      }
+
+      const elapsed = Math.max(1, performance.now() - gesture.startedAt);
+      const velocity = (gesture.lastX - gesture.startX) / elapsed;
+      const direction = gesture.offsetX < 0 ? 1 : -1;
+      const targetIndex = currentIndex + direction;
+      const hasNeighbour = targetIndex >= 0 && targetIndex < PRIMARY_APP_SECTIONS.length;
+      const shouldChange = hasNeighbour && (
+        Math.abs(gesture.offsetX) >= gesture.width * 0.22 ||
+        (Math.abs(velocity) >= 0.55 && Math.abs(gesture.offsetX) >= 48)
+      );
+
+      if (!shouldChange) {
+        resetTrack(true);
+        return;
+      }
+
+      const destination = direction > 0 ? -gesture.width : gesture.width;
+      track.style.transition = 'transform 235ms cubic-bezier(0.22, 0.78, 0.22, 1)';
+      track.style.transform = `translate3d(${destination}px, 0, 0)`;
+      mainSwipeAnimationTimerRef.current = window.setTimeout(() => {
+        const targetSection = PRIMARY_APP_SECTIONS[targetIndex];
+        mainSwipeAnimationTimerRef.current = null;
+        // On garde l'aperçu voisin centré jusqu'au changement effectif de route.
+        // Le nettoyage de l'effet remet ensuite le vrai nouvel écran à x = 0,
+        // ce qui évite un flash de l'ancienne page, notamment avec history.back().
+        if (targetSection === 'memos') navigatePrimarySection('#notes');
+        else if (targetSection === 'notes') navigatePrimarySection('#tasks');
+        else navigatePrimarySection('#planning');
+      }, 235);
+    };
+
+    const handleTouchEnd = () => finishGesture(false);
+    const handleTouchCancel = () => finishGesture(true);
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd, { passive: true });
+    viewport.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+
+    return () => {
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchend', handleTouchEnd);
+      viewport.removeEventListener('touchcancel', handleTouchCancel);
+      if (mainSwipeAnimationTimerRef.current !== null) {
+        window.clearTimeout(mainSwipeAnimationTimerRef.current);
+        mainSwipeAnimationTimerRef.current = null;
+      }
+      mainSwipeGestureRef.current = null;
+      resetTrack(false);
+    };
+  }, [mainMode, activeTab, isFocusMode]);
 
   // ==========================================
 
@@ -3648,123 +3908,6 @@ export default function Home() {
     return orders.length ? Math.max(...orders) + 1 : 0;
   };
 
-  const splitQuickCapture = (value: string) => {
-    const lines = value.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const firstLine = lines[0] || '';
-    const title = firstLine.length > 100 ? `${firstLine.slice(0, 97)}…` : firstLine;
-    const content = lines.length > 1 ? lines.slice(1).join('\n') : (firstLine.length > 100 ? firstLine : '');
-    return { title, content };
-  };
-
-  const openQuickCapture = () => {
-    setQuickCaptureText('');
-    setQuickCaptureKind(null);
-    setQuickCaptureOverridden(false);
-    if (typeof window !== 'undefined' && !window.history.state?.quickCapture) {
-      window.history.pushState({ ...(window.history.state || {}), quickCapture: true }, '', window.location.href);
-    }
-    quickCaptureOpenRef.current = true;
-    setQuickCaptureOpen(true);
-  };
-
-  const closeQuickCapture = (consumeHistory = true) => {
-    quickCaptureOpenRef.current = false;
-    setQuickCaptureOpen(false);
-    setQuickCaptureText('');
-    setQuickCaptureKind(null);
-    setQuickCaptureOverridden(false);
-    if (typeof window !== 'undefined' && window.history.state?.quickCapture) {
-      if (consumeHistory) {
-        memoIgnoreNextPopRef.current = true;
-        window.history.back();
-      } else {
-        const nextState = { ...(window.history.state || {}) };
-        delete nextState.quickCapture;
-        window.history.replaceState(nextState, '', window.location.href);
-      }
-    }
-  };
-
-  const changeQuickCaptureText = (value: string) => {
-    setQuickCaptureText(value);
-    if (!value.trim()) {
-      setQuickCaptureKind(null);
-      setQuickCaptureOverridden(false);
-      return;
-    }
-    if (!quickCaptureOverridden) setQuickCaptureKind(detectQuickCaptureKind(value));
-  };
-
-  const chooseQuickCaptureKind = (kind: QuickCaptureKind) => {
-    if (!quickCaptureText.trim()) return;
-    setQuickCaptureKind(kind);
-    setQuickCaptureOverridden(true);
-  };
-
-  const continueQuickCaptureWithReminders = () => {
-    const { title, content } = splitQuickCapture(quickCaptureText);
-    setNewTitle(title);
-    setNewContent(content);
-    setImportance('vert');
-    navigateNotesCreate();
-    closeQuickCapture(false);
-  };
-
-  const saveQuickCapture = async () => {
-    const value = quickCaptureText.trim();
-    if (!value || !quickCaptureKind || loading) return;
-    const { title, content } = splitQuickCapture(value);
-    setLoading(true);
-    try {
-      if (quickCaptureKind === 'note') {
-        const { error } = await supabase.from('memo_notes').insert([{
-          title,
-          content,
-          memo_type: 'text',
-          items: [],
-          is_drawing: false,
-          drawing_data: { ...EMPTY_DRAW_NOTE, objects: [] },
-          color: 'sage',
-          pinned: false,
-          archived: false,
-          archive_folder_id: null,
-          sort_order: nextMemoSortOrder(false, false),
-          updated_at: new Date().toISOString(),
-        }]);
-        if (error) throw error;
-        await fetchMemos();
-        if (showMemoArchivedRef.current) leaveMemoArchives(false);
-        navigatePrimarySection('#notes');
-        setSuccessMessage('✅ Note enregistrée.');
-      } else {
-        const { error } = await supabase.from('notes').insert([{
-          title,
-          content,
-          importance: 'vert',
-          subtasks: [],
-          is_list: false,
-          reminder_active: false,
-          reminder_popup_active: false,
-          daily_reminder_time: '09:00',
-          target_date: '',
-          popup_active: false,
-          is_archived: false,
-          sort_order: nextTaskSortOrder('vert'),
-        }]);
-        if (error) throw error;
-        await fetchNotes();
-        navigatePrimarySection('#tasks');
-        setSuccessMessage('✅ Tâche enregistrée.');
-      }
-      closeQuickCapture(false);
-      window.setTimeout(() => setSuccessMessage(null), 3000);
-    } catch (error: any) {
-      showAppMessage('Erreur lors de la saisie rapide : ' + (error?.message || 'erreur inconnue'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const captureTaskLayout = () => {
     const rects = new Map<string, DOMRect>();
     document.querySelectorAll<HTMLElement>('[data-task-card-id]').forEach((element) => {
@@ -4265,13 +4408,60 @@ export default function Home() {
     setMemoListDraggingId(null);
     setMemoDraftColor('sage');
     setMemoDraftPinned(false);
+    setMemoDraftIsTodo(false);
+    setMemoDraftImportance('vert');
   };
 
-  const openNewMemo = (type: 'text' | 'list') => {
+  const openNewMemo = (type: 'text' | 'list', isTodo = false) => {
     resetMemoDraft(type);
+    setMemoDraftIsTodo(isTodo);
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
+  };
+
+  const moveMemoDataToTodo = async (
+    memo: Pick<MemoEntry, 'title' | 'content' | 'memo_type' | 'items' | 'is_drawing' | 'drawing_data' | 'color'>,
+    priority: 'vert' | 'orange' | 'rouge',
+    sourceMemoId?: string | null,
+  ) => {
+    const items = normalizeMemoItems(memo.items);
+    const transferPayload: MemoTransferPayload = {
+      version: 1,
+      memo_type: memo.memo_type,
+      items,
+      is_drawing: memo.is_drawing,
+      drawing_data: normalizeDrawNoteData(memo.drawing_data),
+      color: memo.color,
+    };
+    const { data: insertedTask, error: insertError } = await supabase.from('notes').insert([{
+      title: memo.title.trim(),
+      content: joinTaskContent(memo.content, transferPayload),
+      importance: priority,
+      subtasks: memo.memo_type === 'list' ? items.map(item => ({ id: item.id, text: item.text, completed: item.completed })) : [],
+      is_list: memo.memo_type === 'list',
+      reminder_active: false,
+      reminder_popup_active: false,
+      daily_reminder_time: '09:00',
+      target_date: '',
+      popup_active: false,
+      is_archived: false,
+      sort_order: nextTaskSortOrder(priority),
+    }]).select('id').single();
+    if (insertError) throw insertError;
+
+    if (sourceMemoId) {
+      const { error: deleteError } = await supabase.from('memo_notes').delete().eq('id', sourceMemoId);
+      if (deleteError) {
+        if (insertedTask?.id) await supabase.from('notes').delete().eq('id', insertedTask.id);
+        throw deleteError;
+      }
+    }
+
+    await Promise.all([fetchMemos(), fetchNotes()]);
+    navigatePrimarySection('#tasks');
+    setSuccessMessage('✅ Élément déplacé dans À faire.');
+    window.setTimeout(() => setSuccessMessage(null), 3000);
   };
 
   const openDrawEditor = (memo?: MemoEntry) => {
@@ -4280,9 +4470,39 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: target?.id || null,
       title: target?.title || '',
+      content: target?.content || '',
+      memoType: target?.memo_type || 'text',
+      items: target?.items || [],
       color: target?.color || 'sage',
       pinned: target?.pinned || false,
+      isTodo: false,
+      importance: 'vert',
       drawing: target ? normalizeDrawNoteData(target.drawing_data) : { ...EMPTY_DRAW_NOTE, objects: [] },
+    });
+    armDrawEditorHistory();
+    drawEditorOpenRef.current = true;
+    setDrawEditorOpen(true);
+  };
+
+  const openNewDrawingFromCreation = () => {
+    if (typeof window !== 'undefined') {
+      const notesUrl = `${window.location.pathname}${window.location.search}#notes`;
+      window.history.replaceState({ ...clearTransientHistoryFlags(window.history.state || {}), primaryAway: false }, '', notesUrl);
+    }
+    setMainMode('memos');
+    setIsFocusMode(false);
+    setDrawEditorSeed({
+      sessionKey: crypto.randomUUID(),
+      memoId: null,
+      title: newTitle.trim(),
+      content: newContent.trim(),
+      memoType: noteMode,
+      items: noteMode === 'list' ? [...newListItems, currentNewListItem].map(text => text.trim()).filter(Boolean).map(text => ({ id: crypto.randomUUID(), text, completed: false })) : [],
+      color: 'sage',
+      pinned: false,
+      isTodo: newEntryIsTodo,
+      importance,
+      drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
     armDrawEditorHistory();
     drawEditorOpenRef.current = true;
@@ -4307,20 +4527,40 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: null,
       title: memoDraftTitle.trim(),
+      content: memoDraftContent.trim(),
+      memoType: memoDraftType,
+      items: memoDraftType === 'list' ? [
+        ...memoDraftItems,
+        ...(memoNewItem.trim() ? [{ id: crypto.randomUUID(), text: memoNewItem.trim(), completed: false }] : []),
+      ] : [],
       color: memoDraftColor,
       pinned: false,
+      isTodo: memoDraftIsTodo,
+      importance: memoDraftImportance,
       drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
     drawEditorOpenRef.current = true;
     setDrawEditorOpen(true);
   };
 
-  const saveDrawMemo = async (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean }) => {
+  const saveDrawMemo = async (payload: { title: string; color: MemoColor; drawing: DrawNoteData; pinned: boolean; isTodo: boolean; importance: 'vert' | 'orange' | 'rouge' }) => {
     setLoading(true);
     try {
       const currentId = drawEditorSeed.memoId;
-      if (!currentId && !payload.title.trim() && normalizeDrawNoteData(payload.drawing).objects.length === 0) return true;
+      if (!currentId && !payload.title.trim() && !drawEditorSeed.content.trim() && drawEditorSeed.items.length === 0 && normalizeDrawNoteData(payload.drawing).objects.length === 0) return true;
       const existingMemo = currentId ? memoEntriesRef.current.find(memo => memo.id === currentId) : null;
+      if (payload.isTodo) {
+        await moveMemoDataToTodo({
+          title: payload.title,
+          content: drawEditorSeed.content,
+          memo_type: drawEditorSeed.memoType,
+          items: drawEditorSeed.items,
+          is_drawing: true,
+          drawing_data: normalizeDrawNoteData(payload.drawing),
+          color: payload.color,
+        }, payload.importance, currentId);
+        return true;
+      }
       const archived = false;
       const pinned = existingMemo ? payload.pinned : false;
       const archiveFolderId = null;
@@ -4332,9 +4572,9 @@ export default function Home() {
         title: payload.title,
         // Une note fusionnée peut contenir à la fois du texte, une liste et un dessin.
         // La retouche du dessin ne doit donc jamais effacer les autres contenus.
-        content: existingMemo?.content || '',
-        memo_type: existingMemo?.memo_type || 'text',
-        items: existingMemo?.items || [],
+        content: existingMemo?.content || drawEditorSeed.content,
+        memo_type: existingMemo?.memo_type || drawEditorSeed.memoType,
+        items: existingMemo?.items || drawEditorSeed.items,
         is_drawing: true,
         drawing_data: normalizeDrawNoteData(payload.drawing),
         color: payload.color,
@@ -4370,6 +4610,8 @@ export default function Home() {
     setMemoListDraggingId(null);
     setMemoDraftColor(memo.color);
     setMemoDraftPinned(memo.pinned);
+    setMemoDraftIsTodo(false);
+    setMemoDraftImportance('vert');
     armMemoEditorHistory();
     memoEditorOpenRef.current = true;
     setMemoEditorOpen(true);
@@ -4451,6 +4693,19 @@ export default function Home() {
     setLoading(true);
     try {
       const existingMemo = editingMemoId ? memoEntriesRef.current.find(memo => memo.id === editingMemoId) : null;
+      if (memoDraftIsTodo) {
+        await moveMemoDataToTodo({
+          title,
+          content,
+          memo_type: memoDraftType,
+          items,
+          is_drawing: existingMemo?.is_drawing || false,
+          drawing_data: existingMemo?.drawing_data || { ...EMPTY_DRAW_NOTE, objects: [] },
+          color: memoDraftColor,
+        }, memoDraftImportance, editingMemoId);
+        if (pendingItem) setMemoNewItem('');
+        return true;
+      }
       const targetArchived = false;
       const pinned = existingMemo ? memoDraftPinned : false;
       const targetArchiveFolderId = null;
@@ -4495,9 +4750,11 @@ export default function Home() {
   memoEditorAutoSaveRef.current = persistMemoDraft;
 
   const switchExistingMemoToDraw = async (memo: MemoEntry) => {
-    const saved = await persistMemoDraft();
-    if (!saved) return;
-    const latest = memoEntriesRef.current.find(item => item.id === memo.id) || {
+    if (!memoDraftIsTodo) {
+      const saved = await persistMemoDraft();
+      if (!saved) return;
+    }
+    const latest = memoDraftIsTodo ? {
       ...memo,
       title: memoDraftTitle.trim(),
       content: memoDraftContent.trim(),
@@ -4505,7 +4762,7 @@ export default function Home() {
       items: memoDraftItems,
       color: memoDraftColor,
       pinned: memoDraftPinned,
-    };
+    } : (memoEntriesRef.current.find(item => item.id === memo.id) || memo);
 
     memoEditorOpenRef.current = false;
     setMemoEditorOpen(false);
@@ -4518,8 +4775,13 @@ export default function Home() {
       sessionKey: crypto.randomUUID(),
       memoId: latest.id,
       title: latest.title,
+      content: latest.content,
+      memoType: latest.memo_type,
+      items: latest.items,
       color: latest.color,
       pinned: latest.pinned,
+      isTodo: memoDraftIsTodo,
+      importance: memoDraftImportance,
       drawing: normalizeDrawNoteData(latest.drawing_data),
     });
     drawEditorOpenRef.current = true;
@@ -4834,35 +5096,52 @@ export default function Home() {
     }
   };
 
-  const transferMemoToTasks = (memo: MemoEntry) => {
-    const listItems = memo.memo_type === 'list'
-      ? (memo.items.some(item => !item.completed) ? memo.items.filter(item => !item.completed) : memo.items)
-      : [];
-    const listText = listItems.map(item => `☐ ${item.text}`).join('\n');
-    const content = [memo.content.trim(), listText].filter(Boolean).join('\n\n');
+  const moveTaskToNotes = async (note: Note, keepCompletedTask = false) => {
+    const { visibleContent, memoPayload } = splitTaskContent(note.content || '');
+    const taskItems = (note.subtasks || []).map(item => ({
+      id: item.id || crypto.randomUUID(),
+      text: item.text,
+      completed: item.completed,
+    }));
+    const items = taskItems.length > 0 ? taskItems : (memoPayload?.items || []);
+    const memoType: 'text' | 'list' = items.length > 0 || memoPayload?.memo_type === 'list' ? 'list' : 'text';
+    const now = new Date().toISOString();
 
-    setNoteMode('text');
-    setNewTitle(memo.title);
-    setNewContent(content);
-    setNewListItems([]);
-    setCurrentNewListItem('');
-    setImportance('vert');
-    setSendImmediateEmail(false);
-    setShowPopupConfig(false);
-    setPopupScheduleMode('relative');
-    setPopupHours('');
-    setPopupMinutes('');
-    setPopupDateTime('');
-    setShowDailyConfig(false);
-    setActivateReminder(false);
-    setReminderPopupActive(false);
-    setShowCalendarConfig(false);
-    setTargetDate('');
-    setShowAdvancedSettings(false);
+    setLoading(true);
+    try {
+      const { data: insertedMemo, error: insertError } = await supabase.from('memo_notes').insert([{
+        title: note.title,
+        content: visibleContent,
+        memo_type: memoType,
+        items: memoType === 'list' ? items : [],
+        is_drawing: memoPayload?.is_drawing || false,
+        drawing_data: memoPayload?.drawing_data || { ...EMPTY_DRAW_NOTE, objects: [] },
+        color: memoPayload?.color || 'sage',
+        pinned: false,
+        archived: false,
+        archive_folder_id: null,
+        sort_order: nextMemoSortOrder(false, false),
+        updated_at: now,
+      }]).select('id').single();
+      if (insertError) throw insertError;
 
-    navigateAwayRoute('#tasks-create');
-    setSuccessMessage('Mémo copié dans Tâches & Rappels. Ajoute maintenant le rappel si nécessaire.');
-    window.setTimeout(() => setSuccessMessage(null), 4500);
+      if (!keepCompletedTask) {
+        const { error: deleteError } = await supabase.from('notes').delete().eq('id', note.id);
+        if (deleteError) {
+          if (insertedMemo?.id) await supabase.from('memo_notes').delete().eq('id', insertedMemo.id);
+          throw deleteError;
+        }
+      }
+
+      await Promise.all([fetchMemos(), fetchNotes()]);
+      if (!keepCompletedTask) navigatePrimarySection('#notes');
+      setSuccessMessage(keepCompletedTask ? '✅ Information conservée dans Notes.' : '✅ Élément déplacé dans Notes.');
+      window.setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error: any) {
+      showAppMessage('Erreur lors du passage dans Notes : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -5975,11 +6254,45 @@ export default function Home() {
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!newTitle.trim() && !newContent.trim()) return;
+    const finalizedListItems = noteMode === 'list'
+      ? [...newListItems, currentNewListItem].map(item => item.trim()).filter(Boolean)
+      : [];
+    if (!newTitle.trim() && !newContent.trim() && finalizedListItems.length === 0) return;
 
     setLoading(true);
 
     try {
+      if (!newEntryIsTodo) {
+        const now = new Date().toISOString();
+        const memoItems = finalizedListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false }));
+        const { error: memoError } = await supabase.from('memo_notes').insert([{
+          title: newTitle.trim(),
+          content: newContent.trim(),
+          memo_type: noteMode,
+          items: memoItems,
+          is_drawing: false,
+          drawing_data: { ...EMPTY_DRAW_NOTE, objects: [] },
+          color: 'sage',
+          pinned: false,
+          archived: false,
+          archive_folder_id: null,
+          sort_order: nextMemoSortOrder(false, false),
+          updated_at: now,
+        }]);
+        if (memoError) throw memoError;
+
+        setNewTitle('');
+        setNewContent('');
+        setNoteMode('text');
+        setNewListItems([]);
+        setCurrentNewListItem('');
+        await fetchMemos();
+        navigatePrimarySection('#notes');
+        setSuccessMessage('✅ Élément conservé dans Notes.');
+        window.setTimeout(() => setSuccessMessage(null), 3000);
+        return;
+      }
+
       let finalTargetDate = '';
       let finalPopupActive = false;
 
@@ -6019,8 +6332,8 @@ export default function Home() {
         title: newTitle.trim(),
         content: newContent.trim(),
         importance,
-        subtasks: [],
-        is_list: false,
+        subtasks: finalizedListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })),
+        is_list: noteMode === 'list',
         reminder_active: activateReminder,
         reminder_popup_active: reminderPopupActive,
         daily_reminder_time: safeDailyTime,
@@ -6060,6 +6373,7 @@ export default function Home() {
       setNewTitle('');
       setNewContent('');
       setImportance('vert');
+      setNoteMode('text');
       setNewListItems([]);
       setCurrentNewListItem('');
       setSendImmediateEmail(false);
@@ -6520,6 +6834,7 @@ export default function Home() {
     }
 
     setAiProposal(null);
+    setNewEntryIsTodo(true);
     navigateNotesCreate();
   };
 
@@ -6549,7 +6864,7 @@ export default function Home() {
     if (!dates) return '#';
 
     const title = encodeURIComponent(note.title || 'Note');
-    const details = encodeURIComponent(note.content || '');
+    const details = encodeURIComponent(getVisibleTaskContent(note.content));
     const timeZone = encodeURIComponent(
       Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Paris'
     );
@@ -6571,7 +6886,7 @@ export default function Home() {
       `UID:${escapeICS(uid)}`,
       `DTSTAMP:${dtstamp}`,
       `SUMMARY:${escapeICS(note.title || 'Note')}`,
-      `DESCRIPTION:${escapeICS(note.content || '')}`,
+      `DESCRIPTION:${escapeICS(getVisibleTaskContent(note.content))}`,
       `DTSTART:${dates.start}`,
       `DTEND:${dates.end}`,
       'END:VEVENT',
@@ -6630,6 +6945,7 @@ export default function Home() {
       : '09:00';
 
     const previousNote = notes.find(note => note.id === id);
+    const previousMemoPayload = splitTaskContent(previousNote?.content || '').memoPayload;
     const emailReminderChanged = Boolean(
       editingReminderActive &&
       (!previousNote?.reminder_active || previousNote?.daily_reminder_time !== safeDailyTime)
@@ -6641,7 +6957,7 @@ export default function Home() {
 
     const updatePayload: Record<string, any> = {
       title: editingTitle.trim(),
-      content: editingContent.trim(),
+      content: joinTaskContent(editingContent, previousMemoPayload),
       target_date: finalTargetDate,
       popup_active: finalPopupActive,
       importance: editingImportance,
@@ -6692,7 +7008,7 @@ export default function Home() {
   };
 
   const startEditing = (note: Note) => {
-    setEditingId(note.id); setEditingTitle(note.title || ''); setEditingContent(note.content || '');
+    setEditingId(note.id); setEditingTitle(note.title || ''); setEditingContent(getVisibleTaskContent(note.content));
     setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
     setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
     setEditingReminderPopupActive(note.reminder_popup_active || false); setEditingDailyTime(note.daily_reminder_time || '09:00');
@@ -6981,7 +7297,9 @@ export default function Home() {
     );
   };
 
-  const renderNoteItem = (note: Note) => (
+  const renderNoteItem = (note: Note) => {
+    const { visibleContent, memoPayload } = splitTaskContent(note.content || '');
+    return (
     <li
       id={`note-${note.id}`}
       key={note.id}
@@ -7198,7 +7516,8 @@ export default function Home() {
                </div>
              )}
              <div className={`font-bold text-base ${showArchived === true ? 'text-gray-500' : 'text-gray-900'}`}>{note.title}</div>
-             <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{note.content}</div>
+             <div className={`text-sm mt-0.5 whitespace-pre-wrap ${showArchived === true ? 'text-gray-400' : 'text-gray-700'}`}>{visibleContent}</div>
+             {memoPayload?.is_drawing && <DrawingPreview data={memoPayload.drawing_data} className="mt-2.5 max-h-[190px]" />}
           </div>
         )}
       </div>
@@ -7248,13 +7567,15 @@ export default function Home() {
               {showArchived === 'snoozed' && (<button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>)}
               {showArchived === false && (<button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>)}
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
+              <button onClick={() => { void moveTaskToNotes(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">📝 Passer dans Notes</button>
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
             </div>
           )}
         </div>
       )}
     </li>
-  );
+    );
+  };
 
   const planningTaskOverlapLayouts = getTaskOverlapLayoutMap(weeklyBlocks);
   const previewTaskOverlapLayouts = previewTemplate
@@ -7263,6 +7584,10 @@ export default function Home() {
   const savedTemplateOverlapLayouts = new Map(
     savedTemplates.map(template => [template.id, getTaskOverlapLayoutMap(template.blocks || [])])
   );
+  const currentPrimarySection: PrimaryAppSection = mainMode === 'memos' ? 'memos' : mainMode === 'notes' ? 'notes' : 'planning';
+  const currentPrimarySectionIndex = PRIMARY_APP_SECTIONS.indexOf(currentPrimarySection);
+  const previousPrimarySection = currentPrimarySectionIndex > 0 ? PRIMARY_APP_SECTIONS[currentPrimarySectionIndex - 1] : null;
+  const nextPrimarySection = currentPrimarySectionIndex < PRIMARY_APP_SECTIONS.length - 1 ? PRIMARY_APP_SECTIONS[currentPrimarySectionIndex + 1] : null;
   const primaryAddButtonClass = 'w-12 h-12 rounded-full bg-[#D8DEC9] hover:bg-[#CCD5BC] border border-[#C8D0B8] text-[#394433] text-3xl leading-none font-light shadow-[0_4px_14px_rgba(78,88,66,0.14)] transition-transform active:scale-95 flex items-center justify-center';
 
   return (
@@ -7272,67 +7597,6 @@ export default function Home() {
       {successMessage && (
         <div className="fixed left-1/2 -translate-x-1/2 top-[max(14px,env(safe-area-inset-top))] z-[14500] max-w-[calc(100vw-32px)] rounded-full bg-[#E6F2DF] border border-[#BFD3B3] px-4 py-2 text-[#3D6234] text-xs font-black shadow-lg">
           {successMessage}
-        </div>
-      )}
-
-      {quickCaptureOpen && (
-        <div className="fixed inset-0 z-[14000] bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4" onClick={() => closeQuickCapture()}>
-          <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(event) => event.stopPropagation()}>
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div>
-                <h2 className="text-lg font-black text-[#46513F]">Saisie rapide</h2>
-                <p className="text-xs font-semibold text-[#81786C] mt-0.5">Écris ce que tu as en tête.</p>
-              </div>
-              <button type="button" onClick={() => closeQuickCapture()} className="w-9 h-9 rounded-full bg-[#EEE8DD] text-[#62594E] font-black">×</button>
-            </div>
-
-            <textarea
-              value={quickCaptureText}
-              onChange={(event) => changeQuickCaptureText(event.target.value)}
-              placeholder="Ex. Appeler le garage demain à 10 h"
-              className="w-full min-h-[140px] resize-y rounded-2xl bg-white border border-[#D8D0C4] p-3 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
-            />
-
-            <div className="mt-4 rounded-2xl bg-[#F1EEE7] border border-[#DDD5C7] p-3">
-              {quickCaptureText.trim() && quickCaptureKind ? (
-                <div className="text-xs font-black text-[#5E574D] mb-2">
-                  Reconnu comme : <span className="text-[#40503A]">{quickCaptureKind === 'task' ? 'Tâche' : 'Note'}</span>
-                </div>
-              ) : (
-                <div className="text-xs font-bold text-[#6F685E] mb-2">Le contenu sera classé en Note ou en Tâche selon ce que tu écris.</div>
-              )}
-              <div className="grid grid-cols-2 gap-2" role="group" aria-label="Choisir la destination de la saisie">
-                <button
-                  type="button"
-                  onClick={() => chooseQuickCaptureKind('note')}
-                  disabled={!quickCaptureText.trim()}
-                  className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'note' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
-                >📝 Note</button>
-                <button
-                  type="button"
-                  onClick={() => chooseQuickCaptureKind('task')}
-                  disabled={!quickCaptureText.trim()}
-                  className={`rounded-xl py-2.5 text-sm font-black border transition-colors ${quickCaptureKind === 'task' ? 'bg-[#D8DEC9] text-[#35412F] border-[#BFC9B2]' : 'bg-white text-[#756E63] border-[#DDD5C7]'}`}
-                >✓ Tâche</button>
-              </div>
-              <p className="mt-2 text-[10px] font-semibold text-[#81786C]">En cas de doute, l’application choisit Note. Planning n’est jamais sélectionné automatiquement.</p>
-            </div>
-
-            {quickCaptureKind === 'task' && quickCaptureHasTimeSignal(quickCaptureText) && (
-              <button
-                type="button"
-                onClick={continueQuickCaptureWithReminders}
-                className="mt-3 w-full rounded-xl border border-[#D9CBAF] bg-[#F3EDD6] hover:bg-[#EAE1C2] px-3 py-2.5 text-xs font-black text-[#66562F]"
-              >⏰ Configurer un rappel avant d’enregistrer</button>
-            )}
-
-            <div className="grid grid-cols-2 gap-2 mt-4">
-              <button type="button" onClick={() => closeQuickCapture()} className="rounded-xl bg-white border border-[#DDD5C7] py-3 text-sm font-black text-[#756E63]">Annuler</button>
-              <button type="button" disabled={!quickCaptureText.trim() || !quickCaptureKind || loading} onClick={() => void saveQuickCapture()} className="rounded-xl bg-[#6F7B64] hover:bg-[#626E58] text-white py-3 text-sm font-black disabled:opacity-40">
-                {loading ? 'Enregistrement…' : quickCaptureKind ? `Créer ${quickCaptureKind === 'task' ? 'la tâche' : 'la note'}` : 'Créer'}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -7357,7 +7621,7 @@ export default function Home() {
                 <div className="text-center text-xs font-bold text-gray-500 uppercase tracking-widest">Tâche {currentCleanupIndex + 1} sur {cleanupNotes.length}</div>
                 <div className="bg-white border border-gray-300 p-4 rounded-xl shadow-sm min-h-[150px] max-h-[300px] overflow-y-auto flex flex-col">
                   <h3 className="font-bold text-lg text-black">{cleanupNotes[currentCleanupIndex].title || '(Sans titre)'}</h3>
-                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{cleanupNotes[currentCleanupIndex].content}</p>
+                  <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap flex-1">{getVisibleTaskContent(cleanupNotes[currentCleanupIndex].content)}</p>
                   <span className="text-[10px] text-gray-400 mt-4 text-right font-semibold">Créée le {new Date(cleanupNotes[currentCleanupIndex].created_at || '').toLocaleDateString('fr-FR')}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-2">
@@ -7380,7 +7644,7 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-6 animate-pulse">
           <div className="bg-red-600 rounded-3xl shadow-2xl p-8 w-full max-w-md flex flex-col gap-6 items-center text-white text-center border-4 border-white">
             <span className="text-6xl">⏰</span><h2 className="text-3xl font-black uppercase tracking-widest">{triggeredAlarm.title || 'Alarme !'}</h2>
-            {triggeredAlarm.content && <p className="text-lg font-medium">{triggeredAlarm.content}</p>}
+            {getVisibleTaskContent(triggeredAlarm.content) && <p className="text-lg font-medium">{getVisibleTaskContent(triggeredAlarm.content)}</p>}
             <button onClick={acknowledgeTriggeredAlarm} className="mt-4 bg-white text-red-600 px-8 py-4 rounded-xl font-black text-xl hover:bg-gray-100 transition-colors shadow-lg w-full">J'AI COMPRIS (STOP)</button>
           </div>
         </div>
@@ -7391,7 +7655,7 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/35 z-[12500] flex items-center justify-center p-4 backdrop-blur-[2px]" onClick={() => setShowNotesHelp(false)}>
           <div className="w-full max-w-md rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F] max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 mb-4">
-              <h2 className="text-lg font-black text-[#46513F]">{activeTab === 'notes' ? 'Tâches enregistrées' : 'Options de Tâches &amp; Rappels'}</h2>
+              <h2 className="text-lg font-black text-[#46513F]">{activeTab === 'notes' ? 'Éléments à faire' : 'Options de À faire'}</h2>
               <button onClick={() => setShowNotesHelp(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
             </div>
 
@@ -7839,6 +8103,24 @@ export default function Home() {
         </div>
       )}
 
+      <div
+        ref={mainSwipeViewportRef}
+        className="relative overflow-x-hidden"
+        style={{ overscrollBehaviorX: 'contain' }}
+      >
+        <div ref={mainSwipeTrackRef} className="relative">
+          {previousPrimarySection && (
+            <div className="absolute top-0 right-full w-full h-full pointer-events-none" aria-hidden="true">
+              <PrimarySwipePreview section={previousPrimarySection} />
+            </div>
+          )}
+          {nextPrimarySection && (
+            <div className="absolute top-0 left-full w-full h-full pointer-events-none" aria-hidden="true">
+              <PrimarySwipePreview section={nextPrimarySection} />
+            </div>
+          )}
+          <div className="relative min-h-[72vh]">
+
       {/* ================= VUE : NOTES, MÉMOS & LISTES ================= */}
       {mainMode === 'memos' && (
         <DndContext
@@ -7853,12 +8135,15 @@ export default function Home() {
         >
         <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
           <div className="grid grid-cols-[1fr_auto] items-center gap-2 mb-5">
-            <h1
-              className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] font-semibold"
-              style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
-            >
-              Notes
-            </h1>
+            <div>
+              <h1
+                className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] font-semibold"
+                style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+              >
+                Notes
+              </h1>
+              <p className="mt-1 text-[11px] font-bold text-[#81786C]">Ce que je veux garder.</p>
+            </div>
             <button
               type="button"
               onClick={() => setShowMemosHelp(true)}
@@ -8181,7 +8466,7 @@ export default function Home() {
                   <p><strong>🧹 Nettoyage :</strong> passe rapidement en revue les anciennes notes pour les conserver ou les supprimer.</p>
                   <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre. Dans une liste, maintiens la poignée ⠿ d’une ligne pour la déplacer.</p>
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
-                  <p><strong>→ Tâches &amp; Rappels :</strong> transforme une note ou les éléments non cochés d’une liste en tâche sans supprimer le mémo d’origine.</p>
+                  <p><strong>✓ À faire :</strong> active cette option dans l’éditeur pour déplacer l’élément vers À faire. Il quitte alors Notes sans créer de doublon visible.</p>
                   <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
                 </div>
               </div>
@@ -8244,6 +8529,34 @@ export default function Home() {
                     className={`absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full flex items-center justify-center text-base shadow-sm transition-all ${listeningMode === 'memo_title' ? 'bg-red-500 text-white animate-pulse scale-105' : 'bg-white/70 text-[#6F685E] hover:bg-white'}`}
                     aria-label="Dicter le titre"
                   >🎙️</button>
+                </div>
+
+                <div className={`mt-3 rounded-2xl border p-3 ${memoDraftIsTodo ? 'bg-white/75 border-[#AAB99D]' : 'bg-white/40 border-black/10'}`}>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={memoDraftIsTodo}
+                        onChange={(event) => setMemoDraftIsTodo(event.target.checked)}
+                        className="w-5 h-5 accent-[#6F7B64]"
+                      />
+                      <span className="text-sm font-black">✓ À faire</span>
+                    </label>
+                    {memoDraftIsTodo && (
+                      <select
+                        value={memoDraftImportance}
+                        onChange={(event) => setMemoDraftImportance(event.target.value as 'vert' | 'orange' | 'rouge')}
+                        className="h-9 rounded-xl border border-black/10 bg-white px-2 text-xs font-black text-[#4A463F]"
+                      >
+                        <option value="vert">🟢 Normale</option>
+                        <option value="orange">🟠 Importante</option>
+                        <option value="rouge">🔴 Urgente</option>
+                      </select>
+                    )}
+                  </div>
+                  <p className="mt-1.5 text-[10px] font-bold opacity-60">
+                    {memoDraftIsTodo ? 'À la fermeture, cet élément quittera Notes et apparaîtra uniquement dans À faire.' : 'Cet élément restera uniquement dans Notes.'}
+                  </p>
                 </div>
 
                 {editingMemoId && (() => {
@@ -8386,20 +8699,7 @@ export default function Home() {
                   const originalMemo = memoEntries.find(memo => memo.id === editingMemoId);
                   if (!originalMemo) return null;
                   return (
-                    <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const saved = await persistMemoDraft();
-                          if (!saved) return;
-                          const latestMemo = memoEntriesRef.current.find(memo => memo.id === originalMemo.id) || originalMemo;
-                          await closeMemoEditor(true, false);
-                          transferMemoToTasks(latestMemo);
-                        }}
-                        className="min-w-0 py-2.5 px-3 rounded-xl bg-white/55 hover:bg-white/80 border border-black/10 text-[11px] font-black truncate"
-                      >
-                        → Envoyer vers Tâches &amp; Rappels
-                      </button>
+                    <div className="mt-4 flex justify-end">
                       <button
                         type="button"
                         onClick={async () => { await closeMemoEditor(true, false); deleteMemo(originalMemo); }}
@@ -8424,6 +8724,8 @@ export default function Home() {
               initialTitle={drawEditorSeed.title}
               initialColor={drawEditorSeed.color}
               initialPinned={drawEditorSeed.pinned}
+              initialIsTodo={drawEditorSeed.isTodo}
+              initialImportance={drawEditorSeed.importance}
               canPin={!!drawEditorSeed.memoId}
               onSave={saveDrawMemo}
               registerAutoSave={(handler) => { drawEditorAutoSaveRef.current = handler; }}
@@ -8437,7 +8739,11 @@ export default function Home() {
                 closeDrawEditor(true);
                 deleteMemo(memo);
               }}
-              onClose={() => closeDrawEditor(true)}
+              onClose={() => {
+                const returnToTodo = drawEditorSeed.isTodo;
+                closeDrawEditor(true);
+                if (returnToTodo) navigatePrimarySection('#tasks');
+              }}
             />
           )}
         </div>
@@ -9062,12 +9368,15 @@ export default function Home() {
         <div className="animate-fade-in text-[#4A463F]">
           <div className="relative mb-5">
             {!isFocusMode ? (
-              <h1
-                className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold"
-                style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
-              >
-                Tâches
-              </h1>
+              <div>
+                <h1
+                  className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold"
+                  style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
+                >
+                  À faire
+                </h1>
+                <p className="mt-1 text-center text-[11px] font-bold text-[#81786C]">Ce que je dois faire.</p>
+              </div>
             ) : (
               <div className="flex flex-col items-center">
                 <h1 className="text-2xl font-black text-[#4B5843]">Mode Focus 🎯</h1>
@@ -9098,10 +9407,10 @@ export default function Home() {
             <div className="flex justify-center mb-4">
               <button
                 type="button"
-                onClick={navigateNotesCreate}
+                onClick={openTodoCreation}
                 className={primaryAddButtonClass}
-                title="Nouvelle tâche"
-                aria-label="Créer une nouvelle tâche"
+                title="Nouvel élément à faire"
+                aria-label="Créer un nouvel élément à faire"
               >＋</button>
             </div>
           )}
@@ -9115,18 +9424,61 @@ export default function Home() {
 
           {activeTab === 'create' && !isFocusMode && (
             <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
-              <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour aux tâches</button>
+              <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour à À faire</button>
+              <div className={`rounded-2xl border p-3 ${newEntryIsTodo ? 'bg-[#EDF1E7] border-[#C8D2BC]' : 'bg-[#F1EEE7] border-[#DDD5C7]'}`}>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={newEntryIsTodo} onChange={(event) => setNewEntryIsTodo(event.target.checked)} className="w-5 h-5 accent-[#6F7B64]" />
+                  <span className="font-black text-sm">✓ À faire</span>
+                </label>
+                <p className="mt-1 text-[10px] font-bold text-[#756E63]">{newEntryIsTodo ? 'Cet élément apparaîtra uniquement dans À faire.' : 'Cet élément sera conservé uniquement dans Notes.'}</p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <button type="button" onClick={() => setNoteMode('text')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'text' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>📝 Note</button>
+                <button type="button" onClick={() => setNoteMode('list')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'list' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>☑ Liste</button>
+                <button type="button" onClick={openNewDrawingFromCreation} className="rounded-xl border py-2 text-xs font-black bg-white border-[#DDD5C7]">✏️ Dessin</button>
+              </div>
               <div className="flex flex-col gap-2">
                 <div className="relative flex items-center w-full">
                   <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                   <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
                 <div className="relative w-full">
-                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Décris ta tâche ou ton rappel ici..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder={newEntryIsTodo ? 'Décris ce que tu dois faire...' : 'Écris ce que tu veux conserver...'} className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                   <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
               </div>
 
+              {noteMode === 'list' && (
+                <div className="rounded-2xl border border-[#DED5C8] bg-[#F8F5EF] p-3 flex flex-col gap-2">
+                  {newListItems.map((item, index) => (
+                    <div key={`${item}-${index}`} className="flex items-start gap-2 rounded-xl bg-white border border-[#E1D9CE] px-3 py-2 text-sm font-semibold">
+                      <span className="opacity-60">☐</span>
+                      <span className="flex-1 break-words">{item}</span>
+                      <button type="button" onClick={() => setNewListItems(items => items.filter((_, itemIndex) => itemIndex !== index))} className="text-[#A5524A] font-black">×</button>
+                    </div>
+                  ))}
+                  <div className="flex gap-2">
+                    <textarea
+                      rows={1}
+                      value={currentNewListItem}
+                      onChange={(event) => setCurrentNewListItem(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || (event.nativeEvent as any).isComposing) return;
+                        event.preventDefault();
+                        const value = currentNewListItem.trim();
+                        if (!value) return;
+                        setNewListItems(items => [...items, value]);
+                        setCurrentNewListItem('');
+                      }}
+                      placeholder="Ajouter une ligne puis Entrée"
+                      className="flex-1 min-h-[42px] resize-none rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold whitespace-pre-wrap break-words"
+                    />
+                    <button type="button" onClick={() => { const value = currentNewListItem.trim(); if (!value) return; setNewListItems(items => [...items, value]); setCurrentNewListItem(''); }} className="w-10 h-10 rounded-xl bg-[#D8DEC9] font-black">＋</button>
+                  </div>
+                </div>
+              )}
+
+              {newEntryIsTodo && (<>
               <div className="flex items-center w-full mt-1">
                 <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
                   <option value="vert">🟢 Priorité Normale</option>
@@ -9273,7 +9625,8 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Création...' : isAiProcessing ? 'Patientez...' : 'Créer la tâche'}</button>
+              </>)}
+              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0 && !currentNewListItem.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : newEntryIsTodo ? 'Créer dans À faire' : 'Conserver dans Notes'}</button>
             </form>
           )}
 
@@ -9320,7 +9673,8 @@ export default function Home() {
                 <div key={currentFocusNote.id} className="w-full max-w-md bg-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col items-center text-center gap-6 border border-gray-100">
                   <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm border ${currentFocusNote.importance === 'rouge' ? 'bg-red-50 text-red-600 border-red-200' : currentFocusNote.importance === 'orange' ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-green-50 text-green-600 border-green-200'}`}>{currentFocusNote.importance === 'rouge' ? '🔴 Urgent' : currentFocusNote.importance === 'orange' ? '🟠 Important' : '🟢 Normal'}</span>
                   {currentFocusNote.title && <h2 className="text-2xl sm:text-3xl font-black text-gray-900 leading-tight">{currentFocusNote.title}</h2>}
-                  {currentFocusNote.content && <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">{currentFocusNote.content}</p>}
+                  {getVisibleTaskContent(currentFocusNote.content) && <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-wrap max-h-[30vh] overflow-y-auto w-full">{getVisibleTaskContent(currentFocusNote.content)}</p>}
+                  {splitTaskContent(currentFocusNote.content).memoPayload?.is_drawing && <DrawingPreview data={splitTaskContent(currentFocusNote.content).memoPayload!.drawing_data} className="w-full max-h-[260px]" />}
                   {currentFocusNote.is_list && currentFocusNote.subtasks?.length > 0 && (
                     <div className="w-full bg-gray-50 p-3 rounded-xl text-left flex flex-col gap-2 mt-2 border border-gray-200">
                       {currentFocusNote.subtasks.map((st: Subtask) => (
@@ -9346,9 +9700,9 @@ export default function Home() {
               <div className="flex items-center justify-between mb-6 w-full gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
                   {showArchived === 'snoozed' ? (
-                    <button onClick={() => setShowArchived(false)} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]">← Retour aux tâches</button>
+                    <button onClick={() => setShowArchived(false)} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]">← Retour à À faire</button>
                   ) : hasSnoozedNotes ? (
-                    <button onClick={() => setShowArchived('snoozed')} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]">💤 Tâches masquées</button>
+                    <button onClick={() => setShowArchived('snoozed')} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]">💤 Éléments masqués</button>
                   ) : <span />}
                 </div>
                 <button onClick={openCleanupModal} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage</button>
@@ -9399,7 +9753,7 @@ export default function Home() {
                           {task.importance === 'rouge' ? '🔴 Urgente' : task.importance === 'orange' ? '🟠 Importante' : '🟢 Normale'}
                         </div>
                         <div className="font-black text-sm text-[#443F39] break-words">{task.title || '(Sans titre)'}</div>
-                        {task.content && <div className="text-xs mt-1 text-[#6A6258] line-clamp-3 whitespace-pre-wrap">{task.content}</div>}
+                        {getVisibleTaskContent(task.content) && <div className="text-xs mt-1 text-[#6A6258] line-clamp-3 whitespace-pre-wrap">{getVisibleTaskContent(task.content)}</div>}
                         <div className="absolute left-1/2 -translate-x-1/2 -bottom-7 whitespace-nowrap rounded-full bg-[#4B5843] text-white px-2.5 py-1 text-[9px] font-black shadow-lg">
                           Relâche pour placer
                         </div>
@@ -9409,7 +9763,7 @@ export default function Home() {
               </>
 
               <div className="mt-12 mb-8 text-center">
-                <button onClick={() => navigateNotesChild('#tasks-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l’historique des tâches terminées ou supprimées</button>
+                <button onClick={() => navigateNotesChild('#tasks-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l’historique des éléments terminés ou supprimés</button>
                 <p className="mt-1 text-[10px] font-semibold text-gray-400">Suppression automatique après 30 jours.</p>
               </div>
             </>
@@ -9418,7 +9772,7 @@ export default function Home() {
           {activeTab === 'history' && !isFocusMode && (
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center mb-2">
-                 <button onClick={() => navigateNotesChild('#tasks')} className="text-blue-600 hover:underline font-bold text-sm">← Retour aux tâches actives</button>
+                 <button onClick={() => navigateNotesChild('#tasks')} className="text-blue-600 hover:underline font-bold text-sm">← Retour à À faire</button>
                  {historyNotes.length > 0 && <button onClick={deleteAllHistory} className="text-red-600 hover:text-red-800 hover:underline font-bold text-sm flex items-center gap-1">🗑️ Tout supprimer</button>}
               </div>
               <div className="bg-[#FBFAF7] p-3 rounded-2xl border border-[#DED7CC] flex items-center gap-2">
@@ -9431,12 +9785,13 @@ export default function Home() {
                 {historyNotes.map(note => (
                   <div key={note.id} className="flex flex-col gap-2 p-3 rounded-2xl bg-[#F2EEE7] border border-[#D9D1C5] opacity-85">
                     <div className="font-bold text-gray-700 text-base line-through decoration-gray-400">{note.title || '(Sans titre)'}</div>
-                    <div className="text-xs text-gray-500 whitespace-pre-wrap">{note.content}</div>
+                    <div className="text-xs text-gray-500 whitespace-pre-wrap">{getVisibleTaskContent(note.content)}</div>
                     <div className="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1 text-[10px] text-gray-500 font-semibold">
                       <span>Créée le : {new Date(note.created_at || '').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                       {note.completed_at && <span>Retirée de la liste le : {new Date(note.completed_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
                     </div>
                     <div className="flex justify-end gap-2 mt-1">
+                      <button onClick={() => void moveTaskToNotes(note, true)} className="bg-white border border-gray-300 text-[#4B5843] px-3 py-1 rounded text-xs font-bold hover:bg-[#EDF1E7] hover:border-[#C8D2BC] transition-colors">📝 Conserver comme note</button>
                       <button onClick={() => updateNote(note.id, 'completed', false)} className="bg-white border border-gray-300 text-blue-600 px-3 py-1 rounded text-xs font-bold hover:bg-blue-50 hover:border-blue-200 transition-colors">↩ Réactiver</button>
                       <button onClick={() => deleteNotePermanently(note.id)} className="bg-white border border-gray-300 text-red-600 px-3 py-1 rounded text-xs font-bold hover:bg-red-50 hover:border-red-200 transition-colors">🗑️ Définitif</button>
                     </div>
@@ -9452,8 +9807,8 @@ export default function Home() {
                 type="button"
                 onClick={() => setShowNotesHelp(true)}
                 className="w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
-                aria-label="Aide sur Tâches & Rappels"
-                title="Aide sur les options de Tâches & Rappels"
+                aria-label="Aide sur À faire"
+                title="Aide sur les options de À faire"
               >
                 ?
               </button>
@@ -9462,15 +9817,9 @@ export default function Home() {
         </div>
       )}
 
-      {(mainMode === 'memos' || mainMode === 'notes') && !memoEditorOpen && !drawEditorOpen && (
-        <button
-          type="button"
-          onClick={openQuickCapture}
-          className="fixed right-4 bottom-[86px] z-[8500] w-11 h-11 rounded-full bg-[#F3EDD6]/95 backdrop-blur border border-[#D9CBAF] text-lg shadow-lg active:scale-95 transition-transform"
-          aria-label="Ouvrir la saisie rapide Note ou Tâche"
-          title="Saisie rapide Note ou Tâche"
-        >⚡</button>
-      )}
+          </div>
+        </div>
+      </div>
 
       <nav
         className="fixed left-1/2 -translate-x-1/2 bottom-0 z-[9000] w-full max-w-7xl border-t border-[#D8D0C4] bg-[#FBF9F4]/95 backdrop-blur-xl shadow-[0_-8px_24px_rgba(78,70,60,0.10)]"
@@ -9496,7 +9845,7 @@ export default function Home() {
             aria-current={mainMode === 'notes' ? 'page' : undefined}
           >
             <span className="text-xl" aria-hidden="true">✓</span>
-            Tâches
+            À faire
           </button>
           <button
             type="button"
