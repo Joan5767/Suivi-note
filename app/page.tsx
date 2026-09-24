@@ -54,6 +54,7 @@ interface Note {
 interface WeeklyBlock {
   id: string;
   title: string;
+  description?: string;
   day: string;
   startHour: number;
   startMinute: number;
@@ -207,6 +208,86 @@ const escapeICS = (value: string) =>
     .replace(/\r?\n/g, '\\n')
     .replace(/,/g, '\\,')
     .replace(/;/g, '\\;');
+
+interface ParsedICSEvent {
+  title: string;
+  description: string;
+  start: Date;
+  end: Date;
+}
+
+const unescapeICS = (value: string) =>
+  value
+    .replace(/\\[nN]/g, '\n')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\');
+
+const parseICSDate = (value: string) => {
+  const match = value.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
+  if (!match) return null;
+
+  const [, year, month, day, hour = '00', minute = '00', second = '00', utc] = match;
+  const values = [year, month, day, hour, minute, second].map(Number);
+  const date = utc
+    ? new Date(Date.UTC(values[0], values[1] - 1, values[2], values[3], values[4], values[5]))
+    : new Date(values[0], values[1] - 1, values[2], values[3], values[4], values[5]);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const parseICSDurationMinutes = (value: string) => {
+  const match = value.trim().match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/i);
+  if (!match) return 60;
+  return Number(match[1] || 0) * 1440 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
+};
+
+const parseICSCalendar = (content: string) => {
+  const unfolded = content.replace(/\r?\n[ \t]/g, '');
+  const lines = unfolded.split(/\r?\n/);
+  const calendarNameLine = lines.find(line => /^X-WR-CALNAME(?:;[^:]*)?:/i.test(line));
+  const calendarName = calendarNameLine
+    ? unescapeICS(calendarNameLine.slice(calendarNameLine.indexOf(':') + 1)).trim()
+    : '';
+  const events: ParsedICSEvent[] = [];
+  let current: Record<string, string> | null = null;
+
+  lines.forEach(line => {
+    if (line.trim().toUpperCase() === 'BEGIN:VEVENT') {
+      current = {};
+      return;
+    }
+    if (line.trim().toUpperCase() === 'END:VEVENT') {
+      if (!current) return;
+      const start = parseICSDate(current.DTSTART || '');
+      if (start) {
+        const duration = parseICSDurationMinutes(current.DURATION || 'PT1H');
+        const parsedEnd = parseICSDate(current.DTEND || '');
+        const end = parsedEnd && parsedEnd > start
+          ? parsedEnd
+          : new Date(start.getTime() + Math.max(15, duration) * 60_000);
+        events.push({
+          title: unescapeICS(current.SUMMARY || 'Tâche importée').trim() || 'Tâche importée',
+          description: unescapeICS(current.DESCRIPTION || '').trim(),
+          start,
+          end,
+        });
+      }
+      current = null;
+      return;
+    }
+    if (!current) return;
+
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex < 0) return;
+    const propertyName = line.slice(0, separatorIndex).split(';')[0].toUpperCase();
+    if (['SUMMARY', 'DESCRIPTION', 'DTSTART', 'DTEND', 'DURATION'].includes(propertyName)) {
+      current[propertyName] = line.slice(separatorIndex + 1);
+    }
+  });
+
+  return { calendarName, events };
+};
 
 const urlBase64ToUint8Array = (base64String: string) => {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -1684,6 +1765,8 @@ export default function Home() {
     useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 10 } }),
   );
   const [previewTemplate, setPreviewTemplate] = useState<PlanningTemplate | null>(null);
+  const [planningDetailBlock, setPlanningDetailBlock] = useState<WeeklyBlock | null>(null);
+  const planningImportInputRef = useRef<HTMLInputElement | null>(null);
 
   // Même animation FLIP que les notes actives : les autres cartes glissent
   // jusqu'à leur nouvelle place au lieu de sauter brutalement dans la grille.
@@ -1746,6 +1829,7 @@ export default function Home() {
   const [blockDay, setBlockDay] = useState('Lundi');
   const [blockTime, setBlockTime] = useState('09:00'); 
   const [blockTitle, setBlockTitle] = useState('');
+  const [blockDescription, setBlockDescription] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
   const [blockDurationHours, setBlockDurationHours] = useState(1);
@@ -1820,6 +1904,7 @@ export default function Home() {
       return [{
         id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
         title: typeof raw.title === 'string' ? raw.title : '',
+        description: typeof raw.description === 'string' ? raw.description : '',
         day,
         startHour,
         startMinute,
@@ -1841,6 +1926,7 @@ export default function Home() {
         .map(block => ({
           id: block.id,
           title: block.title,
+          description: block.description || '',
           day: block.day,
           startHour: block.startHour,
           startMinute: block.startMinute || 0,
@@ -5251,6 +5337,7 @@ export default function Home() {
     const m = minute.toString().padStart(2, '0');
     setBlockTime(`${h}:${m}`);
     setBlockTitle('');
+    setBlockDescription('');
     setBlockColor('blue');
     setBlockKind('task');
     setBlockDurationHours(1);
@@ -5265,6 +5352,7 @@ export default function Home() {
     const m = (block.startMinute || 0).toString().padStart(2, '0');
     setBlockTime(`${h}:${m}`);
     setBlockTitle(block.title);
+    setBlockDescription(block.description || '');
     setBlockColor(block.color);
     setBlockKind(block.kind === 'marker' ? 'marker' : 'task');
     const existingDuration = block.kind === 'marker' ? 0 : Math.max(1, Math.round(block.duration || 60));
@@ -5318,6 +5406,7 @@ export default function Home() {
         return {
           ...b,
           title: blockTitle.trim(),
+          description: blockKind === 'task' ? blockDescription.trim() : '',
           day: blockDay,
           startHour,
           startMinute,
@@ -5330,6 +5419,7 @@ export default function Home() {
       const newBlock: WeeklyBlock = {
         id: crypto.randomUUID(),
         title: blockTitle.trim(),
+        description: blockKind === 'task' ? blockDescription.trim() : '',
         day: blockDay,
         startHour,
         startMinute,
@@ -5738,6 +5828,7 @@ export default function Home() {
       title: 'Nom du planning',
       message: "Donne un nom à ce planning (ex. : Semaine d'école ou Vacances).",
       placeholder: 'Nom du planning',
+      defaultValue: activeTemplateName || undefined,
       confirmLabel: 'Enregistrer',
     });
     const cleanName = name?.trim();
@@ -5834,6 +5925,55 @@ export default function Home() {
     setEditingBlockId(null);
     setPreviewTemplate(null);
     navigatePlanningChild('#planning-editor');
+  };
+
+  const importPlanningICS = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      showAppMessage('Ce fichier est trop volumineux. Choisis un fichier .ics de moins de 5 Mo.');
+      return;
+    }
+
+    try {
+      const content = await file.text();
+      const parsed = parseICSCalendar(content);
+      if (parsed.events.length === 0) {
+        showAppMessage("Aucune tâche datée n'a été trouvée dans ce fichier .ics.");
+        return;
+      }
+
+      const dayNamesByJsIndex = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+      const colors = ['blue', 'green', 'red', 'gray'];
+      const importedBlocks: WeeklyBlock[] = parsed.events.map((icsEvent, index) => ({
+        id: crypto.randomUUID(),
+        title: icsEvent.title,
+        description: icsEvent.description,
+        day: dayNamesByJsIndex[icsEvent.start.getDay()],
+        startHour: icsEvent.start.getHours(),
+        startMinute: icsEvent.start.getMinutes(),
+        duration: Math.max(15, Math.round((icsEvent.end.getTime() - icsEvent.start.getTime()) / 60_000)),
+        color: colors[index % colors.length],
+        kind: 'task',
+      }));
+
+      const normalizedBlocks = normalizeWeeklyBlocks(importedBlocks);
+      const fileName = file.name.replace(/\.ics$/i, '').trim();
+      setWeeklyBlocks(normalizedBlocks);
+      setActiveTemplateId(null);
+      setActiveTemplateName(parsed.calendarName || fileName || 'Planning importé');
+      setPlanningSavedSnapshot(null);
+      setSelectedBlockId(null);
+      setEditingBlockId(null);
+      setPreviewTemplate(null);
+      setPlanningDetailBlock(null);
+      navigatePlanningChild('#planning-editor');
+      showAppMessage(`✅ ${normalizedBlocks.length} tâche${normalizedBlocks.length > 1 ? 's' : ''} importée${normalizedBlocks.length > 1 ? 's' : ''}. Vérifie puis sauvegarde le planning.`);
+    } catch (error: any) {
+      showAppMessage("Impossible d'importer ce fichier .ics : " + (error?.message || 'format invalide'));
+    }
   };
 
   const startNewPlanning = () => {
@@ -6117,6 +6257,7 @@ export default function Home() {
       icsContent += [
         'BEGIN:VEVENT',
         `SUMMARY:${escapeICS(block.title)}`,
+        `DESCRIPTION:${escapeICS(block.description || '')}`,
         `DTSTART:${formatICSDate(date)}`,
         `DTEND:${formatICSDate(end)}`,
         'END:VEVENT',
@@ -7324,18 +7465,8 @@ export default function Home() {
       note.importance === 'orange' ? 'border-[#D6B384] bg-[#F6EAD9]' : 'border-[#AAB99D] bg-[#EDF1E7]'
     }`}>
       {note.popup_active && note.target_date && editingId !== note.id && (
-        <div className={`p-1.5 rounded flex items-center justify-between shadow-sm border-2 ${showArchived === true ? 'bg-gray-100 border-gray-300' : 'bg-red-50 border-red-400'}`}>
-          <span className={`text-xs font-black flex items-center gap-1 ${showArchived === true ? 'text-gray-500' : 'text-red-800'}`}>
-            <span className={showArchived === true ? '' : 'animate-pulse'}>{showArchived === true ? '⏱️' : '🔴'}</span> DANS :
-          </span>
-          <span className={`text-sm font-black tracking-wider ${showArchived === true ? 'text-gray-500' : 'text-red-600'}`}>
-            {(() => {
-              const diff = Math.ceil((getSafeTime(note.target_date) - currentTime) / 1000);
-              if (diff <= 0) return "En cours...";
-              const m = Math.floor(diff / 60); const s = diff % 60;
-              return `${m}m ${s}s`;
-            })()}
-          </span>
+        <div className={`self-start px-2.5 py-1 rounded-lg border shadow-sm ${showArchived === true ? 'bg-gray-100 border-gray-300 text-gray-500' : 'bg-[#FFF4C7] border-[#E7CF72] text-[#6F5A14]'}`}>
+          <span className="text-[11px] font-black">🔔 Rappel programmé</span>
         </div>
       )}
 
@@ -7581,7 +7712,7 @@ export default function Home() {
   const previewTaskOverlapLayouts = previewTemplate
     ? getTaskOverlapLayoutMap(previewTemplate.blocks || [])
     : new Map<string, { columnIndex: number; columnCount: number }>();
-  const savedTemplateOverlapLayouts = new Map(
+  const savedTemplateOverlapLayouts = new Map<string, Map<string, { columnIndex: number; columnCount: number }>>(
     savedTemplates.map(template => [template.id, getTaskOverlapLayoutMap(template.blocks || [])])
   );
   const currentPrimarySection: PrimaryAppSection = mainMode === 'memos' ? 'memos' : mainMode === 'notes' ? 'notes' : 'planning';
@@ -7855,7 +7986,10 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setPreviewTemplate(null)}>
           <div className="bg-white rounded-2xl p-4 w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-black text-gray-800">{previewTemplate.name}</h2>
+              <div>
+                <h2 className="text-xl font-black text-gray-800">{previewTemplate.name}</h2>
+                <p className="text-[11px] font-semibold text-gray-500">Touche une tâche pour voir son détail.</p>
+              </div>
               <button onClick={() => setPreviewTemplate(null)} className="text-gray-400 hover:text-black font-bold text-xl">✖</button>
             </div>
             
@@ -7898,22 +8032,26 @@ export default function Home() {
 
                           if (ev.kind === 'marker') {
                             return (
-                              <div
+                              <button
+                                type="button"
                                 key={ev.id}
                                 className="absolute left-0 right-0 z-20 flex items-center"
                                 style={{ top: `${topPercent}%`, height: '8px', transform: 'translateY(-50%)' }}
                                 title={ev.title}
+                                onClick={() => setPlanningDetailBlock(ev)}
                               >
                                 <div className={`w-full h-[4px] rounded-full shadow-sm ${ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'}`} />
-                              </div>
+                              </button>
                             );
                           }
 
                           const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
                           return (
-                            <div
+                            <button
+                              type="button"
                               key={ev.id}
-                              className="absolute p-0.5"
+                              className="absolute p-0.5 text-left"
+                              onClick={() => setPlanningDetailBlock(ev)}
                               style={{
                                 top: `${topPercent}%`,
                                 height: `${heightPercent}%`,
@@ -7924,7 +8062,7 @@ export default function Home() {
                               <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
                                 <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
                               </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -7949,6 +8087,40 @@ export default function Home() {
                 Éditer le planning
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* DÉTAIL D'UNE TÂCHE DEPUIS L'APERÇU DU PLANNING */}
+      {planningDetailBlock && (
+        <div className="fixed inset-0 bg-black/55 z-[10100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setPlanningDetailBlock(null)}>
+          <div className="w-full max-w-sm rounded-[26px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide font-black text-[#81786C]">
+                  {planningDetailBlock.kind === 'marker' ? 'Repère horaire' : 'Tâche du planning'}
+                </div>
+                <h2 className="mt-1 text-xl font-black text-[#46513F] break-words">{planningDetailBlock.title}</h2>
+              </div>
+              <button onClick={() => setPlanningDetailBlock(null)} className="w-8 h-8 flex-shrink-0 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
+            </div>
+
+            <div className="rounded-2xl bg-white border border-[#E2DBD0] p-3 text-sm font-bold text-[#665E54]">
+              <p>📅 {planningDetailBlock.day}</p>
+              <p className="mt-1">
+                🕒 {planningDetailBlock.startHour.toString().padStart(2, '0')}:{(planningDetailBlock.startMinute || 0).toString().padStart(2, '0')}
+                {planningDetailBlock.kind !== 'marker' ? ` · ${formatDuration(planningDetailBlock.duration || 60)}` : ''}
+              </p>
+            </div>
+
+            {planningDetailBlock.kind !== 'marker' && (
+              <div className="mt-3 rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-4">
+                <div className="text-[11px] uppercase tracking-wide font-black text-[#81786C] mb-1">Descriptif</div>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-[#5F584F]">
+                  {planningDetailBlock.description || 'Aucun descriptif ajouté.'}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -8757,7 +8929,7 @@ export default function Home() {
              <h1 className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold" style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}>Planning</h1>
            </div>
 
-           <div className="flex justify-center mb-1">
+           <div className="flex items-center justify-center gap-2 mb-1">
              <button
                type="button"
                onClick={openBlankPlanning}
@@ -8765,6 +8937,20 @@ export default function Home() {
                title="Nouveau planning"
                aria-label="Créer un nouveau planning"
              >＋</button>
+             <button
+               type="button"
+               onClick={() => planningImportInputRef.current?.click()}
+               className="h-12 px-4 rounded-2xl bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] border border-[#CDBCA8] font-black text-sm shadow-sm transition-colors"
+             >
+               Importer .ics
+             </button>
+             <input
+               ref={planningImportInputRef}
+               type="file"
+               accept=".ics,text/calendar"
+               onChange={(event) => void importPlanningICS(event)}
+               className="hidden"
+             />
            </div>
 
            {savedTemplates.length === 0 ? (
@@ -9252,7 +9438,7 @@ export default function Home() {
            {/* Modal d'ajout / modification rapide */}
            {showBlockModal && (
              <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm">
-               <div className="bg-white rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-2xl animate-fade-in">
+               <div className="bg-white rounded-2xl p-6 w-full max-w-sm max-h-[92vh] overflow-y-auto flex flex-col gap-4 shadow-2xl animate-fade-in">
                  <h3 className="font-bold text-lg text-gray-800 border-b pb-2">
                    {editingBlockId
                      ? (blockKind === 'marker' ? 'Modifier le repère horaire' : 'Modifier la tâche')
@@ -9343,6 +9529,16 @@ export default function Home() {
                    placeholder={blockKind === 'marker' ? 'Ex: Horaire travail chérie' : 'Ex: Entraînement Muay Thai...'}
                    className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
                  />
+
+                 {blockKind === 'task' && (
+                   <textarea
+                     value={blockDescription}
+                     onChange={(e) => setBlockDescription(e.target.value)}
+                     placeholder="Descriptif de la tâche (optionnel)"
+                     rows={3}
+                     className="w-full border border-gray-300 p-3 rounded-xl text-black font-medium bg-gray-50 focus:bg-white transition-colors resize-y"
+                   />
+                 )}
                  
                  <div className="flex gap-2 w-full justify-between mt-1">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
