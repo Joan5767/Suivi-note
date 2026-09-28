@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
 import {
   DndContext,
@@ -3004,11 +3005,16 @@ export default function Home() {
 
     const resetTrack = (animated: boolean) => {
       track.style.transition = animated ? 'transform 190ms cubic-bezier(0.22, 0.75, 0.25, 1)' : 'none';
-      track.style.transform = 'translate3d(0px, 0, 0)';
+      if (animated) track.style.transform = 'translate3d(0px, 0, 0)';
+      else track.style.removeProperty('transform');
       if (animated) {
         window.setTimeout(() => {
           if (!mainSwipeGestureRef.current) {
             track.style.transition = 'none';
+            // Une transformation, même égale à 0, change le repère des éléments
+            // positionnés en fixed. On la retire complètement une fois l'animation
+            // terminée pour que les éditeurs redeviennent de vraies modales viewport.
+            track.style.removeProperty('transform');
             track.style.willChange = 'auto';
           }
         }, 200);
@@ -8788,27 +8794,33 @@ export default function Home() {
             </div>
           )}
 
-          {memoEditorOpen && (
+          {memoEditorOpen && typeof document !== 'undefined' && createPortal((
             <div
-              className="fixed inset-x-0 top-0 z-[8500] overflow-hidden bg-black/35 backdrop-blur-[2px] flex items-center justify-center px-4 py-5"
-              style={{ bottom: 'calc(64px + env(safe-area-inset-bottom))', paddingTop: 'max(18px, env(safe-area-inset-top))' }}
+              className="fixed inset-x-0 top-0 z-[13200] overflow-hidden bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4"
+              style={{
+                bottom: 'calc(74px + env(safe-area-inset-bottom))',
+                paddingTop: 'max(16px, env(safe-area-inset-top))',
+                paddingBottom: '16px',
+              }}
               onClick={() => closeMemoEditor(true)}
             >
               <div
-                className={`w-[min(92vw,480px)] rounded-[32px] border shadow-[0_24px_70px_rgba(45,52,39,0.30)] p-4 sm:p-5 max-h-[min(74dvh,680px)] overflow-y-auto overscroll-contain ${memoColorClasses(memoDraftColor)}`}
+                role="dialog"
+                aria-label={editingMemoId ? 'Modifier la note' : 'Créer une note'}
+                className={`w-full max-w-lg rounded-[28px] border shadow-[0_24px_70px_rgba(45,52,39,0.32)] p-4 sm:p-5 max-h-full overflow-y-auto overscroll-contain ${memoColorClasses(memoDraftColor)}`}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <div className="flex items-center gap-2">
+                <div className="sticky -top-4 sm:-top-5 z-20 -mx-4 sm:-mx-5 -mt-4 sm:-mt-5 mb-4 px-4 sm:px-5 pt-4 sm:pt-5 pb-3 bg-inherit border-b border-black/5 rounded-t-[28px] flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex items-center gap-1.5 sm:gap-2">
                     <button
                       type="button"
                       onClick={() => setMemoDraftType('text')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-black border ${memoDraftType === 'text' ? 'bg-white/75 border-black/10' : 'bg-white/30 border-transparent'}`}
+                      className={`px-2.5 sm:px-3 py-2 rounded-xl text-[11px] sm:text-xs font-black border whitespace-nowrap ${memoDraftType === 'text' ? 'bg-white/80 border-black/10 shadow-sm' : 'bg-white/30 border-transparent'}`}
                     >📝 Note</button>
                     <button
                       type="button"
                       onClick={() => setMemoDraftType('list')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-black border ${memoDraftType === 'list' ? 'bg-white/75 border-black/10' : 'bg-white/30 border-transparent'}`}
+                      className={`px-2.5 sm:px-3 py-2 rounded-xl text-[11px] sm:text-xs font-black border whitespace-nowrap ${memoDraftType === 'list' ? 'bg-white/80 border-black/10 shadow-sm' : 'bg-white/30 border-transparent'}`}
                     >☑ Liste</button>
                     <button
                       type="button"
@@ -8820,14 +8832,15 @@ export default function Home() {
                         const original = memoEntriesRef.current.find(memo => memo.id === editingMemoId);
                         if (original) void switchExistingMemoToDraw(original);
                       }}
-                      className="px-3 py-1.5 rounded-xl text-xs font-black border bg-white/30 border-transparent hover:bg-white/55"
+                      className="px-2.5 sm:px-3 py-2 rounded-xl text-[11px] sm:text-xs font-black border bg-white/30 border-transparent hover:bg-white/55 whitespace-nowrap"
                       title={editingMemoId ? 'Ajouter ou modifier le dessin' : 'Créer un DrawNote'}
                     >✏️ Dessin</button>
                   </div>
                   <button
                     type="button"
                     onClick={() => closeMemoEditor(true)}
-                    className="w-8 h-8 rounded-full bg-white/60 hover:bg-white/85 font-black"
+                    className="w-9 h-9 flex-shrink-0 rounded-full bg-white/70 hover:bg-white font-black text-lg shadow-sm"
+                    aria-label="Fermer et enregistrer"
                   >×</button>
                 </div>
 
@@ -8845,34 +8858,6 @@ export default function Home() {
                     className={`absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full flex items-center justify-center text-base shadow-sm transition-all ${listeningMode === 'memo_title' ? 'bg-red-500 text-white animate-pulse scale-105' : 'bg-white/70 text-[#6F685E] hover:bg-white'}`}
                     aria-label="Dicter le titre"
                   >🎙️</button>
-                </div>
-
-                <div className={`mt-3 rounded-2xl border p-3 ${memoDraftIsTodo ? 'bg-[#EEF3E8] border-[#AAB99D]' : 'bg-white/40 border-black/10'}`}>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setMemoDraftIsTodo(value => !value)}
-                      className={`flex-1 min-h-10 px-3 rounded-xl border text-left text-sm font-black flex items-center justify-between gap-2 transition-colors ${memoDraftIsTodo ? 'bg-[#D8E2CF] border-[#AAB99D] text-[#3F4C39]' : 'bg-white/70 border-black/10 text-[#5F584F]'}`}
-                      aria-pressed={memoDraftIsTodo}
-                    >
-                      <span>↗ Déplacer dans À faire</span>
-                      <span className={`text-[10px] rounded-full px-2 py-1 ${memoDraftIsTodo ? 'bg-[#6F7B64] text-white' : 'bg-[#EEE8DD] text-[#756D62]'}`}>{memoDraftIsTodo ? 'Activé' : 'Non'}</span>
-                    </button>
-                    {memoDraftIsTodo && (
-                      <select
-                        value={memoDraftImportance}
-                        onChange={(event) => setMemoDraftImportance(event.target.value as 'vert' | 'orange' | 'rouge')}
-                        className="h-9 rounded-xl border border-black/10 bg-white px-2 text-xs font-black text-[#4A463F]"
-                      >
-                        <option value="vert">🟢 Normale</option>
-                        <option value="orange">🟠 Importante</option>
-                        <option value="rouge">🔴 Urgente</option>
-                      </select>
-                    )}
-                  </div>
-                  <p className="mt-1.5 text-[10px] font-bold opacity-60">
-                    {memoDraftIsTodo ? 'Le déplacement sera enregistré dès que tu fermes la note ou changes d’onglet.' : 'Cet élément restera uniquement dans Notes.'}
-                  </p>
                 </div>
 
                 {editingMemoId && (() => {
@@ -8990,6 +8975,37 @@ export default function Home() {
                   </div>
                 )}
 
+                <div className={`mt-4 rounded-2xl border p-2.5 transition-colors ${memoDraftIsTodo ? 'bg-[#EEF3E8] border-[#AAB99D]' : 'bg-white/35 border-black/10'}`}>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMemoDraftIsTodo(value => !value)}
+                      className={`min-w-0 flex-1 min-h-10 px-3 rounded-xl text-left text-xs sm:text-sm font-black flex items-center justify-between gap-2 transition-colors ${memoDraftIsTodo ? 'bg-[#D8E2CF] text-[#3F4C39]' : 'bg-white/55 text-[#5F584F] hover:bg-white/75'}`}
+                      aria-pressed={memoDraftIsTodo}
+                    >
+                      <span className="truncate">↗ Déplacer dans À faire</span>
+                      <span className={`relative w-9 h-5 flex-shrink-0 rounded-full transition-colors ${memoDraftIsTodo ? 'bg-[#6F7B64]' : 'bg-[#CFC8BC]'}`} aria-hidden="true">
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${memoDraftIsTodo ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                      </span>
+                    </button>
+                    {memoDraftIsTodo && (
+                      <select
+                        value={memoDraftImportance}
+                        onChange={(event) => setMemoDraftImportance(event.target.value as 'vert' | 'orange' | 'rouge')}
+                        className="h-10 max-w-[128px] rounded-xl border border-black/10 bg-white px-2 text-[11px] font-black text-[#4A463F]"
+                        aria-label="Priorité dans À faire"
+                      >
+                        <option value="vert">🟢 Normale</option>
+                        <option value="orange">🟠 Importante</option>
+                        <option value="rouge">🔴 Urgente</option>
+                      </select>
+                    )}
+                  </div>
+                  {memoDraftIsTodo && (
+                    <p className="mt-1.5 px-1 text-[10px] font-bold opacity-60">Le déplacement est enregistré automatiquement dès que tu quittes la note.</p>
+                  )}
+                </div>
+
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                   {editingMemoId ? (
                     <button
@@ -9031,7 +9047,7 @@ export default function Home() {
                 </div>
               </div>
             </div>
-          )}
+          ), document.body)}
 
           {drawEditorOpen && (
             <DrawNoteEditor
