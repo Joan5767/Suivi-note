@@ -1794,6 +1794,27 @@ export default function Home() {
     (_, i) => i + PLANNING_START_HOUR
   );
 
+  const isCustomPlanningColor = (color: string) => /^#[0-9a-f]{6}$/i.test(color);
+  const getPlanningColorPalette = (color: string) => {
+    const namedPalettes: Record<string, { solid: string; soft: string; border: string; text: string }> = {
+      blue: { solid: '#3B82F6', soft: '#DBEAFE', border: '#93C5FD', text: '#1E3A8A' },
+      green: { solid: '#22C55E', soft: '#DCFCE7', border: '#86EFAC', text: '#14532D' },
+      red: { solid: '#EF4444', soft: '#FEE2E2', border: '#FCA5A5', text: '#7F1D1D' },
+      gray: { solid: '#6B7280', soft: '#F3F4F6', border: '#D1D5DB', text: '#1F2937' },
+    };
+
+    if (isCustomPlanningColor(color)) {
+      return {
+        solid: color,
+        soft: `${color}24`,
+        border: `${color}99`,
+        text: '#263125',
+      };
+    }
+
+    return namedPalettes[color] || namedPalettes.blue;
+  };
+
   const [weeklyBlocks, setWeeklyBlocks] = useState<WeeklyBlock[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<PlanningTemplate[]>([]);
   const savedTemplatesRef = useRef<PlanningTemplate[]>([]);
@@ -1862,6 +1883,8 @@ export default function Home() {
   const [planningExitTarget, setPlanningExitTarget] = useState<'home' | 'gallery' | 'notes'>('home');
   const [showPlanningAbout, setShowPlanningAbout] = useState(false);
   const [showPlanningGestures, setShowPlanningGestures] = useState(false);
+  const [showPlanningGalleryOverflowMenu, setShowPlanningGalleryOverflowMenu] = useState(false);
+  const [showPlanningEditorOverflowMenu, setShowPlanningEditorOverflowMenu] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
   // Quand l'export est lancé depuis l'aperçu d'un planning sauvegardé, on exporte
@@ -1879,6 +1902,22 @@ export default function Home() {
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
   const [blockDurationHours, setBlockDurationHours] = useState(1);
   const [blockDurationMinutes, setBlockDurationMinutes] = useState(0);
+
+  useEffect(() => {
+    const dismissPlanningMenus = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      if (showPlanningGalleryOverflowMenu && !target.closest('[data-planning-gallery-overflow-root]')) {
+        setShowPlanningGalleryOverflowMenu(false);
+      }
+      if (showPlanningEditorOverflowMenu && !target.closest('[data-planning-editor-overflow-root]')) {
+        setShowPlanningEditorOverflowMenu(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', dismissPlanningMenus);
+    return () => document.removeEventListener('pointerdown', dismissPlanningMenus);
+  }, [showPlanningGalleryOverflowMenu, showPlanningEditorOverflowMenu]);
 
   // Déplacement par appui long : un appui simple ouvre la bulle, un appui maintenu
   // permet de faire glisser le bloc vers un autre jour ou une autre heure.
@@ -1955,7 +1994,7 @@ export default function Home() {
         startMinute,
         duration,
         color:
-          typeof raw.color === 'string' && allowedColors.has(raw.color)
+          typeof raw.color === 'string' && (allowedColors.has(raw.color) || isCustomPlanningColor(raw.color))
             ? raw.color
             : 'blue',
         kind,
@@ -8112,7 +8151,7 @@ export default function Home() {
                         className="absolute left-0 right-0 text-[8px] font-bold text-gray-500 text-center leading-none"
                         style={{
                           top: `${(index / hoursOfDay.length) * 100}%`,
-                          transform: 'translateY(2px)'
+                          transform: 'translateY(-50%)'
                         }}
                       >
                         {hour}h
@@ -8130,10 +8169,21 @@ export default function Home() {
                       </div>
 
                       <div className="absolute left-0 right-0 bottom-0" style={{ top: '24px' }}>
+                        <div className="absolute inset-0 pointer-events-none z-0" aria-hidden="true">
+                          {hoursOfDay.map((hour, index) => (
+                            <div
+                              key={`${dayName}-preview-hour-${hour}`}
+                              className="absolute left-0 right-0 border-t border-gray-200"
+                              style={{ top: `${(index / hoursOfDay.length) * 100}%` }}
+                            />
+                          ))}
+                          <div className="absolute left-0 right-0 bottom-0 border-t border-gray-200" />
+                        </div>
                         {previewTemplate.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                           const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
                           const overlapLayout = previewTaskOverlapLayouts.get(ev.id) || { columnIndex: 0, columnCount: 1 };
                           const columnWidth = 100 / overlapLayout.columnCount;
+                          const eventPalette = getPlanningColorPalette(ev.color);
 
                           if (ev.kind === 'marker') {
                             return (
@@ -8145,7 +8195,7 @@ export default function Home() {
                                 title={ev.title}
                                 onClick={() => setPlanningDetailBlock(ev)}
                               >
-                                <div className={`w-full h-[4px] rounded-full shadow-sm ${ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'}`} />
+                                <div className="w-full h-[4px] rounded-full shadow-sm" style={{ backgroundColor: eventPalette.solid }} />
                               </button>
                             );
                           }
@@ -8164,7 +8214,7 @@ export default function Home() {
                                 width: `calc(${columnWidth}% - 2px)`,
                               }}
                             >
-                              <div className={`h-full w-full rounded shadow-sm border overflow-hidden ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300' : ev.color === 'green' ? 'bg-green-100 border-green-300' : ev.color === 'red' ? 'bg-red-100 border-red-300' : 'bg-gray-100 border-gray-300'}`}>
+                              <div className="h-full w-full rounded shadow-sm border overflow-hidden" style={{ backgroundColor: eventPalette.soft, borderColor: eventPalette.border }}>
                                 <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
                               </div>
                             </button>
@@ -8320,9 +8370,13 @@ export default function Home() {
               <h2 className="text-lg font-black text-[#46513F]">À quoi sert Planning ?</h2>
               <button onClick={() => setShowPlanningAbout(false)} className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black">×</button>
             </div>
-            <p className="text-sm leading-relaxed text-[#6A6258]">
-              Crée des semaines types, adapte-les rapidement, puis garde-les comme modèles. Tu peux aussi exporter les tâches vers ton calendrier pour transformer un planning type en vraie semaine planifiée.
-            </p>
+            <div className="space-y-3 text-sm leading-relaxed text-[#6A6258]">
+              <p><strong>Semaines types :</strong> prépare une organisation réutilisable, puis duplique-la ou adapte-la sans repartir de zéro.</p>
+              <p><strong>Importer un fichier .ics :</strong> récupère dans l’application les événements d’un calendrier compatible, puis modifie-les comme les autres tâches du planning.</p>
+              <p><strong>Exporter :</strong> crée un fichier .ics universel que tu peux conserver, envoyer à une autre personne ou ouvrir dans Google Agenda, Apple Calendrier et Outlook.</p>
+              <p><strong>Ajouter au calendrier :</strong> depuis l’export, l’application peut transmettre directement le planning à une application calendrier quand le téléphone l’autorise.</p>
+              <p><strong>Partager :</strong> envoie le fichier .ics à un autre utilisateur pour qu’il puisse l’importer, l’adapter et sauvegarder sa propre version.</p>
+            </div>
           </div>
         </div>
       )}
@@ -8416,10 +8470,10 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setShowMemosOverflowMenu(value => !value)}
-                className="w-10 h-10 rounded-xl bg-[#F3F0E9] hover:bg-[#EAE4D9] border border-[#DED5C8] text-[#6D655A] text-xl font-black shadow-sm"
+                className="w-10 h-10 flex items-center justify-center text-[#7A746B] hover:text-[#4F4A43] text-[34px] leading-none font-black transition-colors"
                 aria-label="Menu des notes"
                 aria-expanded={showMemosOverflowMenu}
-              >⋯</button>
+              >⋮</button>
               {showMemosOverflowMenu && (
                 <div className="absolute left-0 top-12 z-50 w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
                   {!showMemoArchived && <button type="button" onClick={() => { setShowMemosOverflowMenu(false); enterMemoArchives(); }} className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]">🕰️ Historique des notes</button>}
@@ -8504,7 +8558,7 @@ export default function Home() {
                   value={memoSearch}
                   onChange={(e) => setMemoSearch(e.target.value)}
                   placeholder={showMemoArchived ? 'Rechercher dans l’historique' : 'Rechercher dans les notes'}
-                  className="w-full h-10 bg-[#F8FAF5] border border-[#D8E0D0] rounded-full pl-9 pr-3 text-sm font-normal text-[#65705E] placeholder:text-[#9AA792] focus:outline-none focus:ring-2 focus:ring-[#D2DDC8] focus:bg-white transition-colors"
+                  className="w-full h-10 bg-[#F8FAF5] border-2 border-[#D8E0D0] rounded-full pl-9 pr-3 text-sm font-normal text-[#65705E] placeholder:text-[#9AA792] focus:outline-none focus:border-[#BFCDB5] focus:bg-white transition-colors"
                 />
               </div>
               <button
@@ -8736,12 +8790,12 @@ export default function Home() {
 
           {memoEditorOpen && (
             <div
-              className="fixed inset-x-0 top-0 z-[8500] overflow-hidden bg-black/35 backdrop-blur-[2px] flex items-start sm:items-center justify-center px-3"
-              style={{ bottom: 'calc(64px + env(safe-area-inset-bottom))', paddingTop: 'max(10px, env(safe-area-inset-top))', paddingBottom: '10px' }}
+              className="fixed inset-x-0 top-0 z-[8500] overflow-hidden bg-black/35 backdrop-blur-[2px] flex items-center justify-center px-4 py-5"
+              style={{ bottom: 'calc(64px + env(safe-area-inset-bottom))', paddingTop: 'max(18px, env(safe-area-inset-top))' }}
               onClick={() => closeMemoEditor(true)}
             >
               <div
-                className={`my-auto w-full max-w-lg rounded-[24px] border shadow-2xl p-4 sm:p-5 max-h-full overflow-y-auto overscroll-contain ${memoColorClasses(memoDraftColor)}`}
+                className={`w-[min(92vw,480px)] rounded-[32px] border shadow-[0_24px_70px_rgba(45,52,39,0.30)] p-4 sm:p-5 max-h-[min(74dvh,680px)] overflow-y-auto overscroll-contain ${memoColorClasses(memoDraftColor)}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between gap-3 mb-4">
@@ -9015,11 +9069,44 @@ export default function Home() {
       {/* ================= VUE : GALERIE DES PLANNINGS ================= */}
       {mainMode === 'planning_gallery' && (
         <div className="flex flex-col gap-4 animate-fade-in w-full">
-           <div className="mb-3">
-             <h1 className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold" style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}>Planning</h1>
+           <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2 mb-1">
+             <div className="relative" data-planning-gallery-overflow-root>
+               <button
+                 type="button"
+                 onClick={() => setShowPlanningGalleryOverflowMenu(value => !value)}
+                 className="w-10 h-10 flex items-center justify-center text-[#7A746B] hover:text-[#4F4A43] text-[34px] leading-none font-black transition-colors"
+                 aria-label="Menu du planning"
+                 aria-expanded={showPlanningGalleryOverflowMenu}
+               >⋮</button>
+               {showPlanningGalleryOverflowMenu && (
+                 <div className="absolute left-0 top-11 z-50 w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setShowPlanningGalleryOverflowMenu(false);
+                       planningImportInputRef.current?.click();
+                     }}
+                     className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]"
+                   >📥 Importer un fichier .ics</button>
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setShowPlanningGalleryOverflowMenu(false);
+                       setShowPlanningAbout(true);
+                     }}
+                     className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]"
+                   >? Aide Planning</button>
+                 </div>
+               )}
+             </div>
+             <div className="text-center min-w-0">
+               <h1 className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] text-center font-semibold" style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}>Planning</h1>
+               <p className="mt-1 text-[11px] font-bold text-[#81786C]">Mes semaines types.</p>
+             </div>
+             <div className="w-10" aria-hidden="true" />
            </div>
 
-           <div className="flex items-center justify-center gap-2 mb-1">
+           <div className="flex items-center justify-center mb-1 h-12">
              <button
                type="button"
                onClick={openBlankPlanning}
@@ -9027,13 +9114,6 @@ export default function Home() {
                title="Nouveau planning"
                aria-label="Créer un nouveau planning"
              >＋</button>
-             <button
-               type="button"
-               onClick={() => planningImportInputRef.current?.click()}
-               className="h-12 px-4 rounded-2xl bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] border border-[#CDBCA8] font-black text-sm shadow-sm transition-colors"
-             >
-               Importer .ics
-             </button>
              <input
                ref={planningImportInputRef}
                type="file"
@@ -9092,9 +9172,18 @@ export default function Home() {
                    >
                      {WEEK_DAYS.map((dayName, dIdx) => (
                        <div key={dIdx} className="flex-1 border-r border-gray-200/50 last:border-0 relative h-full pointer-events-none">
+                         <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+                           {hoursOfDay.map((hour, index) => (
+                             <div
+                               key={`${tmpl.id}-${dayName}-hour-${hour}`}
+                               className="absolute left-0 right-0 border-t border-gray-200/60"
+                               style={{ top: `${(index / hoursOfDay.length) * 100}%` }}
+                             />
+                           ))}
+                         </div>
                          {tmpl.blocks?.filter((b: any) => b.day === dayName).map((ev: any) => {
                            const topPercent = ((ev.startHour - PLANNING_START_HOUR) + (ev.startMinute || 0) / 60) / hoursOfDay.length * 100;
-                           const colorClass = ev.color === 'blue' ? 'bg-blue-500' : ev.color === 'green' ? 'bg-green-500' : ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500';
+                           const eventPalette = getPlanningColorPalette(ev.color);
                            const overlapLayout = savedTemplateOverlapLayouts.get(tmpl.id)?.get(ev.id) || { columnIndex: 0, columnCount: 1 };
                            const columnWidth = 100 / overlapLayout.columnCount;
 
@@ -9102,8 +9191,8 @@ export default function Home() {
                              return (
                                <div
                                  key={ev.id}
-                                 className={`absolute left-0.5 right-0.5 h-[3px] rounded-full opacity-90 ${colorClass}`}
-                                 style={{ top: `${topPercent}%`, transform: 'translateY(-50%)' }}
+                                 className="absolute left-0.5 right-0.5 h-[3px] rounded-full opacity-90"
+                                 style={{ top: `${topPercent}%`, transform: 'translateY(-50%)', backgroundColor: eventPalette.solid }}
                                />
                              );
                            }
@@ -9112,12 +9201,13 @@ export default function Home() {
                            return (
                              <div
                                key={ev.id}
-                               className={`absolute rounded-[2px] opacity-80 ${colorClass}`}
+                               className="absolute rounded-[2px] opacity-80"
                                style={{
                                  top: `${topPercent}%`,
                                  height: `${heightPercent}%`,
                                  left: `calc(${overlapLayout.columnIndex * columnWidth}% + 1px)`,
                                  width: `calc(${columnWidth}% - 2px)`,
+                                 backgroundColor: eventPalette.solid,
                                }}
                              />
                            );
@@ -9164,11 +9254,37 @@ export default function Home() {
                  </p>
                )}
              </div>
-             <button
-               onClick={() => setShowPlanningGestures(true)}
-               className="justify-self-end w-8 h-8 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm"
-               aria-label="Aide sur les gestes du planning"
-             >?</button>
+             <div className="relative justify-self-end" data-planning-editor-overflow-root>
+               <button
+                 type="button"
+                 onClick={() => setShowPlanningEditorOverflowMenu(value => !value)}
+                 className="w-10 h-10 flex items-center justify-center text-[#7A746B] hover:text-[#4F4A43] text-[34px] leading-none font-black transition-colors"
+                 aria-label="Menu d'édition du planning"
+                 aria-expanded={showPlanningEditorOverflowMenu}
+               >⋮</button>
+               {showPlanningEditorOverflowMenu && (
+                 <div className="absolute right-0 top-11 z-[500] w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setShowPlanningEditorOverflowMenu(false);
+                       setShowPlanningGestures(true);
+                     }}
+                     className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]"
+                   >? Aide et gestes</button>
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setShowPlanningEditorOverflowMenu(false);
+                       setExportPlanningContext(null);
+                       setShowExportHelp(false);
+                       setShowExportModal(true);
+                     }}
+                     className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]"
+                   >📤 Exporter le planning</button>
+                 </div>
+               )}
+             </div>
            </div>
 
            {/* Barre d'actions compacte */}
@@ -9193,13 +9309,6 @@ export default function Home() {
                  Plannings sauvegardés
                </button>
 
-               <button
-                 onClick={() => { setExportPlanningContext(null); setShowExportHelp(false); setShowExportModal(true); }}
-                 className="flex-shrink-0 bg-[#DCE2D2] hover:bg-[#CFD8C3] text-[#4A5741] font-black py-2.5 px-3 rounded-xl text-[11px] sm:text-xs transition-colors"
-                 aria-label="Exporter vers un calendrier"
-               >
-                 Exporter
-               </button>
              </div>
            </div>
 
@@ -9299,6 +9408,7 @@ export default function Home() {
                      const isDragging = draggingBlockId === ev.id;
                      const overlapLayout = planningTaskOverlapLayouts.get(ev.id) || { columnIndex: 0, columnCount: 1 };
                      const taskColumnWidth = 100 / overlapLayout.columnCount;
+                     const eventPalette = getPlanningColorPalette(ev.color);
                      // Évite que la bulle soit rognée sous la colonne des heures ou hors du bord droit.
                      const popoverHorizontalClass =
                        dayName === 'Lundi' || dayName === 'Mardi'
@@ -9332,11 +9442,8 @@ export default function Home() {
                            }}
                          >
                            <div
-                             className={`w-full h-[5px] rounded-full shadow-sm cursor-pointer transition-all ${
-                               ev.color === 'blue' ? 'bg-blue-500' :
-                               ev.color === 'green' ? 'bg-green-500' :
-                               ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
-                             } ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''} ${isDragging ? 'opacity-30' : ''}`}
+                             className={`w-full h-[5px] rounded-full shadow-sm cursor-pointer transition-all ${isSelected ? 'ring-2 ring-black ring-offset-1' : ''} ${isDragging ? 'opacity-30' : ''}`}
+                             style={{ backgroundColor: eventPalette.solid }}
                            />
 
                            {isSelected && (
@@ -9347,11 +9454,7 @@ export default function Home() {
                                onClick={(e) => e.stopPropagation()}
                              >
                                <div className="flex items-center gap-2">
-                                 <span className={`block w-8 h-[5px] rounded-full ${
-                                   ev.color === 'blue' ? 'bg-blue-500' :
-                                   ev.color === 'green' ? 'bg-green-500' :
-                                   ev.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
-                                 }`} />
+                                 <span className="block w-8 h-[5px] rounded-full" style={{ backgroundColor: eventPalette.solid }} />
                                  <span className="text-[10px] uppercase tracking-wide font-black text-gray-400">Repère horaire</span>
                                </div>
                                <h4 className="font-black text-sm text-gray-900 leading-tight">{ev.title}</h4>
@@ -9411,7 +9514,8 @@ export default function Home() {
                                setSelectedBlockId(isSelected ? null : ev.id); 
                              }
                            }}
-                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer select-none ${ev.color === 'blue' ? 'bg-blue-100 border-blue-300 text-blue-900' : ev.color === 'green' ? 'bg-green-100 border-green-300 text-green-900' : ev.color === 'red' ? 'bg-red-100 border-red-300 text-red-900' : 'bg-gray-100 border-gray-300 text-gray-900'} ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'} ${isDragging ? 'opacity-30 cursor-grabbing' : ''}`}
+                           className={`relative h-full w-full rounded-lg shadow-sm border transition-all cursor-pointer select-none ${isSelected ? 'ring-2 ring-black shadow-md' : 'overflow-hidden'} ${isDragging ? 'opacity-30 cursor-grabbing' : ''}`}
+                           style={{ backgroundColor: eventPalette.soft, borderColor: eventPalette.border, color: eventPalette.text }}
                          >
                            
                            <div
@@ -9502,17 +9606,19 @@ export default function Home() {
                style={{ transform: 'translate3d(-9999px, -9999px, 0)' }}
              >
                {draggingBlockGhostMeta.kind === 'marker' ? (
-                 <div className={`w-36 h-[6px] rounded-full shadow-xl ${
-                   draggingBlockGhostMeta.color === 'blue' ? 'bg-blue-500' :
-                   draggingBlockGhostMeta.color === 'green' ? 'bg-green-500' :
-                   draggingBlockGhostMeta.color === 'red' ? 'bg-red-500' : 'bg-gray-500'
-                 }`} />
+                 <div
+                   className="w-36 h-[6px] rounded-full shadow-xl"
+                   style={{ backgroundColor: getPlanningColorPalette(draggingBlockGhostMeta.color).solid }}
+                 />
                ) : (
-                 <div className={`min-w-[120px] max-w-[190px] rounded-xl border-2 shadow-2xl px-3 py-2 font-black text-xs ${
-                   draggingBlockGhostMeta.color === 'blue' ? 'bg-blue-100 border-blue-400 text-blue-900' :
-                   draggingBlockGhostMeta.color === 'green' ? 'bg-green-100 border-green-400 text-green-900' :
-                   draggingBlockGhostMeta.color === 'red' ? 'bg-red-100 border-red-400 text-red-900' : 'bg-gray-100 border-gray-400 text-gray-900'
-                 }`}>
+                 <div
+                   className="min-w-[120px] max-w-[190px] rounded-xl border-2 shadow-2xl px-3 py-2 font-black text-xs"
+                   style={{
+                     backgroundColor: getPlanningColorPalette(draggingBlockGhostMeta.color).soft,
+                     borderColor: getPlanningColorPalette(draggingBlockGhostMeta.color).border,
+                     color: getPlanningColorPalette(draggingBlockGhostMeta.color).text,
+                   }}
+                 >
                    {draggingBlockGhostMeta.title || 'Tâche'}
                  </div>
                )}
@@ -9630,11 +9736,25 @@ export default function Home() {
                    />
                  )}
                  
-                 <div className="flex gap-2 w-full justify-between mt-1">
+                 <div className="flex gap-2 w-full justify-center mt-1" aria-label="Couleur de l'élément">
                    <button onClick={() => setBlockColor('blue')} className={`w-8 h-8 rounded-full bg-blue-500 border-2 transition-transform ${blockColor === 'blue' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('green')} className={`w-8 h-8 rounded-full bg-green-500 border-2 transition-transform ${blockColor === 'green' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('red')} className={`w-8 h-8 rounded-full bg-red-500 border-2 transition-transform ${blockColor === 'red' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
                    <button onClick={() => setBlockColor('gray')} className={`w-8 h-8 rounded-full bg-gray-500 border-2 transition-transform ${blockColor === 'gray' ? 'scale-110 border-gray-900' : 'border-transparent'}`}></button>
+                   <label
+                     className={`relative w-8 h-8 rounded-full border-2 transition-transform flex items-center justify-center cursor-pointer overflow-hidden ${isCustomPlanningColor(blockColor) ? 'scale-110 border-gray-900 text-white' : 'border-[#BDB5AA] bg-white text-[#625A50]'}`}
+                     style={isCustomPlanningColor(blockColor) ? { backgroundColor: blockColor } : undefined}
+                     title="Choisir une autre couleur"
+                     aria-label="Choisir une autre couleur"
+                   >
+                     <span className="relative z-10 text-lg leading-none font-black drop-shadow-sm">＋</span>
+                     <input
+                       type="color"
+                       value={isCustomPlanningColor(blockColor) ? blockColor : '#8B5CF6'}
+                       onChange={(event) => setBlockColor(event.target.value.toUpperCase())}
+                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                     />
+                   </label>
                  </div>
                  
                  <div className="flex gap-2 mt-2">
@@ -9658,10 +9778,10 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowTasksOverflowMenu(value => !value)}
-                  className="w-10 h-10 rounded-xl bg-[#F3F0E9] hover:bg-[#EAE4D9] border border-[#DED5C8] text-[#6D655A] text-xl font-black shadow-sm"
+                  className="w-10 h-10 flex items-center justify-center text-[#7A746B] hover:text-[#4F4A43] text-[34px] leading-none font-black transition-colors"
                   aria-label="Menu de À faire"
                   aria-expanded={showTasksOverflowMenu}
-                >⋯</button>
+                >⋮</button>
                 {showTasksOverflowMenu && (
                   <div className="absolute left-0 top-12 w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
                     <button type="button" onClick={() => { setShowTasksOverflowMenu(false); navigateNotesChild('#tasks-history'); }} className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]">🕰️ Historique des éléments</button>
