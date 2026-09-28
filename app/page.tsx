@@ -1459,6 +1459,7 @@ export default function Home() {
   const [memoListDraggingId, setMemoListDraggingId] = useState<string | null>(null);
   const [memoDraftColor, setMemoDraftColor] = useState<MemoColor>('sage');
   const [memoDraftPinned, setMemoDraftPinned] = useState(false);
+  const [memoDraftDrawingRemoved, setMemoDraftDrawingRemoved] = useState(false);
   const [memoDraftIsTodo, setMemoDraftIsTodo] = useState(false);
   const [memoDraftImportance, setMemoDraftImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const memoNewItemRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4670,6 +4671,7 @@ export default function Home() {
     setMemoListDraggingId(null);
     setMemoDraftColor('sage');
     setMemoDraftPinned(false);
+    setMemoDraftDrawingRemoved(false);
     setMemoDraftIsTodo(false);
     setMemoDraftImportance('vert');
   };
@@ -4871,6 +4873,7 @@ export default function Home() {
     setMemoListDraggingId(null);
     setMemoDraftColor(memo.color);
     setMemoDraftPinned(memo.pinned);
+    setMemoDraftDrawingRemoved(false);
     setMemoDraftIsTodo(false);
     setMemoDraftImportance('vert');
     armMemoEditorHistory();
@@ -4907,6 +4910,38 @@ export default function Home() {
 
   const handleMemoListDragCancel = () => {
     setMemoListDraggingId(null);
+  };
+
+  const requestRemoveMemoComponent = (component: 'text' | 'list' | 'drawing') => {
+    const config = {
+      text: {
+        title: 'Supprimer la partie texte ?',
+        message: 'Le texte sera retiré de cette note fusionnée. La liste et le dessin seront conservés.',
+        onConfirm: () => setMemoDraftContent(''),
+      },
+      list: {
+        title: 'Supprimer toute la liste ?',
+        message: 'Tous les éléments de la liste seront retirés. Le texte et le dessin seront conservés.',
+        onConfirm: () => {
+          setMemoDraftItems([]);
+          setMemoNewItem('');
+          setMemoDraftType('text');
+        },
+      },
+      drawing: {
+        title: 'Supprimer le dessin ?',
+        message: 'Le dessin sera retiré de cette note fusionnée. Le texte et la liste seront conservés.',
+        onConfirm: () => setMemoDraftDrawingRemoved(true),
+      },
+    }[component];
+
+    requestAppConfirmation({
+      title: config.title,
+      message: config.message,
+      confirmLabel: 'Supprimer cette partie',
+      tone: 'danger',
+      onConfirm: config.onConfirm,
+    });
   };
 
   const addMemoDraftItem = () => {
@@ -4960,8 +4995,10 @@ export default function Home() {
           content,
           memo_type: memoDraftType,
           items,
-          is_drawing: existingMemo?.is_drawing || false,
-          drawing_data: existingMemo?.drawing_data || { ...EMPTY_DRAW_NOTE, objects: [] },
+          is_drawing: Boolean(existingMemo?.is_drawing && !memoDraftDrawingRemoved),
+          drawing_data: existingMemo?.is_drawing && !memoDraftDrawingRemoved
+            ? normalizeDrawNoteData(existingMemo.drawing_data)
+            : { ...EMPTY_DRAW_NOTE, objects: [] },
           color: memoDraftColor,
         }, memoDraftImportance, editingMemoId);
         if (pendingItem) setMemoNewItem('');
@@ -4980,6 +5017,10 @@ export default function Home() {
         content,
         memo_type: memoDraftType,
         items,
+        is_drawing: existingMemo ? (existingMemo.is_drawing && !memoDraftDrawingRemoved) : false,
+        drawing_data: existingMemo && existingMemo.is_drawing && !memoDraftDrawingRemoved
+          ? normalizeDrawNoteData(existingMemo.drawing_data)
+          : { ...EMPTY_DRAW_NOTE, objects: [] },
         color: memoDraftColor,
         pinned,
         archived: targetArchived,
@@ -7986,7 +8027,7 @@ export default function Home() {
       {/* SAISIE INTERNE DE L'APPLICATION — remplace les prompts du navigateur */}
       {promptDialog && (
         <div
-          className="fixed inset-0 bg-black/35 z-[13200] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          className="fixed inset-0 bg-black/35 z-[14200] flex items-center justify-center p-4 backdrop-blur-[2px]"
           onClick={cancelAppPrompt}
         >
           <div
@@ -8049,7 +8090,7 @@ export default function Home() {
       {/* MESSAGE INTERNE DE L'APPLICATION — remplace les alertes natives du navigateur */}
       {appMessage && (
         <div
-          className="fixed inset-0 bg-black/35 z-[13100] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          className="fixed inset-0 bg-black/35 z-[14100] flex items-center justify-center p-4 backdrop-blur-[2px]"
           onClick={() => setAppMessage(null)}
         >
           <div
@@ -8084,7 +8125,7 @@ export default function Home() {
       {/* MODALE DE CONFIRMATION GÉNÉRIQUE */}
       {confirmDialog && (
         <div
-          className="fixed inset-0 bg-black/35 z-[13000] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          className="fixed inset-0 bg-black/35 z-[14000] flex items-center justify-center p-4 backdrop-blur-[2px]"
           onClick={() => !confirmDialogLoading && setConfirmDialog(null)}
         >
           <div
@@ -8862,7 +8903,48 @@ export default function Home() {
 
                 {editingMemoId && (() => {
                   const original = memoEntries.find(memo => memo.id === editingMemoId);
-                  if (!original?.is_drawing) return null;
+                  const hasTextPart = Boolean(memoDraftContent.trim());
+                  const hasListPart = memoDraftItems.some(item => item.text.trim()) || Boolean(memoNewItem.trim());
+                  const hasDrawingPart = Boolean(original?.is_drawing && !memoDraftDrawingRemoved);
+                  const partCount = Number(hasTextPart) + Number(hasListPart) + Number(hasDrawingPart);
+                  if (partCount < 2) return null;
+                  return (
+                    <div className="mt-3 rounded-2xl border border-black/10 bg-white/45 p-3">
+                      <p className="text-xs font-black text-inherit">Contenus de la note fusionnée</p>
+                      <p className="mt-0.5 text-[10px] font-semibold opacity-60">Supprime seulement la partie devenue inutile.</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {hasTextPart && (
+                          <button
+                            type="button"
+                            onClick={() => requestRemoveMemoComponent('text')}
+                            className="min-h-9 rounded-xl border border-black/10 bg-white/70 px-3 text-xs font-black hover:bg-red-50 hover:text-red-700"
+                            aria-label="Supprimer la partie texte"
+                          >📝 Texte <span className="ml-1 text-red-600">×</span></button>
+                        )}
+                        {hasListPart && (
+                          <button
+                            type="button"
+                            onClick={() => requestRemoveMemoComponent('list')}
+                            className="min-h-9 rounded-xl border border-black/10 bg-white/70 px-3 text-xs font-black hover:bg-red-50 hover:text-red-700"
+                            aria-label="Supprimer la partie liste"
+                          >☑ Liste <span className="ml-1 text-red-600">×</span></button>
+                        )}
+                        {hasDrawingPart && (
+                          <button
+                            type="button"
+                            onClick={() => requestRemoveMemoComponent('drawing')}
+                            className="min-h-9 rounded-xl border border-black/10 bg-white/70 px-3 text-xs font-black hover:bg-red-50 hover:text-red-700"
+                            aria-label="Supprimer la partie dessin"
+                          >✏️ Dessin <span className="ml-1 text-red-600">×</span></button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {editingMemoId && (() => {
+                  const original = memoEntries.find(memo => memo.id === editingMemoId);
+                  if (!original?.is_drawing || memoDraftDrawingRemoved) return null;
                   return (
                     <button
                       type="button"
