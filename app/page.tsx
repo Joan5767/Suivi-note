@@ -1345,10 +1345,15 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
         </div>
 
         <div className="flex items-center gap-2 rounded-xl bg-white/70 border border-[#DDD5C9] px-2.5 py-2">
-          <label className="flex items-center gap-2 text-xs font-black text-[#4B5843] cursor-pointer flex-1">
-            <input type="checkbox" checked={isTodo} onChange={(event) => setIsTodo(event.target.checked)} className="w-4 h-4 accent-[#6F7B64]" />
-            ✓ À faire
-          </label>
+          <button
+            type="button"
+            onClick={() => setIsTodo(value => !value)}
+            className={`flex-1 min-h-9 px-2.5 rounded-lg border text-left text-xs font-black flex items-center justify-between gap-2 ${isTodo ? 'bg-[#D8E2CF] border-[#AAB99D] text-[#3F4C39]' : 'bg-white border-[#DDD5C9] text-[#5F584F]'}`}
+            aria-pressed={isTodo}
+          >
+            <span>↗ Déplacer dans À faire</span>
+            <span className="text-[9px]">{isTodo ? 'Activé' : 'Non'}</span>
+          </button>
           {isTodo && (
             <select value={drawImportance} onChange={(event) => setDrawImportance(event.target.value as 'vert' | 'orange' | 'rouge')} className="h-8 rounded-lg border border-[#D8D0C4] bg-white px-2 text-[10px] font-black text-[#4A463F]">
               <option value="vert">🟢 Normale</option>
@@ -1442,6 +1447,7 @@ export default function Home() {
   const [showMemoArchived, setShowMemoArchived] = useState(false);
   const showMemoArchivedRef = useRef(false);
   const [showMemosHelp, setShowMemosHelp] = useState(false);
+  const [showMemosOverflowMenu, setShowMemosOverflowMenu] = useState(false);
   const [memoEditorOpen, setMemoEditorOpen] = useState(false);
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
   const [memoDraftType, setMemoDraftType] = useState<'text' | 'list'>('text');
@@ -1672,6 +1678,7 @@ export default function Home() {
   const [popupMinutes, setPopupMinutes] = useState('');
   const [popupDateTime, setPopupDateTime] = useState('');
   const [showNotesHelp, setShowNotesHelp] = useState(false);
+  const [showTasksOverflowMenu, setShowTasksOverflowMenu] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<AppConfirmDialog | null>(null);
   const [confirmDialogLoading, setConfirmDialogLoading] = useState(false);
   const [appMessage, setAppMessage] = useState<string | null>(null);
@@ -1687,7 +1694,7 @@ export default function Home() {
   const [enableGoogleCal, setEnableGoogleCal] = useState(true);
   const [enableICal, setEnableICal] = useState(false);
   
-  const [showArchived, setShowArchived] = useState<boolean | 'snoozed'>(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
 
   // Navigation tactile entre Créer et Notes sauvegardées.
@@ -1708,6 +1715,8 @@ export default function Home() {
   });
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const taskEditorOpenRef = useRef<string | null>(null);
+  const taskEditorAutoSaveRef = useRef<(id: string, consumeHistory?: boolean) => Promise<boolean>>(async () => true);
   const [editingTitle, setEditingTitle] = useState('');
   const [editingContent, setEditingContent] = useState('');
   const [editingTargetDate, setEditingTargetDate] = useState('');
@@ -1726,6 +1735,42 @@ export default function Home() {
   const [editingReminderPopupActive, setEditingReminderPopupActive] = useState(false);
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
+
+  // Tous les menus et volets légers se ferment dès que l'utilisateur touche
+  // ailleurs. Les vraies modales conservent leur propre fond cliquable.
+  useEffect(() => {
+    const dismissOpenPanels = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      if (openMenuId && !target.closest('[data-task-options-root]')) setOpenMenuId(null);
+      if (showMemosOverflowMenu && !target.closest('[data-memos-overflow-root]')) setShowMemosOverflowMenu(false);
+      if (showTasksOverflowMenu && !target.closest('[data-tasks-overflow-root]')) setShowTasksOverflowMenu(false);
+      if (showAdvancedSettings && !target.closest('[data-create-reminder-settings]')) setShowAdvancedSettings(false);
+      if (showEditingAdvancedSettings && !target.closest('[data-edit-reminder-settings]')) setShowEditingAdvancedSettings(false);
+
+      if (memoFiltersOpenRef.current && !target.closest('[data-memo-search-root]')) {
+        memoFiltersOpenRef.current = false;
+        setMemoFiltersOpen(false);
+        if (typeof window !== 'undefined' && window.history.state?.memoFilters) {
+          memoIgnoreNextPopRef.current = true;
+          window.history.back();
+        }
+      }
+    };
+
+    document.addEventListener('pointerdown', dismissOpenPanels);
+    return () => document.removeEventListener('pointerdown', dismissOpenPanels);
+  }, [openMenuId, showMemosOverflowMenu, showTasksOverflowMenu, showAdvancedSettings, showEditingAdvancedSettings]);
+
+  useEffect(() => {
+    if (!memoEditorOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [memoEditorOpen]);
 
   const [listeningMode, setListeningMode] = useState<'none' | 'title' | 'content' | 'list_item' | 'ai' | 'memo_title' | 'memo_content' | 'memo_item'>('none');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
@@ -2470,6 +2515,9 @@ export default function Home() {
       setAiProposal(null);
       setTriggeredAlarm(null);
       setOpenMenuId(null);
+      setShowMemosOverflowMenu(false);
+      setShowTasksOverflowMenu(false);
+      taskEditorOpenRef.current = null;
       setEditingId(null);
       setEditingBlockId(null);
       setSelectedBlockId(null);
@@ -2556,6 +2604,18 @@ export default function Home() {
     const handleMemoSelectionPopState = () => {
       if (memoIgnoreNextPopRef.current) {
         memoIgnoreNextPopRef.current = false;
+        return;
+      }
+
+      // Dans À faire, Retour ferme et sauvegarde d'abord l'éditeur de la tâche.
+      // Un second Retour effectue ensuite la navigation normale vers Notes.
+      if (taskEditorOpenRef.current) {
+        const taskId = taskEditorOpenRef.current;
+        void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
+          if (!saved && typeof window !== 'undefined' && !window.history.state?.taskEditor) {
+            window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
+          }
+        });
         return;
       }
 
@@ -2735,12 +2795,47 @@ export default function Home() {
     delete next.memoSelection;
     delete next.memoEditor;
     delete next.drawEditor;
+    delete next.taskEditor;
     delete next.tasksChild;
     delete next.planningChild;
     return next;
   };
 
+  const saveOpenEditorBeforeNavigation = (resume: () => void) => {
+    if (memoEditorOpenRef.current) {
+      void memoEditorAutoSaveRef.current().then((saved) => {
+        if (!saved) return;
+        memoEditorOpenRef.current = false;
+        setMemoEditorOpen(false);
+        resetMemoDraft();
+        resume();
+      });
+      return true;
+    }
+
+    if (drawEditorOpenRef.current) {
+      void drawEditorAutoSaveRef.current().then((saved) => {
+        if (!saved) return;
+        drawEditorOpenRef.current = false;
+        setDrawEditorOpen(false);
+        resume();
+      });
+      return true;
+    }
+
+    const taskId = taskEditorOpenRef.current;
+    if (taskId) {
+      void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
+        if (saved) resume();
+      });
+      return true;
+    }
+
+    return false;
+  };
+
   const navigateAwayRoute = (targetHash: '#tasks' | '#tasks-create' | '#tasks-focus' | '#tasks-history' | '#planning' | '#planning-editor' | '#planning-gallery') => {
+    if (saveOpenEditorBeforeNavigation(() => navigateAwayRoute(targetHash))) return;
     const currentState = window.history.state || {};
     const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
     const nextState = { ...clearTransientHistoryFlags(currentState), primaryAway: true };
@@ -2769,6 +2864,23 @@ export default function Home() {
   };
 
   const navigatePrimarySection = (targetHash: '#notes' | '#tasks' | '#planning') => {
+    const taskId = taskEditorOpenRef.current;
+    if (targetHash === '#notes' && taskId) {
+      void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
+        if (!saved) return;
+        if (typeof window !== 'undefined' && window.history.state?.taskEditor && window.location.hash === '#tasks') {
+          // L'éditeur ajoute un niveau au-dessus de À faire : on retire les deux
+          // niveaux pour retrouver directement Notes, sans rebond intermédiaire.
+          window.history.go(-2);
+        } else {
+          const notesUrl = `${window.location.pathname}${window.location.search}#notes`;
+          window.history.replaceState({ ...clearTransientHistoryFlags(window.history.state || {}), primaryAway: false }, '', notesUrl);
+          refreshRouteFromCurrentHash();
+        }
+      });
+      return;
+    }
+    if (saveOpenEditorBeforeNavigation(() => navigatePrimarySection(targetHash))) return;
     const currentState = window.history.state || {};
 
     if (targetHash !== '#notes') {
@@ -4386,6 +4498,25 @@ export default function Home() {
     window.history.pushState({ ...(window.history.state || {}), memoEditor: true }, '', window.location.href);
   };
 
+  const armTaskEditorHistory = (id: string) => {
+    taskEditorOpenRef.current = id;
+    if (typeof window === 'undefined' || window.history.state?.taskEditor) return;
+    window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
+  };
+
+  const closeTaskEditorWithoutSaving = (consumeHistory = true) => {
+    taskEditorOpenRef.current = null;
+    setEditingId(null);
+    setShowEditingAdvancedSettings(false);
+    setShowEditingPopupConfig(false);
+    setShowEditingDailyConfig(false);
+    setShowEditingExactDateConfig(false);
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.taskEditor) {
+      memoIgnoreNextPopRef.current = true;
+      window.history.back();
+    }
+  };
+
   const closeMemoEditor = async (consumeHistory = true, saveChanges = true) => {
     if (saveChanges) {
       const saved = await memoEditorAutoSaveRef.current();
@@ -4545,7 +4676,6 @@ export default function Home() {
     }
 
     await Promise.all([fetchMemos(), fetchNotes()]);
-    navigatePrimarySection('#tasks');
     setSuccessMessage('✅ Élément déplacé dans À faire.');
     window.setTimeout(() => setSuccessMessage(null), 3000);
   };
@@ -7045,7 +7175,7 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
   
-  const saveEdit = async (id: string) => {
+  const saveEdit = async (id: string, consumeHistory = true): Promise<boolean> => {
     let finalTargetDate = editingTargetDate;
     let finalPopupActive = editingPopupActive;
 
@@ -7062,11 +7192,11 @@ export default function Home() {
       const popupTime = getSafeTime(editingPopupDateTime);
       if (!popupTime) {
         showAppMessage("La date et l'heure du pop-up ne sont pas valides.");
-        return;
+        return false;
       }
       if (popupTime <= Date.now()) {
         showAppMessage("La date et l'heure du pop-up doivent être dans le futur.");
-        return;
+        return false;
       }
       finalTargetDate = new Date(popupTime).toISOString();
       finalPopupActive = true;
@@ -7074,7 +7204,7 @@ export default function Home() {
       const normalized = toValidIso(finalTargetDate);
       if (!normalized) {
         showAppMessage("La date choisie n'est pas valide.");
-        return;
+        return false;
       }
       finalTargetDate = normalized;
     }
@@ -7120,7 +7250,7 @@ export default function Home() {
 
     if (error) {
       showAppMessage("Erreur lors de l'enregistrement : " + error.message);
-      return;
+      return false;
     }
 
     if (editingSendImmediateEmail && !DEMO_MODE) {
@@ -7144,11 +7274,24 @@ export default function Home() {
     }
 
     locallyTriggeredAlarmIdsRef.current.delete(id);
+    taskEditorOpenRef.current = null;
     setEditingId(null);
+    setShowEditingAdvancedSettings(false);
+    setShowEditingPopupConfig(false);
+    setShowEditingDailyConfig(false);
+    setShowEditingExactDateConfig(false);
     await fetchNotes();
+    if (consumeHistory && typeof window !== 'undefined' && window.history.state?.taskEditor) {
+      memoIgnoreNextPopRef.current = true;
+      window.history.back();
+    }
+    return true;
   };
 
+  taskEditorAutoSaveRef.current = saveEdit;
+
   const startEditing = (note: Note) => {
+    armTaskEditorHistory(note.id);
     setEditingId(note.id); setEditingTitle(note.title || ''); setEditingContent(getVisibleTaskContent(note.content));
     setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
     setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
@@ -7169,39 +7312,6 @@ export default function Home() {
       }
     } else {
       setEditingPopupDateTime('');
-    }
-  };
-
-  const snoozeNote = async (id: string, days: number) => {
-    const snoozeDate = new Date();
-    snoozeDate.setDate(snoozeDate.getDate() + days);
-
-    const { error } = await supabase
-      .from('notes')
-      .update({ snooze_until: snoozeDate.toISOString() })
-      .eq('id', id);
-
-    if (error) {
-      showAppMessage("Erreur lors du masquage : " + error.message);
-      return;
-    }
-
-    await fetchNotes();
-  };
-
-  const handleSnoozeClick = async (id: string) => {
-    const result = await askAppPrompt({
-      title: 'Masquer la note',
-      message: 'Pendant combien de jours veux-tu masquer cette note ?',
-      defaultValue: '3',
-      inputMode: 'numeric',
-      confirmLabel: 'Masquer',
-    });
-
-    if (result !== null) {
-      const days = parseInt(result, 10);
-      if (!isNaN(days) && days > 0) await snoozeNote(id, days);
-      else showAppMessage("Veuillez entrer un nombre de jours valide.");
     }
   };
 
@@ -7270,12 +7380,11 @@ export default function Home() {
     await fetchNotes();
   };
 
-  const displayedNotes = notes.filter(n => {
-    if (n.completed) return false;
-    const isSnoozed = !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime;
-    if (showArchived === 'snoozed') return isSnoozed;
-    return !isSnoozed;
-  }).sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
+  // L'ancien système « Masquer » n'est plus utilisé : toute tâche non terminée
+  // reste visible et peut être déplacée dans Notes si elle ne doit plus être suivie ici.
+  const displayedNotes = notes
+    .filter(n => !n.completed)
+    .sort((a, b) => a.sort_order - b.sort_order || getSafeTime(b.created_at) - getSafeTime(a.created_at));
 
   const historyNotes = notes.filter(n => {
     if (!n.completed) return false;
@@ -7283,8 +7392,6 @@ export default function Home() {
     const term = historySearch.toLowerCase();
     return (n.title && n.title.toLowerCase().includes(term)) || (n.content && n.content.toLowerCase().includes(term));
   }).sort((a, b) => getSafeTime(b.completed_at || b.created_at) - getSafeTime(a.completed_at || a.created_at));
-
-  const hasSnoozedNotes = notes.some(n => !n.completed && !!n.snooze_until && new Date(n.snooze_until).getTime() > currentTime);
 
   const focusableNotes = displayedNotes.filter(n => !skippedFocusIds.includes(n.id));
   const urgentNotes = focusableNotes.filter(n => n.importance === 'rouge');
@@ -7488,7 +7595,7 @@ export default function Home() {
               <option value="rouge">🔴 Priorité Urgente</option>
             </select>
 
-            <div className="flex flex-col mt-1">
+            <div className="flex flex-col mt-1" data-edit-reminder-settings>
               <button
                 type="button"
                 onClick={() => setShowEditingAdvancedSettings(!showEditingAdvancedSettings)}
@@ -7633,8 +7740,8 @@ export default function Home() {
               )}
             </div>
             <div className="flex gap-2 mt-1">
-              <button onClick={() => saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
-              <button onClick={() => setEditingId(null)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
+              <button onClick={() => void saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
+              <button onClick={() => closeTaskEditorWithoutSaving(true)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
             </div>
           </div>
         ) : (
@@ -7659,13 +7766,13 @@ export default function Home() {
              <div key={st.id} className="flex items-center gap-2 mb-1 group">
                <input type="checkbox" checked={st.completed} onChange={() => toggleSubtask(note, st.id)} className="cursor-pointer" />
                <span className={`text-xs flex-1 ${st.completed ? 'line-through text-gray-400' : showArchived === true ? 'text-gray-500' : 'text-gray-800'}`}>{st.text}</span>
-               <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2">✖</button>
+               {editingId === note.id && <button onClick={() => deleteSubtask(note, st.id)} className="text-red-500 text-[10px] px-2">✖</button>}
              </div>
            ))}
-           <div className="flex gap-1.5 mt-1.5 items-center">
+           {editingId === note.id && <div className="flex gap-1.5 mt-1.5 items-center">
              <input type="text" placeholder="Ajouter..." value={newSubtaskTexts[note.id] || ''} onChange={(e) => setNewSubtaskTexts({ ...newSubtaskTexts, [note.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && addSubtask(note)} className="text-xs border border-gray-300 p-1 rounded flex-1 text-black bg-white" />
              <button onClick={() => addSubtask(note)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-1.5 py-0.5 rounded font-bold text-xs">+</button>
-           </div>
+           </div>}
         </div>
       )}
 
@@ -7690,13 +7797,11 @@ export default function Home() {
       )}
 
       {editingId !== note.id && (
-        <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative">
+        <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-gray-100 relative" data-task-options-root>
           <button onClick={() => updateNote(note.id, 'completed', true)} className={`font-extrabold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-sm transition-colors ${showArchived === true ? 'bg-gray-200 text-gray-600 hover:bg-gray-300' : 'bg-green-100 text-green-700 hover:bg-green-200 hover:text-green-800'}`}><span className="text-sm">✓</span> Terminé</button>
           <button onClick={() => setOpenMenuId(openMenuId === note.id ? null : note.id)} className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm border ${openMenuId === note.id ? 'bg-gray-200 text-gray-800 border-gray-300' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}>⚙️ Options {openMenuId === note.id ? '▲' : '▼'}</button>
           {openMenuId === note.id && (
             <div className="absolute bottom-full right-0 mb-2 w-36 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
-              {showArchived === 'snoozed' && (<button onClick={() => { updateNote(note.id, 'snooze_until', ''); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">↩ Réactiver</button>)}
-              {showArchived === false && (<button onClick={() => { handleSnoozeClick(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">💤 Masquer</button>)}
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
               <button onClick={() => { void moveTaskToNotes(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">📝 Passer dans Notes</button>
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
@@ -8306,8 +8411,24 @@ export default function Home() {
           onDragCancel={handleMemoDndCancel}
         >
         <div className="animate-fade-in text-[#4A463F] w-full max-w-5xl mx-auto">
-          <div className="grid grid-cols-[1fr_auto] items-center gap-2 mb-5">
-            <div>
+          <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2 mb-5">
+            <div className="relative" data-memos-overflow-root>
+              <button
+                type="button"
+                onClick={() => setShowMemosOverflowMenu(value => !value)}
+                className="w-10 h-10 rounded-xl bg-[#F3F0E9] hover:bg-[#EAE4D9] border border-[#DED5C8] text-[#6D655A] text-xl font-black shadow-sm"
+                aria-label="Menu des notes"
+                aria-expanded={showMemosOverflowMenu}
+              >⋯</button>
+              {showMemosOverflowMenu && (
+                <div className="absolute left-0 top-12 z-50 w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
+                  {!showMemoArchived && <button type="button" onClick={() => { setShowMemosOverflowMenu(false); enterMemoArchives(); }} className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]">🕰️ Historique des notes</button>}
+                  {!showMemoArchived && <button type="button" onClick={() => { setShowMemosOverflowMenu(false); openMemoCleanup(); }} className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]">🧹 Nettoyage</button>}
+                  <button type="button" onClick={() => { setShowMemosOverflowMenu(false); setShowMemosHelp(true); }} className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]">? Aide</button>
+                </div>
+              )}
+            </div>
+            <div className="text-center">
               <h1
                 className="text-[34px] sm:text-[40px] leading-none text-[#4B5843] font-semibold"
                 style={{ fontFamily: '"URW Chancery L", "Apple Chancery", "Segoe Script", cursive' }}
@@ -8316,13 +8437,7 @@ export default function Home() {
               </h1>
               <p className="mt-1 text-[11px] font-bold text-[#81786C]">Ce que je veux garder.</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowMemosHelp(true)}
-              className="justify-self-end w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm"
-              aria-label="Aide Notes, Mémos & Listes"
-              title="Comment ça fonctionne ?"
-            >?</button>
+            <div className="w-10" aria-hidden="true" />
           </div>
 
           {!showMemoArchived && (
@@ -8379,31 +8494,17 @@ export default function Home() {
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2 mb-3 flex-wrap">
-            <button
-              type="button"
-              onClick={toggleMemoSearch}
-              className={`h-10 px-3 rounded-full border text-xs font-black whitespace-nowrap ${memoSearchOpen ? 'bg-[#D8DEC9] border-[#BFC9B2] text-[#40503A]' : 'bg-white border-[#DED5C8] text-[#6D655A]'}`}
-              aria-expanded={memoSearchOpen}
-              aria-controls="memo-search-panel"
-            >🔎 Recherche</button>
-            {!showMemoArchived && (
-              <button type="button" onClick={openMemoCleanup} className="h-10 px-3 rounded-full bg-white border border-[#DED5C8] text-[#6D655A] text-xs font-black whitespace-nowrap">🧹 Nettoyage</button>
-            )}
-          </div>
-
-          {memoSearchOpen && (
-          <div id="memo-search-panel" className="bg-[#F7F4ED] border border-[#E0D8CB] rounded-[22px] p-2.5 mb-4 shadow-sm">
+          <div id="memo-search-panel" data-memo-search-root className="mb-4">
             <div className="flex items-center gap-2">
               <div className="flex-1 relative min-w-0">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-50">🔎</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[#8FA083]">⌕</span>
                 <input
                   ref={memoSearchInputRef}
                   type="text"
                   value={memoSearch}
                   onChange={(e) => setMemoSearch(e.target.value)}
                   placeholder={showMemoArchived ? 'Rechercher dans l’historique' : 'Rechercher dans les notes'}
-                  className="w-full bg-white border border-[#DED5C8] rounded-full pl-9 pr-3 py-2.5 text-sm font-semibold text-[#4A463F] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]"
+                  className="w-full h-10 bg-[#F8FAF5] border border-[#D8E0D0] rounded-full pl-9 pr-3 text-sm font-normal text-[#65705E] placeholder:text-[#9AA792] focus:outline-none focus:ring-2 focus:ring-[#D2DDC8] focus:bg-white transition-colors"
                 />
               </div>
               <button
@@ -8465,7 +8566,6 @@ export default function Home() {
               </div>
             )}
           </div>
-          )}
 
           {visibleMemos.length === 0 ? (
             <div className="rounded-[26px] border-2 border-dashed border-[#D8D0C4] bg-[#FBFAF7] py-14 px-5 text-center text-[#7B7368]">
@@ -8507,17 +8607,6 @@ export default function Home() {
                   </div>
                 </section>
               )}
-            </div>
-          )}
-
-          {!showMemoArchived && (
-            <div className="mt-12 mb-6 text-center">
-              <button
-                type="button"
-                onClick={enterMemoArchives}
-                className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide"
-              >🕰️ Consulter l’historique des notes supprimées</button>
-              <p className="mt-1 text-[10px] font-semibold text-gray-400">Suppression automatique après 30 jours.</p>
             </div>
           )}
 
@@ -8638,7 +8727,7 @@ export default function Home() {
                   <p><strong>🧹 Nettoyage :</strong> passe rapidement en revue les anciennes notes pour les conserver ou les supprimer.</p>
                   <p><strong>↕ Organiser :</strong> fais un appui long puis glisse une carte pour changer son ordre. Dans une liste, maintiens la poignée ⠿ d’une ligne pour la déplacer.</p>
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
-                  <p><strong>✓ À faire :</strong> active cette option dans l’éditeur pour déplacer l’élément vers À faire. Il quitte alors Notes sans créer de doublon visible.</p>
+                  <p><strong>↗ Déplacer dans À faire :</strong> active cette action dans l’éditeur. La note quitte alors Notes et devient une tâche, sans doublon.</p>
                   <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
                 </div>
               </div>
@@ -8647,11 +8736,12 @@ export default function Home() {
 
           {memoEditorOpen && (
             <div
-              className="fixed inset-0 z-[12600] bg-black/35 backdrop-blur-[2px] flex items-center justify-center p-4"
+              className="fixed inset-x-0 top-0 z-[8500] overflow-hidden bg-black/35 backdrop-blur-[2px] flex items-start sm:items-center justify-center px-3"
+              style={{ bottom: 'calc(64px + env(safe-area-inset-bottom))', paddingTop: 'max(10px, env(safe-area-inset-top))', paddingBottom: '10px' }}
               onClick={() => closeMemoEditor(true)}
             >
               <div
-                className={`w-full max-w-lg rounded-[28px] border shadow-2xl p-5 max-h-[90vh] overflow-y-auto ${memoColorClasses(memoDraftColor)}`}
+                className={`my-auto w-full max-w-lg rounded-[24px] border shadow-2xl p-4 sm:p-5 max-h-full overflow-y-auto overscroll-contain ${memoColorClasses(memoDraftColor)}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between gap-3 mb-4">
@@ -8703,17 +8793,17 @@ export default function Home() {
                   >🎙️</button>
                 </div>
 
-                <div className={`mt-3 rounded-2xl border p-3 ${memoDraftIsTodo ? 'bg-white/75 border-[#AAB99D]' : 'bg-white/40 border-black/10'}`}>
+                <div className={`mt-3 rounded-2xl border p-3 ${memoDraftIsTodo ? 'bg-[#EEF3E8] border-[#AAB99D]' : 'bg-white/40 border-black/10'}`}>
                   <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-2 flex-1 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={memoDraftIsTodo}
-                        onChange={(event) => setMemoDraftIsTodo(event.target.checked)}
-                        className="w-5 h-5 accent-[#6F7B64]"
-                      />
-                      <span className="text-sm font-black">✓ À faire</span>
-                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setMemoDraftIsTodo(value => !value)}
+                      className={`flex-1 min-h-10 px-3 rounded-xl border text-left text-sm font-black flex items-center justify-between gap-2 transition-colors ${memoDraftIsTodo ? 'bg-[#D8E2CF] border-[#AAB99D] text-[#3F4C39]' : 'bg-white/70 border-black/10 text-[#5F584F]'}`}
+                      aria-pressed={memoDraftIsTodo}
+                    >
+                      <span>↗ Déplacer dans À faire</span>
+                      <span className={`text-[10px] rounded-full px-2 py-1 ${memoDraftIsTodo ? 'bg-[#6F7B64] text-white' : 'bg-[#EEE8DD] text-[#756D62]'}`}>{memoDraftIsTodo ? 'Activé' : 'Non'}</span>
+                    </button>
                     {memoDraftIsTodo && (
                       <select
                         value={memoDraftImportance}
@@ -8727,7 +8817,7 @@ export default function Home() {
                     )}
                   </div>
                   <p className="mt-1.5 text-[10px] font-bold opacity-60">
-                    {memoDraftIsTodo ? 'À la fermeture, cet élément quittera Notes et apparaîtra uniquement dans À faire.' : 'Cet élément restera uniquement dans Notes.'}
+                    {memoDraftIsTodo ? 'Le déplacement sera enregistré dès que tu fermes la note ou changes d’onglet.' : 'Cet élément restera uniquement dans Notes.'}
                   </p>
                 </div>
 
@@ -9563,6 +9653,24 @@ export default function Home() {
       {mainMode === 'notes' && (
         <div className="animate-fade-in text-[#4A463F]">
           <div className="relative mb-5">
+            {!isFocusMode && (
+              <div className="absolute left-0 top-0 z-40" data-tasks-overflow-root>
+                <button
+                  type="button"
+                  onClick={() => setShowTasksOverflowMenu(value => !value)}
+                  className="w-10 h-10 rounded-xl bg-[#F3F0E9] hover:bg-[#EAE4D9] border border-[#DED5C8] text-[#6D655A] text-xl font-black shadow-sm"
+                  aria-label="Menu de À faire"
+                  aria-expanded={showTasksOverflowMenu}
+                >⋯</button>
+                {showTasksOverflowMenu && (
+                  <div className="absolute left-0 top-12 w-56 rounded-2xl border border-[#DDD5C7] bg-[#FBFAF7] shadow-xl overflow-hidden">
+                    <button type="button" onClick={() => { setShowTasksOverflowMenu(false); navigateNotesChild('#tasks-history'); }} className="w-full px-4 py-3 text-left text-xs font-black hover:bg-[#F1EEE7]">🕰️ Historique des éléments</button>
+                    <button type="button" onClick={() => { setShowTasksOverflowMenu(false); openCleanupModal(); }} className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]">🧹 Nettoyage</button>
+                    <button type="button" onClick={() => { setShowTasksOverflowMenu(false); setShowNotesHelp(true); }} className="w-full px-4 py-3 text-left text-xs font-black border-t border-[#E7E0D6] hover:bg-[#F1EEE7]">? Aide</button>
+                  </div>
+                )}
+              </div>
+            )}
             {!isFocusMode ? (
               <div>
                 <h1
@@ -9689,7 +9797,7 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="flex flex-col mt-2">
+              <div className="flex flex-col mt-2" data-create-reminder-settings>
                 <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2.5 px-3 rounded-xl text-sm flex justify-between items-center transition-colors border border-[#DED5C8]">
                   <span>⚙️ Paramétrage des rappels</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
                 </button>
@@ -9893,17 +10001,6 @@ export default function Home() {
             </div>
           ) : activeTab === 'notes' && (
             <>
-              <div className="flex items-center justify-between mb-6 w-full gap-2">
-                <div className="flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-                  {showArchived === 'snoozed' ? (
-                    <button onClick={() => setShowArchived(false)} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#EEE8DD] text-[#756E63] hover:bg-[#E5DED2]">← Retour à À faire</button>
-                  ) : hasSnoozedNotes ? (
-                    <button onClick={() => setShowArchived('snoozed')} className="whitespace-nowrap px-3 py-2 text-sm rounded-xl font-bold bg-[#F3EDD6] text-[#786B43] hover:bg-[#EAE1C2]">💤 Éléments masqués</button>
-                  ) : <span />}
-                </div>
-                <button onClick={openCleanupModal} className="text-gray-500 hover:text-gray-800 text-sm font-semibold flex items-center gap-1.5 transition-colors px-2 py-1 rounded whitespace-nowrap flex-shrink-0">🧹 Nettoyage</button>
-              </div>
-
               <>
                   {displayedNotes.length > 1 && (
                     <p className="text-center text-[10px] font-bold text-[#8A8175] mb-3">Maintiens une tâche puis déplace-la pour changer son ordre ou sa priorité.</p>
@@ -9958,10 +10055,6 @@ export default function Home() {
                   })()}
               </>
 
-              <div className="mt-12 mb-8 text-center">
-                <button onClick={() => navigateNotesChild('#tasks-history')} className="text-gray-400 hover:text-gray-600 underline decoration-gray-300 font-semibold text-xs transition-colors tracking-wide">🕰️ Consulter l’historique des éléments terminés ou supprimés</button>
-                <p className="mt-1 text-[10px] font-semibold text-gray-400">Suppression automatique après 30 jours.</p>
-              </div>
             </>
           )}
 
@@ -9997,19 +10090,6 @@ export default function Home() {
             </div>
           )}
 
-          {!isFocusMode && (
-            <div className="flex justify-center mt-10 mb-3">
-              <button
-                type="button"
-                onClick={() => setShowNotesHelp(true)}
-                className="w-9 h-9 rounded-full bg-[#EEE8DD] hover:bg-[#E5DED2] border border-[#D9D0C2] text-[#71695E] font-black shadow-sm transition-colors"
-                aria-label="Aide sur À faire"
-                title="Aide sur les options de À faire"
-              >
-                ?
-              </button>
-            </div>
-          )}
         </div>
       )}
 
