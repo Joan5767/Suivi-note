@@ -166,7 +166,8 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
       setAuthReady(true);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user || null);
+  setPanelOpen(false);
+  setUser(session?.user || null);
       setWorkspaceReady(false);
       if (!session) {
         setSpaces([]);
