@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
@@ -157,19 +157,35 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
   const [members, setMembers] = useState<SharedMember[]>([]);
   const [notifications, setNotifications] = useState<CollaborationNotification[]>([]);
   const [panelOpen, setPanelOpen] = useState(false);
+  const currentUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
     void supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setUser(data.session?.user || null);
+      const initialUser = data.session?.user || null;
+      currentUserIdRef.current = initialUser?.id || null;
+      setUser(initialUser);
       setAuthReady(true);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-  setPanelOpen(false);
-  setUser(session?.user || null);
-      setWorkspaceReady(false);
-      if (!session) {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      const nextUser = session?.user || null;
+      const nextUserId = nextUser?.id || null;
+      const accountChanged = currentUserIdRef.current !== nextUserId;
+      currentUserIdRef.current = nextUserId;
+
+      // TOKEN_REFRESHED est déclenché notamment quand l'application revient du
+      // second plan. Le compte n'a alors pas changé : remettre workspaceReady à
+      // false laisserait l'écran bloqué, car l'effet dépendant de user.id ne se
+      // relance pas. On réinitialise uniquement lors d'un vrai changement de compte.
+      if (accountChanged || event === 'SIGNED_OUT') {
+        setPanelOpen(false);
+        setWorkspaceReady(false);
+      }
+
+      setUser(nextUser);
+      setAuthReady(true);
+      if (!nextUser) {
         setSpaces([]);
         setMembers([]);
         setNotifications([]);
@@ -236,7 +252,13 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) return;
-    void loadWorkspace();
+    void loadWorkspace().catch((error) => {
+      // Une panne réseau ponctuelle ne doit pas condamner l'application à rester
+      // indéfiniment sur l'écran de chargement. Les données seront resynchronisées
+      // au prochain retour au premier plan ou via le temps réel Supabase.
+      console.error('Chargement de l’espace impossible :', error);
+      setWorkspaceReady(true);
+    });
     // loadWorkspace est volontairement relancé uniquement quand le compte change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -471,7 +493,14 @@ function CollaborationPanel({
           </div>
         </div>
 
-        <button type="button" onClick={() => void supabase.auth.signOut()} className="mt-5 w-full rounded-xl border border-[#DEC0B9] bg-[#F3E2DD] px-3 py-2.5 text-xs font-black text-[#885C50]">Se déconnecter</button>
+        <button
+          type="button"
+          onClick={() => {
+            onClose();
+            void supabase.auth.signOut();
+          }}
+          className="mt-5 w-full rounded-xl border border-[#DEC0B9] bg-[#F3E2DD] px-3 py-2.5 text-xs font-black text-[#885C50]"
+        >Se déconnecter</button>
       </section>
     </div>
   );
