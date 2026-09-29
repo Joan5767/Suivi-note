@@ -2737,6 +2737,15 @@ function WorkspaceApp() {
     }
 
     const handleMemoSelectionPopState = () => {
+      // L'aperçu d'un planning est un niveau de navigation à part entière.
+      // Retour Android le ferme et laisse l'utilisateur dans les plannings
+      // sauvegardés au lieu de remonter directement jusqu'à Notes.
+      if (appStateRef.current.previewTemplate) {
+        setPlanningDetailBlock(null);
+        setPreviewTemplate(null);
+        return;
+      }
+
       // Dans À faire, Retour ferme et sauvegarde d'abord l'éditeur de la tâche.
       // Un second Retour effectue ensuite la navigation normale vers Notes.
       if (taskEditorOpenRef.current) {
@@ -2937,6 +2946,7 @@ function WorkspaceApp() {
     delete next.taskEditor;
     delete next.tasksChild;
     delete next.planningChild;
+    delete next.planningPreview;
     return next;
   };
 
@@ -3101,6 +3111,36 @@ function WorkspaceApp() {
     }
 
     navigateAwayRoute(targetHash);
+  };
+
+  const openPlanningPreview = (template: PlanningTemplate) => {
+    setPlanningDetailBlock(null);
+    setPreviewTemplate(template);
+    if (!window.history.state?.planningPreview) {
+      window.history.pushState(
+        { ...(window.history.state || {}), planningPreview: true },
+        '',
+        window.location.href
+      );
+    }
+  };
+
+  const closePlanningPreview = () => {
+    setPlanningDetailBlock(null);
+    setPreviewTemplate(null);
+    if (window.history.state?.planningPreview) window.history.back();
+  };
+
+  const dismissPlanningPreviewForNavigation = () => {
+    setPlanningDetailBlock(null);
+    setPreviewTemplate(null);
+    if (window.history.state?.planningPreview) {
+      window.history.replaceState(
+        clearTransientHistoryFlags(window.history.state || {}),
+        '',
+        window.location.href
+      );
+    }
   };
 
   const navigatePlanningHome = () => {
@@ -3488,7 +3528,7 @@ function WorkspaceApp() {
     finally { setLoading(false); }
   };
   const notifyAgain = async (type: ShareType, id: string, label: string) => {
-    try { await notifyShared(type, id, label); showAppMessage('🔔 Notification envoyée.'); }
+    try { await notifyShared(type, id, label); showAppMessage('🔔 Notification envoyée à l’espace partagé.'); }
     catch (error: any) { showAppMessage('Notification impossible : ' + (error?.message || 'erreur inconnue')); }
   };
   const makePersonal = async (type: ShareType, id: string) => {
@@ -3496,6 +3536,32 @@ function WorkspaceApp() {
     const { error } = await (supabase as any).from(shareTable(type)).update(payload).eq('id', id);
     if (error) showAppMessage('Modification impossible : ' + error.message);
     else { await refreshShareType(type); showAppMessage('🔒 Élément redevenu personnel.'); }
+  };
+
+  const requestPlanningShareConfirmation = (template: PlanningTemplate) => {
+    const space = collaboration.activeSpace;
+    if (!space) {
+      collaboration.openPanel();
+      showAppMessage("Crée ou rejoins d'abord un espace partagé.");
+      return;
+    }
+    requestAppConfirmation({
+      title: 'Partager ce planning ?',
+      message: `Veux-tu partager « ${template.name} » dans l’espace partagé « ${space.name} » et notifier ses membres ?`,
+      confirmLabel: 'Partager et notifier',
+      tone: 'sage',
+      onConfirm: () => shareEntity('planning', template.id, template.name),
+    });
+  };
+
+  const requestPlanningPrivateConfirmation = (template: PlanningTemplate) => {
+    requestAppConfirmation({
+      title: 'Repasser ce planning en privé ?',
+      message: `« ${template.name} » ne sera plus visible dans l’espace partagé. Veux-tu continuer ?`,
+      confirmLabel: 'Rendre personnel',
+      tone: 'danger',
+      onConfirm: () => makePersonal('planning', template.id),
+    });
   };
 
   useEffect(() => { 
@@ -6317,7 +6383,7 @@ function WorkspaceApp() {
     setPlanningSavedSnapshot(getPlanningSnapshot(loadedBlocks));
     setSelectedBlockId(null);
     setEditingBlockId(null);
-    setPreviewTemplate(null);
+    dismissPlanningPreviewForNavigation();
     navigatePlanningChild('#planning-editor');
   };
 
@@ -8242,9 +8308,9 @@ function WorkspaceApp() {
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
               <button onClick={() => { void moveTaskToNotes(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">📝 Passer dans Notes</button>
               {!note.space_id
-                ? <button onClick={() => { void shareEntity('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">👥 Partager et notifier</button>
+                ? <button onClick={() => { void shareEntity('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">👥 Partager dans l’espace et notifier</button>
                 : <>
-                    <button onClick={() => { void notifyAgain('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">🔔 Notifier</button>
+                    <button onClick={() => { void notifyAgain('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">🔔 Notifier l’espace partagé</button>
                     {note.owner_id === collaboration.user.id && <button onClick={() => { void makePersonal('note', note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#655E54] hover:bg-[#F1EEE7] border-b border-gray-100">🔒 Rendre personnelle</button>}
                   </>}
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
@@ -8263,6 +8329,9 @@ function WorkspaceApp() {
   const savedTemplateOverlapLayouts = new Map<string, Map<string, { columnIndex: number; columnCount: number }>>(
     savedTemplates.map(template => [template.id, getTaskOverlapLayoutMap(template.blocks || [])])
   );
+  const exportPlanningTemplate = exportPlanningContext?.id
+    ? savedTemplates.find(template => template.id === exportPlanningContext.id) || null
+    : null;
   const currentPrimarySection: PrimaryAppSection = mainMode === 'memos' ? 'memos' : mainMode === 'notes' ? 'notes' : 'planning';
   const currentPrimarySectionIndex = PRIMARY_APP_SECTIONS.indexOf(currentPrimarySection);
   const previousPrimarySection = currentPrimarySectionIndex > 0 ? PRIMARY_APP_SECTIONS[currentPrimarySectionIndex - 1] : null;
@@ -8531,14 +8600,14 @@ function WorkspaceApp() {
 
       {/* MODALE D'APERÇU DU MODÈLE DE SEMAINE */}
       {previewTemplate && (
-        <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setPreviewTemplate(null)}>
+        <div className="fixed inset-0 bg-black/80 z-[10000] flex items-center justify-center p-4 backdrop-blur-sm" onClick={closePlanningPreview}>
           <div className="bg-white rounded-2xl p-4 w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h2 className="text-xl font-black text-gray-800">{previewTemplate.name}</h2>
                 <p className="text-[11px] font-semibold text-gray-500">Touche une tâche pour voir son détail.</p>
               </div>
-              <button onClick={() => setPreviewTemplate(null)} className="text-gray-400 hover:text-black font-bold text-xl">✖</button>
+              <button onClick={closePlanningPreview} className="text-gray-400 hover:text-black font-bold text-xl" aria-label="Fermer l’aperçu">✖</button>
             </div>
             
             {/* GRILLE MINIATURE AGRANDIE AVEC REPÈRES HORAIRES */}
@@ -8836,10 +8905,44 @@ function WorkspaceApp() {
                 <p><strong>Fichier .ics :</strong> format universel que tu peux conserver, envoyer ou importer plus tard dans Google Agenda, Apple Calendrier ou Outlook.</p>
                 <p className="mt-2"><strong>Ajouter au calendrier :</strong> le téléphone tente d'ouvrir directement son menu de partage/import vers une application calendrier. Si le navigateur ne le permet pas, l'app revient automatiquement au fichier .ics.</p>
                 <p className="mt-2"><strong>Créer dans À faire :</strong> transforme les tâches du planning en tâches datées pour la semaine choisie, après vérification de la liste et des priorités.</p>
+                {exportPlanningTemplate && <p className="mt-2"><strong>Espace partagé :</strong> rend ce planning visible aux membres de ton espace et leur envoie une notification.</p>}
               </div>
             )}
 
             <div className="flex flex-col gap-2.5">
+              {exportPlanningTemplate && (
+                <div className="mb-1 rounded-2xl border border-[#C8D0B8] bg-[#EEF1E8] p-2.5 flex flex-col gap-2">
+                  <p className="px-1 text-[10px] font-black uppercase tracking-wide text-[#687260]">Espace partagé</p>
+                  {!exportPlanningTemplate.space_id ? (
+                    <button
+                      type="button"
+                      onClick={() => requestPlanningShareConfirmation(exportPlanningTemplate)}
+                      className="w-full rounded-xl bg-[#D8E2CF] hover:bg-[#CAD7C1] px-3 py-2.5 text-xs font-black text-[#3F4C39]"
+                    >
+                      👥 Partager dans l’espace et notifier
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void notifyAgain('planning', exportPlanningTemplate.id, exportPlanningTemplate.name)}
+                        className="w-full rounded-xl bg-[#D8E2CF] hover:bg-[#CAD7C1] px-3 py-2.5 text-xs font-black text-[#3F4C39]"
+                      >
+                        🔔 Notifier l’espace partagé
+                      </button>
+                      {exportPlanningTemplate.owner_id === collaboration.user.id && (
+                        <button
+                          type="button"
+                          onClick={() => requestPlanningPrivateConfirmation(exportPlanningTemplate)}
+                          className="w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-xs font-black text-[#655E54]"
+                        >
+                          🔒 Repasser ce planning en privé
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
               <button onClick={exportWeeklyICS} className="w-full rounded-2xl bg-[#E1D3C3] hover:bg-[#D7C5B1] text-[#59493B] font-black py-3 px-4 transition-colors text-sm">
                 Télécharger le fichier .ics
               </button>
@@ -9626,10 +9729,10 @@ function WorkspaceApp() {
                   const memo = memoEntries.find(item => item.id === editingMemoId);
                   if (!memo) return null;
                   return !memo.space_id ? (
-                    <button type="button" onClick={() => void shareEntity('memo', memo.id, memoDraftTitle || memo.title)} className="mt-4 w-full rounded-xl bg-[#D8E2CF] px-3 py-2.5 text-xs font-black text-[#3F4C39]">👥 Partager et notifier</button>
+                    <button type="button" onClick={() => void shareEntity('memo', memo.id, memoDraftTitle || memo.title)} className="mt-4 w-full rounded-xl bg-[#D8E2CF] px-3 py-2.5 text-xs font-black text-[#3F4C39]">👥 Partager dans l’espace et notifier</button>
                   ) : (
                     <div className="mt-4 flex gap-2">
-                      <button type="button" onClick={() => void notifyAgain('memo', memo.id, memoDraftTitle || memo.title)} className="flex-1 rounded-xl bg-[#D8E2CF] px-2 py-2.5 text-[11px] font-black">🔔 Notifier</button>
+                      <button type="button" onClick={() => void notifyAgain('memo', memo.id, memoDraftTitle || memo.title)} className="flex-1 rounded-xl bg-[#D8E2CF] px-2 py-2.5 text-[11px] font-black">🔔 Notifier l’espace partagé</button>
                       {memo.owner_id === collaboration.user.id && <button type="button" onClick={() => void makePersonal('memo', memo.id)} className="flex-1 rounded-xl bg-white/65 px-2 py-2.5 text-[11px] font-black">🔒 Personnel</button>}
                     </div>
                   );
@@ -9775,7 +9878,7 @@ function WorkspaceApp() {
                    <button
                      type="button"
                      draggable={false}
-                     onClick={(e) => { e.stopPropagation(); if (performance.now() < planningTemplateSuppressClickUntilRef.current) return; setPreviewTemplate(tmpl); }}
+                     onClick={(e) => { e.stopPropagation(); if (performance.now() < planningTemplateSuppressClickUntilRef.current) return; openPlanningPreview(tmpl); }}
                      className="h-32 bg-gray-50 w-full relative flex border-b border-gray-200 p-1 cursor-pointer hover:bg-[#F7F4ED] transition-colors text-left"
                      aria-label={`Ouvrir l'aperçu de ${tmpl.name}`}
                    >
@@ -9828,10 +9931,10 @@ function WorkspaceApp() {
                    {/* Actions secondaires : l'ouverture et l'édition passent par la miniature. */}
                    <div className="p-2 flex items-center justify-end gap-1.5 bg-[#F4F0E9]">
                      {!tmpl.space_id
-                       ? <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void shareEntity('planning', tmpl.id, tmpl.name); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Partager et notifier">👥</button>
+                       ? <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); requestPlanningShareConfirmation(tmpl); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Partager dans l’espace et notifier" aria-label="Partager ce planning dans l’espace partagé et notifier">👥</button>
                        : <>
-                           <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void notifyAgain('planning', tmpl.id, tmpl.name); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Notifier">🔔</button>
-                           {tmpl.owner_id === collaboration.user.id && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void makePersonal('planning', tmpl.id); }} className="px-2.5 py-1.5 bg-white text-[#655E54] font-black text-[10px] rounded-lg" title="Rendre personnel">🔒</button>}
+                           <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void notifyAgain('planning', tmpl.id, tmpl.name); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Notifier l’espace partagé" aria-label="Notifier l’espace partagé">🔔</button>
+                           {tmpl.owner_id === collaboration.user.id && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); requestPlanningPrivateConfirmation(tmpl); }} className="px-2.5 py-1.5 bg-white text-[#655E54] font-black text-[10px] rounded-lg" title="Repasser ce planning en privé" aria-label="Repasser ce planning en privé">🔒</button>}
                          </>}
                      <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void duplicateSavedTemplate(tmpl); }} className="px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer" title="Dupliquer">⧉</button>
                      <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); deleteSavedTemplate(tmpl.id); }} className="px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer" title="Supprimer">🗑</button>
