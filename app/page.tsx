@@ -63,6 +63,7 @@ interface WeeklyBlock {
   color: string;
   kind?: 'task' | 'marker';
   importance?: 'vert' | 'orange' | 'rouge';
+  todoPriorityEnabled?: boolean;
 }
 
 interface PlanningTemplate {
@@ -1897,6 +1898,7 @@ export default function Home() {
   const [planningTodoExportContext, setPlanningTodoExportContext] = useState<{ id?: string; name: string; blocks: WeeklyBlock[] } | null>(null);
   const [planningTodoWeekStart, setPlanningTodoWeekStart] = useState('');
   const [planningTodoSelections, setPlanningTodoSelections] = useState<Record<string, boolean>>({});
+  const [planningTodoTouchedSelections, setPlanningTodoTouchedSelections] = useState<Record<string, boolean>>({});
   const [planningTodoPriorities, setPlanningTodoPriorities] = useState<Record<string, 'vert' | 'orange' | 'rouge'>>({});
   const [planningTodoExporting, setPlanningTodoExporting] = useState(false);
   
@@ -1910,6 +1912,8 @@ export default function Home() {
   const [blockColor, setBlockColor] = useState('blue');
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
   const [blockImportance, setBlockImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
+  const [blockTodoPriorityEnabled, setBlockTodoPriorityEnabled] = useState(false);
+  const [showBlockDurationOptions, setShowBlockDurationOptions] = useState(false);
   const [blockDurationHours, setBlockDurationHours] = useState(1);
   const [blockDurationMinutes, setBlockDurationMinutes] = useState(0);
 
@@ -2009,6 +2013,10 @@ export default function Home() {
             : 'blue',
         kind,
         importance: raw.importance === 'orange' || raw.importance === 'rouge' ? raw.importance : 'vert',
+        todoPriorityEnabled:
+          typeof raw.todoPriorityEnabled === 'boolean'
+            ? raw.todoPriorityEnabled
+            : raw.importance === 'orange' || raw.importance === 'rouge',
       }];
     });
   };
@@ -2029,6 +2037,7 @@ export default function Home() {
           color: block.color,
           kind: block.kind === 'marker' ? 'marker' : 'task',
           importance: block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert',
+          todoPriorityEnabled: Boolean(block.todoPriorityEnabled),
         }))
         .sort((a, b) => a.id.localeCompare(b.id))
     );
@@ -5567,6 +5576,8 @@ export default function Home() {
     setBlockColor('blue');
     setBlockKind('task');
     setBlockImportance('vert');
+    setBlockTodoPriorityEnabled(false);
+    setShowBlockDurationOptions(false);
     setBlockDurationHours(1);
     setBlockDurationMinutes(0);
     setShowBlockModal(true);
@@ -5583,6 +5594,8 @@ export default function Home() {
     setBlockColor(block.color);
     setBlockKind(block.kind === 'marker' ? 'marker' : 'task');
     setBlockImportance(block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert');
+    setBlockTodoPriorityEnabled(Boolean(block.todoPriorityEnabled));
+    setShowBlockDurationOptions(false);
     const existingDuration = block.kind === 'marker' ? 0 : Math.max(1, Math.round(block.duration || 60));
     setBlockDurationHours(Math.floor(existingDuration / 60));
     setBlockDurationMinutes(existingDuration % 60);
@@ -5591,6 +5604,7 @@ export default function Home() {
 
   const saveBlock = () => {
     if (!blockTitle.trim()) return;
+    const cleanBlockTitle = blockTitle.trim().replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ');
 
     const [hStr, mStr] = blockTime.split(':');
     const parsedHour = parseInt(hStr, 10);
@@ -5633,7 +5647,7 @@ export default function Home() {
         const safeDuration = chosenDuration;
         return {
           ...b,
-          title: blockTitle.trim(),
+          title: cleanBlockTitle,
           description: blockKind === 'task' ? blockDescription.trim() : '',
           day: blockDay,
           startHour,
@@ -5642,12 +5656,13 @@ export default function Home() {
           color: blockColor,
           kind: blockKind,
           importance: blockKind === 'task' ? blockImportance : 'vert',
+          todoPriorityEnabled: blockKind === 'task' && blockTodoPriorityEnabled,
         };
       }));
     } else {
       const newBlock: WeeklyBlock = {
         id: crypto.randomUUID(),
-        title: blockTitle.trim(),
+        title: cleanBlockTitle,
         description: blockKind === 'task' ? blockDescription.trim() : '',
         day: blockDay,
         startHour,
@@ -5656,6 +5671,7 @@ export default function Home() {
         color: blockColor,
         kind: blockKind,
         importance: blockKind === 'task' ? blockImportance : 'vert',
+        todoPriorityEnabled: blockKind === 'task' && blockTodoPriorityEnabled,
       };
       setWeeklyBlocks(prev => [...prev, newBlock]);
     }
@@ -6562,7 +6578,7 @@ export default function Home() {
         date: getPlanningTaskDate(block, planningTodoWeekStart),
         alreadyExists: planningTaskAlreadyExists(block, planningTodoWeekStart),
         selected: planningTodoSelections[block.id] ?? true,
-        importance: planningTodoPriorities[block.id] || block.importance || 'vert',
+        importance: planningTodoPriorities[block.id] || (block.todoPriorityEnabled ? block.importance : 'vert') || 'vert',
       }))
       .sort((a, b) => a.date.getTime() - b.date.getTime());
   };
@@ -6580,12 +6596,13 @@ export default function Home() {
     const priorities: Record<string, 'vert' | 'orange' | 'rouge'> = {};
     blocks.forEach(block => {
       selections[block.id] = !planningTaskAlreadyExists(block, weekStart);
-      priorities[block.id] = block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert';
+      priorities[block.id] = block.todoPriorityEnabled && (block.importance === 'orange' || block.importance === 'rouge') ? block.importance : 'vert';
     });
 
     setPlanningTodoExportContext({ id: planning.id, name: planning.name, blocks });
     setPlanningTodoWeekStart(weekStart);
     setPlanningTodoSelections(selections);
+    setPlanningTodoTouchedSelections({});
     setPlanningTodoPriorities(priorities);
     setShowExportModal(false);
     setExportPlanningContext(null);
@@ -6597,6 +6614,7 @@ export default function Home() {
     setShowPlanningTodoExportModal(false);
     setPlanningTodoExportContext(null);
     setPlanningTodoSelections({});
+    setPlanningTodoTouchedSelections({});
     setPlanningTodoPriorities({});
   };
 
@@ -6604,11 +6622,18 @@ export default function Home() {
     const weekStart = normalizePlanningWeekStart(value);
     setPlanningTodoWeekStart(weekStart);
     if (!planningTodoExportContext) return;
-    const selections: Record<string, boolean> = {};
-    planningTodoExportContext.blocks.forEach(block => {
-      selections[block.id] = !planningTaskAlreadyExists(block, weekStart);
+    setPlanningTodoSelections(current => {
+      const next = { ...current };
+      planningTodoExportContext.blocks.forEach(block => {
+        // Un choix effectué par l'utilisateur reste prioritaire quand seule la
+        // semaine change. Les choix automatiques peuvent encore suivre la
+        // détection des doublons de la nouvelle semaine.
+        if (!planningTodoTouchedSelections[block.id]) {
+          next[block.id] = !planningTaskAlreadyExists(block, weekStart);
+        }
+      });
+      return next;
     });
-    setPlanningTodoSelections(selections);
   };
 
   const createPlanningTasksInTodos = async () => {
@@ -6651,6 +6676,7 @@ export default function Home() {
       setShowPlanningTodoExportModal(false);
       setPlanningTodoExportContext(null);
       setPlanningTodoSelections({});
+      setPlanningTodoTouchedSelections({});
       setPlanningTodoPriorities({});
       setSuccessMessage(`✅ ${payload.length} tâche${payload.length > 1 ? 's' : ''} créée${payload.length > 1 ? 's' : ''} dans À faire.`);
       window.setTimeout(() => setSuccessMessage(null), 3500);
@@ -8718,6 +8744,11 @@ export default function Home() {
                           rows.forEach(row => { next[row.block.id] = checked; });
                           return next;
                         });
+                        setPlanningTodoTouchedSelections(current => {
+                          const next = { ...current };
+                          rows.forEach(row => { next[row.block.id] = true; });
+                          return next;
+                        });
                       }}
                       className="w-4 h-4 accent-[#6F7B64]"
                     />
@@ -8739,7 +8770,10 @@ export default function Home() {
                         <input
                           type="checkbox"
                           checked={selected}
-                          onChange={(event) => setPlanningTodoSelections(current => ({ ...current, [block.id]: event.target.checked }))}
+                          onChange={(event) => {
+                            setPlanningTodoSelections(current => ({ ...current, [block.id]: event.target.checked }));
+                            setPlanningTodoTouchedSelections(current => ({ ...current, [block.id]: true }));
+                          }}
                           className="mt-1 w-5 h-5 flex-shrink-0 accent-[#6F7B64]"
                           aria-label={`Créer ${block.title} dans À faire`}
                         />
@@ -10082,76 +10116,106 @@ export default function Home() {
                  </div>
 
                  {blockKind === 'task' && (
-                   <div className="rounded-xl border border-[#DDD5C9] bg-[#F8F5EF] p-3">
-                     <div className="text-xs font-black text-[#625A50] mb-2">Durée de la tâche</div>
-                     <div className="flex items-center gap-2">
-                       <input
-                         type="number"
-                         min={0}
-                         max={16}
-                         inputMode="numeric"
-                         value={blockDurationHours}
-                         onFocus={(e) => e.currentTarget.select()}
-                         onClick={(e) => e.currentTarget.select()}
-                         onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
-                         className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
-                         aria-label="Durée en heures"
-                       />
-                       <span className="text-sm font-bold text-[#756D62]">h</span>
-                       <input
-                         type="number"
-                         min={0}
-                         max={59}
-                         inputMode="numeric"
-                         value={blockDurationMinutes}
-                         onFocus={(e) => e.currentTarget.select()}
-                         onClick={(e) => e.currentTarget.select()}
-                         onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
-                         className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
-                         aria-label="Durée en minutes"
-                       />
-                       <span className="text-sm font-bold text-[#756D62]">min</span>
-                     </div>
+                   <div className="rounded-xl border border-[#DDD5C9] bg-[#F8F5EF] overflow-hidden">
+                     <button
+                       type="button"
+                       onClick={() => setShowBlockDurationOptions(value => !value)}
+                       className="w-full px-3 py-3 flex items-center justify-between gap-3 text-left"
+                       aria-expanded={showBlockDurationOptions}
+                     >
+                       <span className="text-xs font-black text-[#625A50]">Durée de la tâche</span>
+                       <span className="text-xs font-black text-[#46513F]">{formatDuration(Math.max(1, blockDurationHours * 60 + blockDurationMinutes))} {showBlockDurationOptions ? '▲' : '▼'}</span>
+                     </button>
+                     {showBlockDurationOptions && (
+                       <div className="border-t border-[#E1D9CE] px-3 py-3 flex items-center gap-2 bg-white/45">
+                         <input
+                           type="number"
+                           min={0}
+                           max={16}
+                           inputMode="numeric"
+                           value={blockDurationHours}
+                           onFocus={(e) => e.currentTarget.select()}
+                           onClick={(e) => e.currentTarget.select()}
+                           onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
+                           className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
+                           aria-label="Durée en heures"
+                         />
+                         <span className="text-sm font-bold text-[#756D62]">h</span>
+                         <input
+                           type="number"
+                           min={0}
+                           max={59}
+                           inputMode="numeric"
+                           value={blockDurationMinutes}
+                           onFocus={(e) => e.currentTarget.select()}
+                           onClick={(e) => e.currentTarget.select()}
+                           onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
+                           className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
+                           aria-label="Durée en minutes"
+                         />
+                         <span className="text-sm font-bold text-[#756D62]">min</span>
+                       </div>
+                     )}
                    </div>
                  )}
 
-                 <input
-                   type="text"
-                   value={blockTitle}
-                   onChange={(e) => setBlockTitle(e.target.value)}
-                   placeholder={blockKind === 'marker' ? 'Ex: Horaire travail chérie' : 'Ex: Entraînement Muay Thai...'}
-                   className="w-full border border-gray-300 p-3 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
-                 />
+                 <label className="block">
+                   <span className="mb-1.5 block text-xs font-black text-[#625A50]">{blockKind === 'marker' ? 'Nom du repère' : 'Titre de la tâche'}</span>
+                   <textarea
+                     value={blockTitle}
+                     onChange={(e) => setBlockTitle(e.target.value)}
+                     placeholder={blockKind === 'marker' ? 'Ex. : Horaire de travail' : 'Ex. : Entraînement Muay Thai'}
+                     rows={2}
+                     className="w-full min-h-[76px] border-2 border-[#C8D2BC] p-3 rounded-xl text-base text-black font-bold bg-white focus:outline-none focus:ring-2 focus:ring-[#AEBCA2] resize-none transition-colors"
+                   />
+                 </label>
 
                  {blockKind === 'task' && (
-                   <textarea
-                     value={blockDescription}
-                     onChange={(e) => setBlockDescription(e.target.value)}
-                     placeholder="Descriptif de la tâche (optionnel)"
-                     rows={3}
-                     className="w-full border border-gray-300 p-3 rounded-xl text-black font-medium bg-gray-50 focus:bg-white transition-colors resize-y"
-                   />
+                   <label className="block">
+                     <span className="mb-1.5 block text-[11px] font-bold text-[#81786C]">Description <span className="font-semibold opacity-70">(optionnelle)</span></span>
+                     <textarea
+                       value={blockDescription}
+                       onChange={(e) => setBlockDescription(e.target.value)}
+                       placeholder="Ajoute seulement les précisions utiles…"
+                       rows={2}
+                       className="w-full min-h-[58px] border border-[#DDD5C9] p-2.5 rounded-xl text-sm text-black font-medium bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#C8D2BC] transition-colors resize-y"
+                     />
+                   </label>
                  )}
 
                  {blockKind === 'task' && (
                    <div className="rounded-xl border border-[#DDD5C9] bg-[#F8F5EF] p-3">
-                     <div className="mb-2 text-xs font-black text-[#625A50]">Priorité dans À faire</div>
-                     <div className="grid grid-cols-3 gap-2" role="group" aria-label="Priorité de la tâche">
-                       {([
-                         ['vert', '🟢 Normale'],
-                         ['orange', '🟠 Importante'],
-                         ['rouge', '🔴 Urgente'],
-                       ] as const).map(([value, label]) => (
-                         <button
-                           key={value}
-                           type="button"
-                           onClick={() => setBlockImportance(value)}
-                           className={`min-h-10 rounded-xl border px-1.5 py-2 text-[10px] font-black leading-tight transition-colors ${blockImportance === value ? 'border-[#6F7B64] bg-white shadow-sm text-[#3F493A]' : 'border-transparent bg-white/45 text-[#746D63]'}`}
-                           aria-pressed={blockImportance === value}
-                         >{label}</button>
-                       ))}
-                     </div>
-                     <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Cette priorité sera proposée lors de la création des tâches de la semaine.</p>
+                     <label className="flex items-center gap-2 cursor-pointer">
+                       <input
+                         type="checkbox"
+                         checked={blockTodoPriorityEnabled}
+                         onChange={(event) => setBlockTodoPriorityEnabled(event.target.checked)}
+                         className="w-4 h-4 accent-[#6F7B64]"
+                       />
+                       <span className="text-xs font-black text-[#625A50]">Prévoir une priorité dans À faire</span>
+                     </label>
+                     {blockTodoPriorityEnabled ? (
+                       <>
+                         <div className="mt-3 grid grid-cols-3 gap-2" role="group" aria-label="Priorité de la tâche">
+                           {([
+                             ['vert', '🟢 Normale'],
+                             ['orange', '🟠 Importante'],
+                             ['rouge', '🔴 Urgente'],
+                           ] as const).map(([value, label]) => (
+                             <button
+                               key={value}
+                               type="button"
+                               onClick={() => setBlockImportance(value)}
+                               className={`min-h-10 rounded-xl border px-1.5 py-2 text-[10px] font-black leading-tight transition-colors ${blockImportance === value ? 'border-[#6F7B64] bg-white shadow-sm text-[#3F493A]' : 'border-transparent bg-white/45 text-[#746D63]'}`}
+                               aria-pressed={blockImportance === value}
+                             >{label}</button>
+                           ))}
+                         </div>
+                         <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Cette priorité sera proposée lors de la création des tâches de la semaine.</p>
+                       </>
+                     ) : (
+                       <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Aucune priorité n’est attachée à ce bloc. Tu pourras encore la choisir lors de la création dans À faire.</p>
+                     )}
                    </div>
                  )}
                  
