@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
+import { CollaborationButton, CollaborationProvider, useCollaboration } from './components/collaboration';
 import {
   DndContext,
   DragOverlay,
@@ -50,6 +51,10 @@ interface Note {
   last_popup_reminded_at?: string | null;
   created_at?: string | null;
   sort_order: number;
+  owner_id?: string | null;
+  space_id?: string | null;
+  assigned_to?: string | null;
+  updated_by?: string | null;
 }
 
 interface WeeklyBlock {
@@ -72,6 +77,10 @@ interface PlanningTemplate {
   blocks: WeeklyBlock[];
   sort_order: number;
   created_at?: string | null;
+  owner_id?: string | null;
+  space_id?: string | null;
+  updated_by?: string | null;
+  version?: number;
 }
 
 interface AiProposal {
@@ -112,6 +121,9 @@ interface MemoEntry {
   sort_order: number;
   created_at?: string | null;
   updated_at?: string | null;
+  owner_id?: string | null;
+  space_id?: string | null;
+  updated_by?: string | null;
 }
 
 interface MemoTransferPayload {
@@ -1406,7 +1418,8 @@ function DrawNoteEditor({ initialData, initialTitle, initialColor, initialPinned
 }
 
 
-export default function Home() {
+function WorkspaceApp() {
+  const collaboration = useCollaboration();
   const [mainMode, setMainMode] = useState<'notes' | 'memos' | 'planning' | 'planning_gallery'>('memos');
   const mainSwipeViewportRef = useRef<HTMLDivElement | null>(null);
   const mainSwipeTrackRef = useRef<HTMLDivElement | null>(null);
@@ -1423,6 +1436,13 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [isPushEnabled, setIsPushEnabled] = useState(false);
+
+  const authorizedFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const token = await collaboration.getAccessToken();
+    const headers = new Headers(init.headers || {});
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
 
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
@@ -3366,6 +3386,9 @@ export default function Home() {
       sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
       created_at: typeof row?.created_at === 'string' ? row.created_at : null,
       updated_at: typeof row?.updated_at === 'string' ? row.updated_at : null,
+      owner_id: typeof row?.owner_id === 'string' ? row.owner_id : null,
+      space_id: typeof row?.space_id === 'string' ? row.space_id : null,
+      updated_by: typeof row?.updated_by === 'string' ? row.updated_by : null,
     };
   };
 
@@ -3435,11 +3458,60 @@ export default function Home() {
     return true;
   };
 
+  type ShareType = 'note' | 'memo' | 'planning';
+  const shareTable = (type: ShareType) => type === 'note' ? 'notes' : type === 'memo' ? 'memo_notes' : 'planning_templates';
+  const refreshShareType = async (type: ShareType) => {
+    if (type === 'note') await fetchNotes();
+    else if (type === 'memo') await fetchMemos();
+    else await fetchTemplates();
+  };
+  const notifyShared = async (type: ShareType, id: string, label: string) => {
+    const response = await authorizedFetch('/api/collaboration/notify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityType: type, entityId: id, body: label || 'Nouvel élément partagé' }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result?.error || 'Notification impossible.');
+    return result as { recipients?: number };
+  };
+  const shareEntity = async (type: ShareType, id: string, label: string) => {
+    const space = collaboration.activeSpace;
+    if (!space) { collaboration.openPanel(); showAppMessage("Crée ou rejoins d'abord un espace partagé."); return; }
+    setLoading(true);
+    try {
+      const { error } = await (supabase as any).from(shareTable(type)).update({ space_id: space.id }).eq('id', id);
+      if (error) throw error;
+      const result = await notifyShared(type, id, label);
+      await refreshShareType(type);
+      showAppMessage(result.recipients ? '✅ Élément partagé et notification envoyée.' : '✅ Élément ajouté à votre espace partagé.');
+    } catch (error: any) { showAppMessage('Partage impossible : ' + (error?.message || 'erreur inconnue')); }
+    finally { setLoading(false); }
+  };
+  const notifyAgain = async (type: ShareType, id: string, label: string) => {
+    try { await notifyShared(type, id, label); showAppMessage('🔔 Notification envoyée.'); }
+    catch (error: any) { showAppMessage('Notification impossible : ' + (error?.message || 'erreur inconnue')); }
+  };
+  const makePersonal = async (type: ShareType, id: string) => {
+    const payload = type === 'note' ? { space_id: null, assigned_to: null } : { space_id: null };
+    const { error } = await (supabase as any).from(shareTable(type)).update(payload).eq('id', id);
+    if (error) showAppMessage('Modification impossible : ' + error.message);
+    else { await refreshShareType(type); showAppMessage('🔒 Élément redevenu personnel.'); }
+  };
+
   useEffect(() => { 
     fetchNotes(); 
     fetchTemplates();
     fetchMemos();
   }, []);
+
+  useEffect(() => {
+    const channel = supabase.channel(`workspace-${collaboration.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, () => void fetchNotes())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'memo_notes' }, () => void fetchMemos())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'planning_templates' }, () => void fetchTemplates())
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [collaboration.user.id]);
 
   // Resynchronise les données quand l'utilisateur revient dans l'application.
   // C'est utile car les rappels peuvent être modifiés côté serveur pendant que
@@ -3468,7 +3540,7 @@ export default function Home() {
         reg.pushManager.getSubscription().then((sub) => {
           if (sub) {
             setIsPushEnabled(true);
-            fetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub) }).catch(console.error);
+            authorizedFetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub) }).catch(console.error);
           }
         });
       }).catch(console.error);
@@ -3487,7 +3559,7 @@ export default function Home() {
 
       const convertedVapidKey = urlBase64ToUint8Array(publicVapidKey);
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: convertedVapidKey });
-      const res = await fetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subscription) });
+      const res = await authorizedFetch('/api/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subscription) });
 
       if (res.ok) {
         setIsPushEnabled(true);
@@ -4793,6 +4865,7 @@ export default function Home() {
     sourceMemoId?: string | null,
   ) => {
     const items = normalizeMemoItems(memo.items);
+    const sourceMemo = sourceMemoId ? memoEntriesRef.current.find(entry => entry.id === sourceMemoId) : null;
     const transferPayload: MemoTransferPayload = {
       version: 1,
       memo_type: memo.memo_type,
@@ -4814,6 +4887,7 @@ export default function Home() {
       popup_active: false,
       is_archived: false,
       sort_order: nextTaskSortOrder(priority),
+      space_id: sourceMemo?.space_id || null,
     }]).select('id').single();
     if (insertError) throw insertError;
 
@@ -5527,6 +5601,7 @@ export default function Home() {
         archive_folder_id: null,
         sort_order: nextMemoSortOrder(false, false),
         updated_at: now,
+        space_id: note.space_id || null,
       }]).select('id').single();
       if (insertError) throw insertError;
 
@@ -6979,7 +7054,7 @@ export default function Home() {
 
       if (sendImmediateEmail && !DEMO_MODE) {
         try {
-          const mailRes = await fetch('/api/notify', {
+          const mailRes = await authorizedFetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -7087,7 +7162,7 @@ export default function Home() {
       tone: 'sage',
       onConfirm: async () => {
         try {
-          const res = await fetch('/api/notify', {
+          const res = await authorizedFetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title: note.title || "Rappel de note", importance: note.importance })
@@ -7161,7 +7236,7 @@ export default function Home() {
 
     setIsAiProcessing(true);
     try {
-      const res = await fetch('/api/gemini', {
+      const res = await authorizedFetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -7356,7 +7431,7 @@ export default function Home() {
 
       if (data?.send_email && !DEMO_MODE) {
         try {
-          const mailRes = await fetch('/api/notify', {
+          const mailRes = await authorizedFetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -7617,7 +7692,7 @@ export default function Home() {
 
     if (editingSendImmediateEmail && !DEMO_MODE) {
       try {
-        const mailRes = await fetch('/api/notify', {
+        const mailRes = await authorizedFetch('/api/notify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -8163,9 +8238,15 @@ export default function Home() {
           <button onClick={() => updateNote(note.id, 'completed', true)} className={`font-extrabold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-sm transition-colors ${showArchived === true ? 'bg-gray-200 text-gray-600 hover:bg-gray-300' : 'bg-green-100 text-green-700 hover:bg-green-200 hover:text-green-800'}`}><span className="text-sm">✓</span> Terminé</button>
           <button onClick={() => setOpenMenuId(openMenuId === note.id ? null : note.id)} className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm border ${openMenuId === note.id ? 'bg-gray-200 text-gray-800 border-gray-300' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}>⚙️ Options {openMenuId === note.id ? '▲' : '▼'}</button>
           {openMenuId === note.id && (
-            <div className="absolute bottom-full right-0 mb-2 w-36 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
+            <div className="absolute bottom-full right-0 mb-2 w-52 bg-white border border-gray-200 shadow-xl rounded-xl flex flex-col overflow-hidden z-10">
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
               <button onClick={() => { void moveTaskToNotes(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">📝 Passer dans Notes</button>
+              {!note.space_id
+                ? <button onClick={() => { void shareEntity('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">👥 Partager et notifier</button>
+                : <>
+                    <button onClick={() => { void notifyAgain('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">🔔 Notifier</button>
+                    {note.owner_id === collaboration.user.id && <button onClick={() => { void makePersonal('note', note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#655E54] hover:bg-[#F1EEE7] border-b border-gray-100">🔒 Rendre personnelle</button>}
+                  </>}
               <button onClick={() => { deleteNote(note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-red-600 hover:bg-red-50">🗑️ Supprimer</button>
             </div>
           )}
@@ -9541,6 +9622,19 @@ export default function Home() {
                   );
                 })()}
 
+                {editingMemoId && (() => {
+                  const memo = memoEntries.find(item => item.id === editingMemoId);
+                  if (!memo) return null;
+                  return !memo.space_id ? (
+                    <button type="button" onClick={() => void shareEntity('memo', memo.id, memoDraftTitle || memo.title)} className="mt-4 w-full rounded-xl bg-[#D8E2CF] px-3 py-2.5 text-xs font-black text-[#3F4C39]">👥 Partager et notifier</button>
+                  ) : (
+                    <div className="mt-4 flex gap-2">
+                      <button type="button" onClick={() => void notifyAgain('memo', memo.id, memoDraftTitle || memo.title)} className="flex-1 rounded-xl bg-[#D8E2CF] px-2 py-2.5 text-[11px] font-black">🔔 Notifier</button>
+                      {memo.owner_id === collaboration.user.id && <button type="button" onClick={() => void makePersonal('memo', memo.id)} className="flex-1 rounded-xl bg-white/65 px-2 py-2.5 text-[11px] font-black">🔒 Personnel</button>}
+                    </div>
+                  );
+                })()}
+
                 <div className="mt-4 text-center text-[10px] font-bold opacity-45">
                   {loading ? 'Enregistrement…' : 'Sauvegarde automatique à la fermeture'}
                 </div>
@@ -9733,6 +9827,12 @@ export default function Home() {
 
                    {/* Actions secondaires : l'ouverture et l'édition passent par la miniature. */}
                    <div className="p-2 flex items-center justify-end gap-1.5 bg-[#F4F0E9]">
+                     {!tmpl.space_id
+                       ? <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void shareEntity('planning', tmpl.id, tmpl.name); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Partager et notifier">👥</button>
+                       : <>
+                           <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void notifyAgain('planning', tmpl.id, tmpl.name); }} className="px-2.5 py-1.5 bg-[#D8E2CF] text-[#3F4C39] font-black text-[10px] rounded-lg" title="Notifier">🔔</button>
+                           {tmpl.owner_id === collaboration.user.id && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void makePersonal('planning', tmpl.id); }} className="px-2.5 py-1.5 bg-white text-[#655E54] font-black text-[10px] rounded-lg" title="Rendre personnel">🔒</button>}
+                         </>}
                      <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); void duplicateSavedTemplate(tmpl); }} className="px-2.5 py-1.5 bg-[#E2D6C7] hover:bg-[#D7C7B5] text-[#59493B] font-black text-[10px] rounded-lg transition-colors" aria-label="Dupliquer" title="Dupliquer">⧉</button>
                      <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); deleteSavedTemplate(tmpl.id); }} className="px-2.5 py-1.5 bg-[#F0DDD7] hover:bg-[#E8CEC6] text-[#885C50] font-black text-[10px] rounded-lg transition-colors" aria-label="Supprimer" title="Supprimer">🗑</button>
                    </div>
@@ -10793,6 +10893,8 @@ export default function Home() {
         </div>
       </div>
 
+      <CollaborationButton />
+
       <nav
         className="fixed left-1/2 -translate-x-1/2 bottom-0 z-[9000] w-full max-w-7xl border-t border-[#D8D0C4] bg-[#FBF9F4]/95 backdrop-blur-xl shadow-[0_-8px_24px_rgba(78,70,60,0.10)]"
         aria-label="Navigation principale"
@@ -10832,4 +10934,8 @@ export default function Home() {
       </nav>
     </main>
   );
+}
+
+export default function Home() {
+  return <CollaborationProvider><WorkspaceApp /></CollaborationProvider>;
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireApiUser } from '@/lib/server/api-auth';
 
 type Importance = 'vert' | 'orange' | 'rouge';
 
@@ -85,6 +86,9 @@ const normalizeResult = (raw: any): AiResult => {
 };
 
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth.error) return auth.error;
+
   try {
     const body = await req.json().catch(() => null);
     const text = cleanString(body?.text, 12000);

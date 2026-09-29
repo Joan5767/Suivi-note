@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+import { requireApiUser } from '@/lib/server/api-auth';
+import { getSupabaseAdmin } from '@/lib/server/supabase-admin';
 
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth.error) return auth.error;
+
   try {
     const subscription = await req.json();
 
@@ -20,13 +20,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const { error } = await supabase
+    const { error } = await getSupabaseAdmin()
       .from('subscriptions')
       .upsert(
         {
+          user_id: auth.user.id,
           endpoint: subscription.endpoint,
           keys_auth: subscription.keys.auth,
-          keys_p256dh: subscription.keys.p256dh
+          keys_p256dh: subscription.keys.p256dh,
+          device_label: req.headers.get('user-agent')?.slice(0, 180) || 'Appareil',
+          updated_at: new Date().toISOString(),
         },
         {
           onConflict: 'endpoint'

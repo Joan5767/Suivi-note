@@ -1,15 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
-import webpush from 'web-push';
+import { getSupabaseAdmin } from '@/lib/server/supabase-admin';
+import { sendPushToUsers } from '@/lib/server/push';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-const resend = new Resend(process.env.RESEND_API_KEY);
+const supabase = getSupabaseAdmin();
 
 const APP_TIMEZONE = process.env.APP_TIMEZONE?.trim() || 'Europe/Paris';
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL?.trim() || 'https://suivi-note-henna.vercel.app';
@@ -18,22 +12,14 @@ const NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL?.trim() || '';
 const NOTIFICATION_FROM =
   process.env.NOTIFICATION_FROM?.trim() || 'Rappels <onboarding@resend.dev>';
 
-const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim() || '';
-const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY?.trim() || '';
-
-if (vapidPublicKey && vapidPrivateKey) {
-  webpush.setVapidDetails(
-    `mailto:${NOTIFICATION_EMAIL || 'noreply@example.com'}`,
-    vapidPublicKey,
-    vapidPrivateKey
-  );
-}
-
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
 
 type NoteRow = {
   id: string;
+  owner_id?: string | null;
+  space_id?: string | null;
+  assigned_to?: string | null;
   title?: string | null;
   content?: string | null;
   completed?: boolean | null;
@@ -45,13 +31,6 @@ type NoteRow = {
   daily_reminder_time?: string | null;
   last_email_reminded_at?: string | null;
   last_popup_reminded_at?: string | null;
-};
-
-type SubscriptionRow = {
-  id: number | string;
-  endpoint: string;
-  keys_auth: string;
-  keys_p256dh: string;
 };
 
 const escapeHtml = (value: string) =>
@@ -112,90 +91,58 @@ const isAuthorized = (request: Request) => {
   return request.headers.get('authorization') === `Bearer ${PUSH_WORKER_SECRET}`;
 };
 
-const getSubscriptions = async () => {
-  const { data, error } = await supabase.from('subscriptions').select('*');
-  if (error) throw error;
-
-  // On relit la table à chaque exécution : un nouvel abonnement doit pouvoir
-  // recevoir les rappels immédiatement, même si la fonction Vercel reste chaude.
-  // Le Map reste une protection supplémentaire contre d'éventuels doublons historiques.
-  const subscriptions = (data || []) as SubscriptionRow[];
-  return Array.from(
-    new Map(subscriptions.map((subscription) => [subscription.endpoint, subscription])).values()
-  );
+const getRecipientIds = async (note: NoteRow): Promise<string[]> => {
+  if (note.assigned_to) return [note.assigned_to];
+  if (note.space_id) {
+    const { data, error } = await supabase
+      .from('space_members')
+      .select('user_id')
+      .eq('space_id', note.space_id);
+    if (error) throw error;
+    const userIds = ((data || []) as Array<{ user_id: string }>).map(row => String(row.user_id));
+    return Array.from(new Set<string>(userIds));
+  }
+  return note.owner_id ? [note.owner_id] : [];
 };
 
 const sendPush = async (note: NoteRow, titlePrefix: string) => {
-  if (!vapidPublicKey || !vapidPrivateKey) {
-    return { success: false, sent: 0, error: 'Clés VAPID manquantes.' };
-  }
-
-  const subscriptions = await getSubscriptions();
-  if (subscriptions.length === 0) {
-    return { success: false, sent: 0, error: 'Aucun téléphone abonné aux notifications.' };
-  }
-
-  const payload = JSON.stringify({
+  const recipients = await getRecipientIds(note);
+  if (recipients.length === 0) return { success: false, sent: 0, error: 'Aucun destinataire.' };
+  const result = await sendPushToUsers(recipients, {
     title: `${titlePrefix}${note.title || 'Note'}`,
     body: note.content || 'Tu as une tâche à traiter.',
-    url: '/',
+    url: `/#note-${encodeURIComponent(note.id)}`,
     tag: `note-${note.id}`,
-    timestamp: Date.now(),
   });
-
-  let sent = 0;
-  const errors: string[] = [];
-
-  for (const sub of subscriptions) {
-    const pushSubscription = {
-      endpoint: sub.endpoint,
-      keys: {
-        auth: sub.keys_auth,
-        p256dh: sub.keys_p256dh,
-      },
-    };
-
-    try {
-      await webpush.sendNotification(
-        pushSubscription,
-        payload,
-        {
-          // Demande une livraison prioritaire au service push.
-          urgency: 'high',
-
-          // Si le téléphone est hors ligne, le message reste valable 5 minutes.
-          TTL: 300,
-        }
-      );
-
-      sent += 1;
-    } catch (error: any) {
-      errors.push(error?.message || 'Erreur push inconnue');
-
-      if (error?.statusCode === 410 || error?.statusCode === 404) {
-        await supabase.from('subscriptions').delete().eq('id', sub.id);
-      }
-    }
-  }
-
   return {
-    success: sent > 0,
-    sent,
-    error: sent > 0 ? null : errors.join(' | ') || 'Aucun push envoyé.',
+    success: result.sent > 0,
+    sent: result.sent,
+    error: result.sent > 0 ? null : result.errors.join(' | ') || 'Aucun push envoyé.',
   };
 };
 
 const sendDailyEmail = async (note: NoteRow) => {
-  if (!process.env.RESEND_API_KEY || !NOTIFICATION_EMAIL) {
-    return { success: false, error: 'Configuration Resend/NOTIFICATION_EMAIL manquante.' };
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (!resendApiKey) {
+    return { success: false, error: 'Configuration Resend manquante.' };
   }
+  const resend = new Resend(resendApiKey);
+
+  const recipientIds = await getRecipientIds(note);
+  const recipientEmails: string[] = [];
+  for (const userId of recipientIds) {
+    const { data } = await supabase.auth.admin.getUserById(userId);
+    if (data.user?.email) recipientEmails.push(data.user.email);
+  }
+  if (recipientEmails.length === 0 && NOTIFICATION_EMAIL) recipientEmails.push(NOTIFICATION_EMAIL);
+  if (recipientEmails.length === 0) return { success: false, error: 'Aucun e-mail destinataire.' };
 
   const safeTitle = escapeHtml(note.title || 'Note');
   const safeContent = escapeHtml(note.content || '').replaceAll('\n', '<br/>');
 
   const { error } = await resend.emails.send({
     from: NOTIFICATION_FROM,
-    to: NOTIFICATION_EMAIL,
+    to: Array.from(new Set(recipientEmails)),
     subject: `🔔 Rappel : ${note.title || 'Note'}`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

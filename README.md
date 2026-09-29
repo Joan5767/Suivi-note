@@ -1,3 +1,11 @@
+# Rappel Notes
+
+Application Next.js de notes, listes, tâches et plannings, avec comptes personnels et espace partagé.
+
+Pour installer la version multi-utilisateur et conserver les données existantes, suis d'abord [INSTALLATION_COMPTES_PARTAGE.md](./INSTALLATION_COMPTES_PARTAGE.md).
+
+Un modèle de configuration est fourni dans `.env.example`. Le vrai fichier `.env.local` doit être créé à la racine du projet et ne doit jamais être envoyé sur GitHub.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
