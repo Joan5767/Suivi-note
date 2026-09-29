@@ -62,6 +62,7 @@ interface WeeklyBlock {
   duration: number;
   color: string;
   kind?: 'task' | 'marker';
+  importance?: 'vert' | 'orange' | 'rouge';
 }
 
 interface PlanningTemplate {
@@ -1891,7 +1892,13 @@ export default function Home() {
   const [showExportHelp, setShowExportHelp] = useState(false);
   // Quand l'export est lancé depuis l'aperçu d'un planning sauvegardé, on exporte
   // directement ce modèle sans devoir l'ouvrir en édition ni modifier le brouillon courant.
-  const [exportPlanningContext, setExportPlanningContext] = useState<{ name: string; blocks: WeeklyBlock[] } | null>(null);
+  const [exportPlanningContext, setExportPlanningContext] = useState<{ id?: string; name: string; blocks: WeeklyBlock[] } | null>(null);
+  const [showPlanningTodoExportModal, setShowPlanningTodoExportModal] = useState(false);
+  const [planningTodoExportContext, setPlanningTodoExportContext] = useState<{ id?: string; name: string; blocks: WeeklyBlock[] } | null>(null);
+  const [planningTodoWeekStart, setPlanningTodoWeekStart] = useState('');
+  const [planningTodoSelections, setPlanningTodoSelections] = useState<Record<string, boolean>>({});
+  const [planningTodoPriorities, setPlanningTodoPriorities] = useState<Record<string, 'vert' | 'orange' | 'rouge'>>({});
+  const [planningTodoExporting, setPlanningTodoExporting] = useState(false);
   
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -1902,6 +1909,7 @@ export default function Home() {
   const [blockDescription, setBlockDescription] = useState('');
   const [blockColor, setBlockColor] = useState('blue');
   const [blockKind, setBlockKind] = useState<'task' | 'marker'>('task');
+  const [blockImportance, setBlockImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [blockDurationHours, setBlockDurationHours] = useState(1);
   const [blockDurationMinutes, setBlockDurationMinutes] = useState(0);
 
@@ -2000,6 +2008,7 @@ export default function Home() {
             ? raw.color
             : 'blue',
         kind,
+        importance: raw.importance === 'orange' || raw.importance === 'rouge' ? raw.importance : 'vert',
       }];
     });
   };
@@ -2019,6 +2028,7 @@ export default function Home() {
           duration: block.kind === 'marker' ? 0 : (block.duration || 60),
           color: block.color,
           kind: block.kind === 'marker' ? 'marker' : 'task',
+          importance: block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert',
         }))
         .sort((a, b) => a.id.localeCompare(b.id))
     );
@@ -5556,6 +5566,7 @@ export default function Home() {
     setBlockDescription('');
     setBlockColor('blue');
     setBlockKind('task');
+    setBlockImportance('vert');
     setBlockDurationHours(1);
     setBlockDurationMinutes(0);
     setShowBlockModal(true);
@@ -5571,6 +5582,7 @@ export default function Home() {
     setBlockDescription(block.description || '');
     setBlockColor(block.color);
     setBlockKind(block.kind === 'marker' ? 'marker' : 'task');
+    setBlockImportance(block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert');
     const existingDuration = block.kind === 'marker' ? 0 : Math.max(1, Math.round(block.duration || 60));
     setBlockDurationHours(Math.floor(existingDuration / 60));
     setBlockDurationMinutes(existingDuration % 60);
@@ -5629,6 +5641,7 @@ export default function Home() {
           duration: safeDuration,
           color: blockColor,
           kind: blockKind,
+          importance: blockKind === 'task' ? blockImportance : 'vert',
         };
       }));
     } else {
@@ -5642,6 +5655,7 @@ export default function Home() {
         duration: chosenDuration,
         color: blockColor,
         kind: blockKind,
+        importance: blockKind === 'task' ? blockImportance : 'vert',
       };
       setWeeklyBlocks(prev => [...prev, newBlock]);
     }
@@ -6173,6 +6187,7 @@ export default function Home() {
         duration: Math.max(15, Math.round((icsEvent.end.getTime() - icsEvent.start.getTime()) / 60_000)),
         color: colors[index % colors.length],
         kind: 'task',
+        importance: 'vert',
       }));
 
       const normalizedBlocks = normalizeWeeklyBlocks(importedBlocks);
@@ -6485,6 +6500,7 @@ export default function Home() {
   };
 
   const getExportPlanning = () => ({
+    id: exportPlanningContext?.id ?? activeTemplateId ?? undefined,
     blocks: exportPlanningContext?.blocks ?? weeklyBlocks,
     name: exportPlanningContext?.name || activeTemplateName || 'Ma semaine type',
   });
@@ -6493,6 +6509,156 @@ export default function Home() {
     setShowExportModal(false);
     setExportPlanningContext(null);
     setShowExportHelp(false);
+  };
+
+  const formatPlanningDateInput = (date: Date) => {
+    const pad = (value: number) => value.toString().padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  };
+
+  const parsePlanningDateInput = (value: string) => {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
+  const getPlanningWeekMonday = (reference = new Date(), weekOffset = 0) => {
+    const monday = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
+    const dayIndex = monday.getDay() === 0 ? 7 : monday.getDay();
+    monday.setDate(monday.getDate() - (dayIndex - 1) + weekOffset * 7);
+    return monday;
+  };
+
+  const normalizePlanningWeekStart = (value: string) => {
+    const parsed = parsePlanningDateInput(value);
+    return formatPlanningDateInput(getPlanningWeekMonday(parsed || new Date()));
+  };
+
+  const getPlanningTaskDate = (block: WeeklyBlock, weekStart: string) => {
+    const monday = parsePlanningDateInput(weekStart) || getPlanningWeekMonday();
+    const dayOffset = Math.max(0, WEEK_DAYS.indexOf(block.day));
+    const date = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + dayOffset);
+    date.setHours(block.startHour, block.startMinute || 0, 0, 0);
+    return date;
+  };
+
+  const planningTaskAlreadyExists = (block: WeeklyBlock, weekStart: string) => {
+    const targetTime = getPlanningTaskDate(block, weekStart).getTime();
+    const normalizedTitle = block.title.trim().toLocaleLowerCase('fr-FR');
+    return notesRef.current.some(note => {
+      if (note.is_archived || note.title.trim().toLocaleLowerCase('fr-FR') !== normalizedTitle) return false;
+      const noteTime = getSafeTime(note.target_date);
+      return noteTime > 0 && Math.abs(noteTime - targetTime) < 60_000;
+    });
+  };
+
+  const getPlanningTodoRows = () => {
+    if (!planningTodoExportContext || !planningTodoWeekStart) return [];
+    return normalizeWeeklyBlocks(planningTodoExportContext.blocks)
+      .filter(block => block.kind !== 'marker' && block.title.trim())
+      .map(block => ({
+        block,
+        date: getPlanningTaskDate(block, planningTodoWeekStart),
+        alreadyExists: planningTaskAlreadyExists(block, planningTodoWeekStart),
+        selected: planningTodoSelections[block.id] ?? true,
+        importance: planningTodoPriorities[block.id] || block.importance || 'vert',
+      }))
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+  };
+
+  const openPlanningTodoExport = () => {
+    const planning = getExportPlanning();
+    const blocks = normalizeWeeklyBlocks(planning.blocks).filter(block => block.kind !== 'marker' && block.title.trim());
+    if (blocks.length === 0) {
+      showAppMessage("Ce planning ne contient aucune tâche à créer dans À faire. Les repères horaires ne sont pas exportés.");
+      return;
+    }
+
+    const weekStart = formatPlanningDateInput(getPlanningWeekMonday());
+    const selections: Record<string, boolean> = {};
+    const priorities: Record<string, 'vert' | 'orange' | 'rouge'> = {};
+    blocks.forEach(block => {
+      selections[block.id] = !planningTaskAlreadyExists(block, weekStart);
+      priorities[block.id] = block.importance === 'orange' || block.importance === 'rouge' ? block.importance : 'vert';
+    });
+
+    setPlanningTodoExportContext({ id: planning.id, name: planning.name, blocks });
+    setPlanningTodoWeekStart(weekStart);
+    setPlanningTodoSelections(selections);
+    setPlanningTodoPriorities(priorities);
+    setShowExportModal(false);
+    setExportPlanningContext(null);
+    setShowPlanningTodoExportModal(true);
+  };
+
+  const closePlanningTodoExport = () => {
+    if (planningTodoExporting) return;
+    setShowPlanningTodoExportModal(false);
+    setPlanningTodoExportContext(null);
+    setPlanningTodoSelections({});
+    setPlanningTodoPriorities({});
+  };
+
+  const changePlanningTodoWeek = (value: string) => {
+    const weekStart = normalizePlanningWeekStart(value);
+    setPlanningTodoWeekStart(weekStart);
+    if (!planningTodoExportContext) return;
+    const selections: Record<string, boolean> = {};
+    planningTodoExportContext.blocks.forEach(block => {
+      selections[block.id] = !planningTaskAlreadyExists(block, weekStart);
+    });
+    setPlanningTodoSelections(selections);
+  };
+
+  const createPlanningTasksInTodos = async () => {
+    const selectedRows = getPlanningTodoRows().filter(row => row.selected);
+    if (selectedRows.length === 0) {
+      showAppMessage('Sélectionne au moins une tâche à créer dans À faire.');
+      return;
+    }
+
+    const nextOrders: Record<'vert' | 'orange' | 'rouge', number> = {
+      vert: nextTaskSortOrder('vert'),
+      orange: nextTaskSortOrder('orange'),
+      rouge: nextTaskSortOrder('rouge'),
+    };
+    const payload = selectedRows.map(({ block, date, importance }) => ({
+      title: block.title.trim(),
+      content: (block.description || '').trim(),
+      importance,
+      subtasks: [],
+      is_list: false,
+      completed: false,
+      is_archived: false,
+      reminder_active: false,
+      reminder_popup_active: false,
+      daily_reminder_time: '09:00',
+      target_date: date.toISOString(),
+      popup_active: false,
+      duration_minutes: Math.max(1, Math.round(block.duration || 60)),
+      sort_order: nextOrders[importance]++,
+    }));
+
+    setPlanningTodoExporting(true);
+    try {
+      const { error } = await supabase.from('notes').insert(payload);
+      if (error) throw error;
+      await fetchNotes();
+      selectedRows.forEach(row => {
+        setCollapsedPriorities(current => ({ ...current, [row.importance]: false }));
+      });
+      setShowPlanningTodoExportModal(false);
+      setPlanningTodoExportContext(null);
+      setPlanningTodoSelections({});
+      setPlanningTodoPriorities({});
+      setSuccessMessage(`✅ ${payload.length} tâche${payload.length > 1 ? 's' : ''} créée${payload.length > 1 ? 's' : ''} dans À faire.`);
+      window.setTimeout(() => setSuccessMessage(null), 3500);
+    } catch (error: any) {
+      showAppMessage("Impossible de créer les tâches : " + (error?.message || 'erreur inconnue'));
+    } finally {
+      setPlanningTodoExporting(false);
+    }
   };
 
   const exportWeeklyICS = () => {
@@ -8248,6 +8414,7 @@ export default function Home() {
                           }
 
                           const heightPercent = ((ev.duration || 60) / 60) / hoursOfDay.length * 100;
+                          const previewTitleLines = (ev.duration || 60) >= 60 ? 3 : (ev.duration || 60) >= 30 ? 2 : 1;
                           return (
                             <button
                               type="button"
@@ -8262,7 +8429,17 @@ export default function Home() {
                               }}
                             >
                               <div className="h-full w-full rounded shadow-sm border overflow-hidden" style={{ backgroundColor: eventPalette.soft, borderColor: eventPalette.border }}>
-                                <span className="text-[8px] font-bold leading-tight block px-1 truncate text-black/70">{ev.title}</span>
+                                <span
+                                  className="text-[8px] font-bold leading-tight block px-1 pt-0.5 text-black/70"
+                                  style={{
+                                    display: '-webkit-box',
+                                    WebkitBoxOrient: 'vertical',
+                                    WebkitLineClamp: previewTitleLines,
+                                    overflow: 'hidden',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                  }}
+                                >{ev.title}</span>
                               </div>
                             </button>
                           );
@@ -8277,7 +8454,7 @@ export default function Home() {
             <div className="mt-4 grid grid-cols-2 gap-2">
               <button
                 onClick={() => {
-                  setExportPlanningContext({ name: previewTemplate.name, blocks: previewTemplate.blocks || [] });
+                  setExportPlanningContext({ id: previewTemplate.id, name: previewTemplate.name, blocks: previewTemplate.blocks || [] });
                   setShowExportHelp(false);
                   setShowExportModal(true);
                 }}
@@ -8422,6 +8599,7 @@ export default function Home() {
               <p><strong>Importer un fichier .ics :</strong> récupère dans l’application les événements d’un calendrier compatible, puis modifie-les comme les autres tâches du planning.</p>
               <p><strong>Exporter :</strong> crée un fichier .ics universel que tu peux conserver, envoyer à une autre personne ou ouvrir dans Google Agenda, Apple Calendrier et Outlook.</p>
               <p><strong>Ajouter au calendrier :</strong> depuis l’export, l’application peut transmettre directement le planning à une application calendrier quand le téléphone l’autorise.</p>
+              <p><strong>Créer dans À faire :</strong> choisis une semaine, vérifie les tâches chronologiquement, décoche celles qui ne sont pas utiles et adapte leur priorité avant de les créer.</p>
               <p><strong>Partager :</strong> envoie le fichier .ics à un autre utilisateur pour qu’il puisse l’importer, l’adapter et sauvegarder sa propre version.</p>
             </div>
           </div>
@@ -8466,6 +8644,7 @@ export default function Home() {
               <div className="mb-4 rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-3 text-xs leading-relaxed text-[#6D6458]">
                 <p><strong>Fichier .ics :</strong> format universel que tu peux conserver, envoyer ou importer plus tard dans Google Agenda, Apple Calendrier ou Outlook.</p>
                 <p className="mt-2"><strong>Ajouter au calendrier :</strong> le téléphone tente d'ouvrir directement son menu de partage/import vers une application calendrier. Si le navigateur ne le permet pas, l'app revient automatiquement au fichier .ics.</p>
+                <p className="mt-2"><strong>Créer dans À faire :</strong> transforme les tâches du planning en tâches datées pour la semaine choisie, après vérification de la liste et des priorités.</p>
               </div>
             )}
 
@@ -8476,10 +8655,130 @@ export default function Home() {
               <button onClick={() => void addWeeklyDirectlyToCalendar()} className="w-full rounded-2xl bg-[#C8D2BC] hover:bg-[#BAC7AD] text-[#35412F] font-black py-3 px-4 transition-colors text-sm">
                 Ajouter directement au calendrier
               </button>
+              <button onClick={openPlanningTodoExport} className="w-full rounded-2xl bg-[#DCE4D4] hover:bg-[#CEDAC5] text-[#35412F] font-black py-3 px-4 transition-colors text-sm">
+                ✅ Créer les tâches dans À faire
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* MODALE : CRÉER LES TÂCHES DU PLANNING DANS À FAIRE */}
+      {showPlanningTodoExportModal && planningTodoExportContext && (() => {
+        const rows = getPlanningTodoRows();
+        const selectedCount = rows.filter(row => row.selected).length;
+        const allSelected = rows.length > 0 && selectedCount === rows.length;
+        const duplicateCount = rows.filter(row => row.alreadyExists).length;
+        const weekEnd = parsePlanningDateInput(planningTodoWeekStart);
+        if (weekEnd) weekEnd.setDate(weekEnd.getDate() + 6);
+
+        return (
+          <div className="fixed inset-0 bg-black/45 z-[12600] flex items-center justify-center p-3 sm:p-4 backdrop-blur-[2px]" onClick={closePlanningTodoExport}>
+            <div className="w-full max-w-lg max-h-[92vh] overflow-hidden rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl text-[#4A463F] flex flex-col" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-[#E3DCD1]">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-black text-[#46513F]">Créer les tâches de la semaine</h2>
+                  <p className="mt-0.5 text-xs font-semibold text-[#7A7166] truncate">{planningTodoExportContext.name}</p>
+                </div>
+                <button type="button" onClick={closePlanningTodoExport} disabled={planningTodoExporting} className="w-8 h-8 flex-shrink-0 rounded-full bg-[#EAE4D9] text-[#62594E] font-black disabled:opacity-50" aria-label="Fermer">×</button>
+              </div>
+
+              <div className="p-4 sm:p-5 overflow-y-auto overscroll-contain">
+                <div className="rounded-2xl border border-[#DCD4C8] bg-white/70 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black text-[#625A50]">Semaine concernée</p>
+                      <p className="mt-0.5 text-[10px] font-semibold text-[#887F73]">
+                        {weekEnd ? `Du ${parsePlanningDateInput(planningTodoWeekStart)?.toLocaleDateString('fr-FR')} au ${weekEnd.toLocaleDateString('fr-FR')}` : ''}
+                      </p>
+                    </div>
+                    <input
+                      type="date"
+                      value={planningTodoWeekStart}
+                      onChange={(event) => changePlanningTodoWeek(event.target.value)}
+                      className="max-w-[150px] rounded-xl border border-[#D8D0C4] bg-white px-2 py-2 text-xs font-black text-[#4A463F]"
+                      aria-label="Premier jour de la semaine"
+                    />
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => changePlanningTodoWeek(formatPlanningDateInput(getPlanningWeekMonday()))} className="rounded-xl bg-[#EEE9E0] px-2 py-2 text-[11px] font-black text-[#625A50]">Cette semaine</button>
+                    <button type="button" onClick={() => changePlanningTodoWeek(formatPlanningDateInput(getPlanningWeekMonday(new Date(), 1)))} className="rounded-xl bg-[#EEE9E0] px-2 py-2 text-[11px] font-black text-[#625A50]">Semaine prochaine</button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between gap-3 px-1">
+                  <label className="flex items-center gap-2 text-xs font-black text-[#625A50] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setPlanningTodoSelections(current => {
+                          const next = { ...current };
+                          rows.forEach(row => { next[row.block.id] = checked; });
+                          return next;
+                        });
+                      }}
+                      className="w-4 h-4 accent-[#6F7B64]"
+                    />
+                    Tout sélectionner
+                  </label>
+                  <span className="text-[11px] font-black text-[#81786C]">{selectedCount}/{rows.length}</span>
+                </div>
+
+                {duplicateCount > 0 && (
+                  <p className="mt-3 rounded-xl border border-[#E5D5B5] bg-[#FFF8E8] px-3 py-2 text-[10px] font-semibold text-[#79623D]">
+                    {duplicateCount} tâche{duplicateCount > 1 ? 's semblent' : ' semble'} déjà présente{duplicateCount > 1 ? 's' : ''} dans À faire pour cette semaine. {duplicateCount > 1 ? 'Elles sont décochées' : 'Elle est décochée'} par défaut.
+                  </p>
+                )}
+
+                <div className="mt-3 flex flex-col gap-2">
+                  {rows.map(({ block, date, alreadyExists, selected, importance }) => (
+                    <div key={block.id} className={`rounded-2xl border p-3 transition-colors ${selected ? 'border-[#BCC8B2] bg-[#F4F7F1]' : 'border-[#E1DAD0] bg-white/45 opacity-70'}`}>
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(event) => setPlanningTodoSelections(current => ({ ...current, [block.id]: event.target.checked }))}
+                          className="mt-1 w-5 h-5 flex-shrink-0 accent-[#6F7B64]"
+                          aria-label={`Créer ${block.title} dans À faire`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-[10px] uppercase tracking-wide font-black text-[#7B746A]">
+                              {date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'short' })} · {date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            {alreadyExists && <span className="rounded-full bg-[#F2E2BC] px-2 py-0.5 text-[9px] font-black text-[#785E2E]">Déjà dans À faire</span>}
+                          </div>
+                          <p className="mt-1 break-words text-sm font-black text-[#46513F]">{block.title}</p>
+                          {block.description && <p className="mt-0.5 line-clamp-2 text-[11px] font-semibold text-[#776F64]">{block.description}</p>}
+                          <select
+                            value={importance}
+                            onChange={(event) => setPlanningTodoPriorities(current => ({ ...current, [block.id]: event.target.value as 'vert' | 'orange' | 'rouge' }))}
+                            className="mt-2 rounded-xl border border-[#D8D0C4] bg-white px-2 py-1.5 text-[11px] font-black text-[#4A463F]"
+                            aria-label={`Priorité de ${block.title}`}
+                          >
+                            <option value="vert">🟢 Normale</option>
+                            <option value="orange">🟠 Importante</option>
+                            <option value="rouge">🔴 Urgente</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-[#E3DCD1] bg-[#FBF9F4] p-4 sm:px-5 flex gap-2">
+                <button type="button" onClick={closePlanningTodoExport} disabled={planningTodoExporting} className="flex-1 rounded-xl bg-[#EEE9E0] py-3 text-sm font-black text-[#665F55] disabled:opacity-50">Annuler</button>
+                <button type="button" onClick={() => void createPlanningTasksInTodos()} disabled={planningTodoExporting || selectedCount === 0} className="flex-[1.45] rounded-xl bg-[#C8D2BC] py-3 px-2 text-sm font-black text-[#35412F] disabled:opacity-50">
+                  {planningTodoExporting ? 'Création…' : `Créer ${selectedCount} tâche${selectedCount > 1 ? 's' : ''}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div
         ref={mainSwipeViewportRef}
@@ -9832,6 +10131,28 @@ export default function Home() {
                      rows={3}
                      className="w-full border border-gray-300 p-3 rounded-xl text-black font-medium bg-gray-50 focus:bg-white transition-colors resize-y"
                    />
+                 )}
+
+                 {blockKind === 'task' && (
+                   <div className="rounded-xl border border-[#DDD5C9] bg-[#F8F5EF] p-3">
+                     <div className="mb-2 text-xs font-black text-[#625A50]">Priorité dans À faire</div>
+                     <div className="grid grid-cols-3 gap-2" role="group" aria-label="Priorité de la tâche">
+                       {([
+                         ['vert', '🟢 Normale'],
+                         ['orange', '🟠 Importante'],
+                         ['rouge', '🔴 Urgente'],
+                       ] as const).map(([value, label]) => (
+                         <button
+                           key={value}
+                           type="button"
+                           onClick={() => setBlockImportance(value)}
+                           className={`min-h-10 rounded-xl border px-1.5 py-2 text-[10px] font-black leading-tight transition-colors ${blockImportance === value ? 'border-[#6F7B64] bg-white shadow-sm text-[#3F493A]' : 'border-transparent bg-white/45 text-[#746D63]'}`}
+                           aria-pressed={blockImportance === value}
+                         >{label}</button>
+                       ))}
+                     </div>
+                     <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Cette priorité sera proposée lors de la création des tâches de la semaine.</p>
+                   </div>
                  )}
                  
                  <div className="flex gap-2 w-full justify-center mt-1" aria-label="Couleur de l'élément">
