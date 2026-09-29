@@ -1740,8 +1740,9 @@ export default function Home() {
   const [editingDailyTime, setEditingDailyTime] = useState('09:00');
   const [newSubtaskTexts, setNewSubtaskTexts] = useState<Record<string, string>>({});
 
-  // Tous les menus et volets légers se ferment dès que l'utilisateur touche
-  // ailleurs. Les vraies modales conservent leur propre fond cliquable.
+  // Les menus légers se ferment dès que l'utilisateur touche ailleurs. Les
+  // paramètres de rappel sont traités séparément pour ne pas confondre un
+  // toucher bref avec le début d'un défilement.
   useEffect(() => {
     const dismissOpenPanels = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -1750,9 +1751,6 @@ export default function Home() {
       if (openMenuId && !target.closest('[data-task-options-root]')) setOpenMenuId(null);
       if (showMemosOverflowMenu && !target.closest('[data-memos-overflow-root]')) setShowMemosOverflowMenu(false);
       if (showTasksOverflowMenu && !target.closest('[data-tasks-overflow-root]')) setShowTasksOverflowMenu(false);
-      if (showAdvancedSettings && !target.closest('[data-create-reminder-settings]')) setShowAdvancedSettings(false);
-      if (showEditingAdvancedSettings && !target.closest('[data-edit-reminder-settings]')) setShowEditingAdvancedSettings(false);
-
       if (memoFiltersOpenRef.current && !target.closest('[data-memo-search-root]')) {
         memoFiltersOpenRef.current = false;
         setMemoFiltersOpen(false);
@@ -1765,7 +1763,64 @@ export default function Home() {
 
     document.addEventListener('pointerdown', dismissOpenPanels);
     return () => document.removeEventListener('pointerdown', dismissOpenPanels);
-  }, [openMenuId, showMemosOverflowMenu, showTasksOverflowMenu, showAdvancedSettings, showEditingAdvancedSettings]);
+  }, [openMenuId, showMemosOverflowMenu, showTasksOverflowMenu]);
+
+  useEffect(() => {
+    if (!showAdvancedSettings && !showEditingAdvancedSettings) return;
+
+    let outsidePress: {
+      pointerId: number;
+      startX: number;
+      startY: number;
+      moved: boolean;
+      outsideCreateSettings: boolean;
+      outsideEditSettings: boolean;
+    } | null = null;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      outsidePress = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        outsideCreateSettings: showAdvancedSettings && !target.closest('[data-create-reminder-settings]'),
+        outsideEditSettings: showEditingAdvancedSettings && !target.closest('[data-edit-reminder-settings]'),
+      };
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!outsidePress || outsidePress.pointerId !== event.pointerId) return;
+      const distance = Math.hypot(event.clientX - outsidePress.startX, event.clientY - outsidePress.startY);
+      if (distance > 10) outsidePress.moved = true;
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (!outsidePress || outsidePress.pointerId !== event.pointerId) return;
+      if (!outsidePress.moved) {
+        if (outsidePress.outsideCreateSettings) setShowAdvancedSettings(false);
+        if (outsidePress.outsideEditSettings) setShowEditingAdvancedSettings(false);
+      }
+      outsidePress = null;
+    };
+
+    const cancelOutsidePress = () => {
+      outsidePress = null;
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', cancelOutsidePress);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', cancelOutsidePress);
+    };
+  }, [showAdvancedSettings, showEditingAdvancedSettings]);
 
   useEffect(() => {
     if (!memoEditorOpen) return;
@@ -2662,20 +2717,24 @@ export default function Home() {
     }
 
     const handleMemoSelectionPopState = () => {
-      if (memoIgnoreNextPopRef.current) {
-        memoIgnoreNextPopRef.current = false;
-        return;
-      }
-
       // Dans À faire, Retour ferme et sauvegarde d'abord l'éditeur de la tâche.
       // Un second Retour effectue ensuite la navigation normale vers Notes.
       if (taskEditorOpenRef.current) {
         const taskId = taskEditorOpenRef.current;
+        if (window.location.hash !== '#tasks') {
+          const tasksUrl = `${window.location.pathname}${window.location.search}#tasks`;
+          window.history.replaceState({ ...(window.history.state || {}), primaryAway: true }, '', tasksUrl);
+        }
         void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
           if (!saved && typeof window !== 'undefined' && !window.history.state?.taskEditor) {
             window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
           }
         });
+        return;
+      }
+
+      if (memoIgnoreNextPopRef.current) {
+        memoIgnoreNextPopRef.current = false;
         return;
       }
 
@@ -3000,10 +3059,35 @@ export default function Home() {
   };
 
   const navigatePlanningChild = (targetHash: '#planning-editor' | '#planning-gallery') => {
+    if (targetHash === '#planning-editor' && window.location.hash !== '#planning-editor') {
+      const currentState = window.history.state || {};
+      const targetUrl = `${window.location.pathname}${window.location.search}${targetHash}`;
+      window.history.pushState(
+        { ...clearTransientHistoryFlags(currentState), primaryAway: true, planningChild: true },
+        '',
+        targetUrl
+      );
+      refreshRouteFromCurrentHash();
+      return;
+    }
+
+    if (
+      targetHash === '#planning-gallery' &&
+      window.location.hash === '#planning-editor' &&
+      window.history.state?.planningChild
+    ) {
+      window.history.back();
+      return;
+    }
+
     navigateAwayRoute(targetHash);
   };
 
   const navigatePlanningHome = () => {
+    if (window.location.hash === '#planning-editor' && window.history.state?.planningChild) {
+      window.history.back();
+      return;
+    }
     navigateAwayRoute('#planning');
   };
 
@@ -10072,7 +10156,9 @@ export default function Home() {
                      : (blockKind === 'marker' ? 'Ajouter un repère horaire' : 'Planifier une tâche')}
                  </h3>
                  
-                 <div className="grid grid-cols-2 gap-2">
+                 <div>
+                   <div className="mb-1.5 text-[11px] font-black uppercase tracking-wide text-[#81786C]">Type d’élément</div>
+                   <div className="grid grid-cols-2 gap-2">
                    <button
                      type="button"
                      onClick={() => setBlockKind('task')}
@@ -10087,6 +10173,7 @@ export default function Home() {
                    >
                      ➖ Repère horaire
                    </button>
+                   </div>
                  </div>
 
                  {blockKind === 'marker' && (
@@ -10095,24 +10182,29 @@ export default function Home() {
                    </p>
                  )}
 
-                 <div className="flex gap-2">
-                   <select 
-                     value={blockDay} 
-                     onChange={(e) => setBlockDay(e.target.value)} 
-                     className="flex-1 border border-gray-300 p-2 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
-                   >
-                     {WEEK_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
-                   </select>
-                   
-                   <input 
-                     type="time" 
-                     min={`${PLANNING_START_HOUR.toString().padStart(2, '0')}:00`}
-                     max={`${PLANNING_END_HOUR.toString().padStart(2, '0')}:45`}
-                     step={900}
-                     value={blockTime} 
-                     onChange={(e) => setBlockTime(e.target.value)} 
-                     className="flex-1 border border-gray-300 p-2 rounded-xl text-black font-semibold bg-gray-50 focus:bg-white transition-colors"
-                   />
+                 <div className="rounded-2xl border border-[#C9D2C1] bg-[#F0F3EC] p-3">
+                   <div className="mb-2 text-[11px] font-black uppercase tracking-wide text-[#66705F]">Jour et heure</div>
+                   <div className="grid grid-cols-[1fr_auto] gap-2">
+                     <select 
+                       value={blockDay} 
+                       onChange={(e) => setBlockDay(e.target.value)} 
+                       className="min-w-0 border border-[#B9C5B0] p-2.5 rounded-xl text-[#3F493A] font-black bg-white focus:outline-none focus:ring-2 focus:ring-[#AEBCA2]"
+                       aria-label="Jour de la tâche"
+                     >
+                       {WEEK_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+                     </select>
+                     
+                     <input 
+                       type="time" 
+                       min={`${PLANNING_START_HOUR.toString().padStart(2, '0')}:00`}
+                       max={`${PLANNING_END_HOUR.toString().padStart(2, '0')}:45`}
+                       step={900}
+                       value={blockTime} 
+                       onChange={(e) => setBlockTime(e.target.value)} 
+                       className="w-[116px] border border-[#B9C5B0] p-2.5 rounded-xl text-[#3F493A] font-black bg-white focus:outline-none focus:ring-2 focus:ring-[#AEBCA2]"
+                       aria-label="Heure de la tâche"
+                     />
+                   </div>
                  </div>
 
                  {blockKind === 'task' && (
@@ -10127,33 +10219,37 @@ export default function Home() {
                        <span className="text-xs font-black text-[#46513F]">{formatDuration(Math.max(1, blockDurationHours * 60 + blockDurationMinutes))} {showBlockDurationOptions ? '▲' : '▼'}</span>
                      </button>
                      {showBlockDurationOptions && (
-                       <div className="border-t border-[#E1D9CE] px-3 py-3 flex items-center gap-2 bg-white/45">
-                         <input
-                           type="number"
-                           min={0}
-                           max={16}
-                           inputMode="numeric"
-                           value={blockDurationHours}
-                           onFocus={(e) => e.currentTarget.select()}
-                           onClick={(e) => e.currentTarget.select()}
-                           onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
-                           className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
-                           aria-label="Durée en heures"
-                         />
-                         <span className="text-sm font-bold text-[#756D62]">h</span>
-                         <input
-                           type="number"
-                           min={0}
-                           max={59}
-                           inputMode="numeric"
-                           value={blockDurationMinutes}
-                           onFocus={(e) => e.currentTarget.select()}
-                           onClick={(e) => e.currentTarget.select()}
-                           onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
-                           className="w-20 border border-[#D8D0C4] p-2 rounded-lg text-black font-semibold bg-white text-center"
-                           aria-label="Durée en minutes"
-                         />
-                         <span className="text-sm font-bold text-[#756D62]">min</span>
+                       <div className="border-t border-[#E1D9CE] px-3 py-3 grid grid-cols-2 gap-3 bg-white/45">
+                         <label className="min-w-0">
+                           <span className="mb-1 block text-[10px] font-black text-[#756D62]">Heures</span>
+                           <input
+                             type="number"
+                             min={0}
+                             max={16}
+                             inputMode="numeric"
+                             value={blockDurationHours}
+                             onFocus={(e) => e.currentTarget.select()}
+                             onClick={(e) => e.currentTarget.select()}
+                             onChange={(e) => setBlockDurationHours(Math.max(0, Math.min(16, Number(e.target.value) || 0)))}
+                             className="w-full min-w-0 border border-[#D8D0C4] p-2.5 rounded-lg text-black font-semibold bg-white text-center"
+                             aria-label="Durée en heures"
+                           />
+                         </label>
+                         <label className="min-w-0">
+                           <span className="mb-1 block text-[10px] font-black text-[#756D62]">Minutes</span>
+                           <input
+                             type="number"
+                             min={0}
+                             max={59}
+                             inputMode="numeric"
+                             value={blockDurationMinutes}
+                             onFocus={(e) => e.currentTarget.select()}
+                             onClick={(e) => e.currentTarget.select()}
+                             onChange={(e) => setBlockDurationMinutes(Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
+                             className="w-full min-w-0 border border-[#D8D0C4] p-2.5 rounded-lg text-black font-semibold bg-white text-center"
+                             aria-label="Durée en minutes"
+                           />
+                         </label>
                        </div>
                      )}
                    </div>
@@ -10164,7 +10260,7 @@ export default function Home() {
                    <textarea
                      value={blockTitle}
                      onChange={(e) => setBlockTitle(e.target.value)}
-                     placeholder={blockKind === 'marker' ? 'Ex. : Horaire de travail' : 'Ex. : Entraînement Muay Thai'}
+                     placeholder={blockKind === 'marker' ? 'Ex. : Horaire de travail' : ''}
                      rows={2}
                      className="w-full min-h-[76px] border-2 border-[#C8D2BC] p-3 rounded-xl text-base text-black font-bold bg-white focus:outline-none focus:ring-2 focus:ring-[#AEBCA2] resize-none transition-colors"
                    />
@@ -10192,7 +10288,7 @@ export default function Home() {
                          onChange={(event) => setBlockTodoPriorityEnabled(event.target.checked)}
                          className="w-4 h-4 accent-[#6F7B64]"
                        />
-                       <span className="text-xs font-black text-[#625A50]">Prévoir une priorité dans À faire</span>
+                       <span className="text-xs font-black text-[#625A50]">Inclure une priorité</span>
                      </label>
                      {blockTodoPriorityEnabled ? (
                        <>
@@ -10211,11 +10307,8 @@ export default function Home() {
                              >{label}</button>
                            ))}
                          </div>
-                         <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Cette priorité sera proposée lors de la création des tâches de la semaine.</p>
                        </>
-                     ) : (
-                       <p className="mt-2 text-[10px] font-semibold text-[#81786C]">Aucune priorité n’est attachée à ce bloc. Tu pourras encore la choisir lors de la création dans À faire.</p>
-                     )}
+                     ) : null}
                    </div>
                  )}
                  
