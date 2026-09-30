@@ -306,7 +306,7 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
   }, [user?.id]);
 
   const setActiveSpaceId = (spaceId: string) => {
-    if (spaces.some(space => space.id === spaceId)) setActiveSpaceIdState(spaceId);
+    if (spaceId) setActiveSpaceIdState(spaceId);
   };
 
   const getAccessToken = async () => {
@@ -387,17 +387,22 @@ function CollaborationPanel({
   const [inviteCode, setInviteCode] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showCreateSpace, setShowCreateSpace] = useState(false);
 
   if (!open) return null;
 
   const createSpace = async () => {
+    const cleanSpaceName = spaceName.trim() || 'Notre espace';
     setBusy(true); setMessage(null);
-    const { data, error } = await supabase.rpc('create_shared_space', { p_name: spaceName.trim() || 'Notre espace' });
+    const { data, error } = await supabase.rpc('create_shared_space', { p_name: cleanSpaceName });
     if (error) setMessage(error.message);
     else {
       await collaboration.refreshWorkspace();
       if (data) collaboration.setActiveSpaceId(String(data));
-      setMessage('Espace partagé créé. Tu peux maintenant inviter ta compagne.');
+      setInviteCode('');
+      setSpaceName('Notre espace');
+      setShowCreateSpace(false);
+      setMessage(`L’espace « ${cleanSpaceName} » a été créé et sélectionné.`);
     }
     setBusy(false);
   };
@@ -420,7 +425,8 @@ function CollaborationPanel({
       await collaboration.refreshWorkspace();
       if (data) collaboration.setActiveSpaceId(String(data));
       setJoinCode('');
-      setMessage('Tu as rejoint l’espace partagé.');
+      setInviteCode('');
+      setMessage('Tu as rejoint ce nouvel espace partagé. Il est maintenant sélectionné.');
     }
     setBusy(false);
   };
@@ -456,20 +462,60 @@ function CollaborationPanel({
 
         {collaboration.spaces.length > 0 ? (
           <div className="rounded-2xl border border-[#CCD5C2] bg-[#EEF1E8] p-3 mb-4">
-            <label className="text-[10px] uppercase tracking-wide font-black text-[#687260]">Espace partagé</label>
-            <select value={collaboration.activeSpace?.id || ''} onChange={event => collaboration.setActiveSpaceId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black">
+            <label className="text-[10px] uppercase tracking-wide font-black text-[#687260]">Espace partagé actif</label>
+            <select
+              value={collaboration.activeSpace?.id || ''}
+              onChange={event => {
+                collaboration.setActiveSpaceId(event.target.value);
+                setInviteCode('');
+                setMessage(null);
+              }}
+              className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black"
+            >
               {collaboration.spaces.map(space => <option key={space.id} value={space.id}>{space.name}</option>)}
             </select>
+            <p className="mt-1.5 text-[10px] font-semibold leading-relaxed text-[#737C6B]">
+              Les nouveaux partages seront envoyés uniquement aux membres de cet espace.
+            </p>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {collaboration.members.map(member => <span key={member.user_id} className="rounded-full bg-white/80 border border-[#D8DEC9] px-2.5 py-1 text-[10px] font-black">{member.display_name}{member.user_id === collaboration.user.id ? ' · moi' : ''}</span>)}
             </div>
-            <button type="button" disabled={busy} onClick={() => void createInvite()} className="mt-3 w-full rounded-xl bg-[#5D6B53] px-3 py-2.5 text-xs font-black text-white disabled:opacity-50">Inviter une personne</button>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button type="button" disabled={busy} onClick={() => void createInvite()} className="rounded-xl bg-[#5D6B53] px-3 py-2.5 text-xs font-black text-white disabled:opacity-50">Inviter</button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setShowCreateSpace(value => !value);
+                  setMessage(null);
+                }}
+                className="rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-xs font-black text-[#4B5843] disabled:opacity-50"
+              >
+                + Nouvel espace
+              </button>
+            </div>
             {inviteCode && <div className="mt-2 rounded-xl border border-[#D8C8AE] bg-[#FFF7E8] p-3 text-center"><div className="text-[10px] font-black uppercase text-[#81786C]">Code valable 7 jours</div><div className="mt-1 text-2xl tracking-[0.18em] font-black text-[#4A463F]">{inviteCode}</div></div>}
+            {showCreateSpace && (
+              <div className="mt-3 rounded-xl border border-[#D8D0C4] bg-[#FBF9F4] p-3">
+                <div className="text-xs font-black mb-2">Créer un autre espace</div>
+                <input
+                  value={spaceName}
+                  onChange={event => setSpaceName(event.target.value)}
+                  maxLength={80}
+                  placeholder="Ex. : Couple, Famille, Travail"
+                  className="w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold"
+                />
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button type="button" disabled={busy} onClick={() => { setShowCreateSpace(false); setSpaceName('Notre espace'); }} className="rounded-xl bg-[#EEE8DD] px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
+                  <button type="button" disabled={busy || !spaceName.trim()} onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="rounded-2xl border border-[#D8D0C4] bg-[#F4F0E9] p-3 mb-4">
             <div className="text-xs font-black mb-2">Créer votre espace commun</div>
-            <div className="flex gap-2"><input value={spaceName} onChange={event => setSpaceName(event.target.value)} className="min-w-0 flex-1 rounded-xl border border-[#D8D0C4] bg-white px-3 py-2 text-sm font-semibold" /><button disabled={busy} type="button" onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white">Créer</button></div>
+            <div className="flex gap-2"><input value={spaceName} onChange={event => setSpaceName(event.target.value)} maxLength={80} className="min-w-0 flex-1 rounded-xl border border-[#D8D0C4] bg-white px-3 py-2 text-sm font-semibold" /><button disabled={busy || !spaceName.trim()} type="button" onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button></div>
           </div>
         )}
 
