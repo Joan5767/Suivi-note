@@ -135,41 +135,82 @@ interface MemoTransferPayload {
   color: MemoColor;
 }
 
-const MEMO_TRANSFER_PREFIX = '[[RAPPEL_NOTES_MEMO_V1:';
+interface AppointmentMeta {
+  version: 1;
+  reminderMinutes: number | null;
+}
 
-const encodeMemoTransferPayload = (payload: MemoTransferPayload) => {
+const MEMO_TRANSFER_PREFIX = '[[RAPPEL_NOTES_MEMO_V1:';
+const APPOINTMENT_META_PREFIX = '[[RAPPEL_NOTES_APPOINTMENT_V1:';
+
+const encodeJsonMarker = (prefix: string, payload: unknown) => {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   let binary = '';
   bytes.forEach(byte => { binary += String.fromCharCode(byte); });
-  return `${MEMO_TRANSFER_PREFIX}${btoa(binary)}]]`;
+  return `${prefix}${btoa(binary)}]]`;
+};
+
+const encodeMemoTransferPayload = (payload: MemoTransferPayload) => {
+  return encodeJsonMarker(MEMO_TRANSFER_PREFIX, payload);
+};
+
+const encodeAppointmentMeta = (payload: AppointmentMeta) =>
+  encodeJsonMarker(APPOINTMENT_META_PREFIX, payload);
+
+const decodeTrailingMarker = <T,>(content: string, prefix: string) => {
+  const markerIndex = content.lastIndexOf(prefix);
+  if (markerIndex < 0 || !content.endsWith(']]')) return null;
+
+  try {
+    const encoded = content.slice(markerIndex + prefix.length, -2);
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    return {
+      visibleContent: content.slice(0, markerIndex).trimEnd(),
+      payload: JSON.parse(new TextDecoder().decode(bytes)) as T,
+    };
+  } catch (_) {
+    return null;
+  }
 };
 
 const splitTaskContent = (value: string) => {
-  const content = typeof value === 'string' ? value : '';
-  const markerIndex = content.lastIndexOf(MEMO_TRANSFER_PREFIX);
-  if (markerIndex < 0 || !content.endsWith(']]')) {
-    return { visibleContent: content, memoPayload: null as MemoTransferPayload | null };
+  let content = typeof value === 'string' ? value : '';
+  let appointmentMeta: AppointmentMeta | null = null;
+
+  const appointmentMarker = decodeTrailingMarker<AppointmentMeta>(content, APPOINTMENT_META_PREFIX);
+  if (appointmentMarker?.payload?.version === 1) {
+    const reminder = appointmentMarker.payload.reminderMinutes;
+    appointmentMeta = {
+      version: 1,
+      reminderMinutes: typeof reminder === 'number' && Number.isFinite(reminder) && reminder >= 0
+        ? Math.round(reminder)
+        : null,
+    };
+    content = appointmentMarker.visibleContent;
   }
 
-  try {
-    const encoded = content.slice(markerIndex + MEMO_TRANSFER_PREFIX.length, -2);
-    const binary = atob(encoded);
-    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as MemoTransferPayload;
-    if (parsed?.version !== 1) throw new Error('Version inconnue');
+  const memoMarker = decodeTrailingMarker<MemoTransferPayload>(content, MEMO_TRANSFER_PREFIX);
+  if (memoMarker?.payload?.version === 1) {
     return {
-      visibleContent: content.slice(0, markerIndex).trimEnd(),
-      memoPayload: parsed,
+      visibleContent: memoMarker.visibleContent,
+      memoPayload: memoMarker.payload,
+      appointmentMeta,
     };
-  } catch (_) {
-    return { visibleContent: content, memoPayload: null as MemoTransferPayload | null };
   }
+
+  return { visibleContent: content, memoPayload: null as MemoTransferPayload | null, appointmentMeta };
 };
 
-const joinTaskContent = (visibleContent: string, payload: MemoTransferPayload | null) =>
-  payload
-    ? [visibleContent.trim(), encodeMemoTransferPayload(payload)].filter(Boolean).join('\n\n')
-    : visibleContent.trim();
+const joinTaskContent = (
+  visibleContent: string,
+  payload: MemoTransferPayload | null,
+  appointmentMeta: AppointmentMeta | null = null,
+) => [
+  visibleContent.trim(),
+  payload ? encodeMemoTransferPayload(payload) : '',
+  appointmentMeta ? encodeAppointmentMeta(appointmentMeta) : '',
+].filter(Boolean).join('\n\n');
 
 const getVisibleTaskContent = (value?: string | null) => splitTaskContent(value || '').visibleContent;
 
@@ -1455,6 +1496,9 @@ function WorkspaceApp() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeTab, setActiveTab] = useState<'create' | 'notes' | 'history'>('create');
   const [noteMode, setNoteMode] = useState<'text' | 'list'>('text');
+  const [todoCreationKind, setTodoCreationKind] = useState<'task' | 'appointment'>('task');
+  const [appointmentDurationMinutes, setAppointmentDurationMinutes] = useState(60);
+  const [appointmentReminderMinutes, setAppointmentReminderMinutes] = useState<number | null>(30);
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
@@ -1756,6 +1800,8 @@ function WorkspaceApp() {
   const [editingContent, setEditingContent] = useState('');
   const [editingTargetDate, setEditingTargetDate] = useState('');
   const [editingPopupActive, setEditingPopupActive] = useState(false);
+  const [editingAppointmentDurationMinutes, setEditingAppointmentDurationMinutes] = useState(60);
+  const [editingAppointmentReminderMinutes, setEditingAppointmentReminderMinutes] = useState<number | null>(30);
   const [showEditingAdvancedSettings, setShowEditingAdvancedSettings] = useState(false);
   const [editingSendImmediateEmail, setEditingSendImmediateEmail] = useState(false);
   const [showEditingPopupConfig, setShowEditingPopupConfig] = useState(false);
@@ -2244,6 +2290,15 @@ function WorkspaceApp() {
           setImportance(draft.importance);
         }
         if (draft.noteMode === 'text' || draft.noteMode === 'list') setNoteMode(draft.noteMode);
+        if (draft.todoCreationKind === 'task' || draft.todoCreationKind === 'appointment') {
+          setTodoCreationKind(draft.todoCreationKind);
+        }
+        if (typeof draft.appointmentDurationMinutes === 'number' && draft.appointmentDurationMinutes > 0) {
+          setAppointmentDurationMinutes(Math.round(draft.appointmentDurationMinutes));
+        }
+        if (draft.appointmentReminderMinutes === null || (typeof draft.appointmentReminderMinutes === 'number' && draft.appointmentReminderMinutes >= 0)) {
+          setAppointmentReminderMinutes(draft.appointmentReminderMinutes === null ? null : Math.round(draft.appointmentReminderMinutes));
+        }
         if (Array.isArray(draft.newListItems)) {
           setNewListItems(draft.newListItems.filter((item: unknown): item is string => typeof item === 'string'));
         }
@@ -2302,6 +2357,9 @@ function WorkspaceApp() {
           newContent,
           importance,
           noteMode,
+          todoCreationKind,
+          appointmentDurationMinutes,
+          appointmentReminderMinutes,
           newListItems,
           currentNewListItem,
           newTaskShareEnabled,
@@ -2332,6 +2390,9 @@ function WorkspaceApp() {
     newContent,
     importance,
     noteMode,
+    todoCreationKind,
+    appointmentDurationMinutes,
+    appointmentReminderMinutes,
     newListItems,
     currentNewListItem,
     newTaskShareEnabled,
@@ -3117,11 +3178,36 @@ function WorkspaceApp() {
 
   const navigateNotesCreate = () => {
     if (window.location.hash === '#tasks-create') return;
-    navigateAwayRoute('#tasks-create');
+    if (saveOpenEditorBeforeNavigation(navigateNotesCreate)) return;
+
+    const tasksUrl = `${window.location.pathname}${window.location.search}#tasks`;
+    const createUrl = `${window.location.pathname}${window.location.search}#tasks-create`;
+    const baseState = {
+      ...clearTransientHistoryFlags(window.history.state || {}),
+      primaryAway: true,
+    };
+
+    // La création est une sous-page de « À faire ». On conserve donc l'accueil
+    // À faire juste sous elle dans l'historique : le premier Retour ferme la
+    // création, et le Retour suivant seulement ramène vers Notes.
+    window.history.replaceState(baseState, '', tasksUrl);
+    window.history.pushState({ ...baseState, tasksChild: true }, '', createUrl);
+    refreshRouteFromCurrentHash();
+  };
+
+  const closeTodoCreation = () => {
+    if (window.history.state?.tasksChild) {
+      window.history.back();
+      return;
+    }
+    navigateNotesChild('#tasks');
   };
 
   const openTodoCreation = () => {
     setNoteMode('text');
+    setTodoCreationKind('task');
+    setAppointmentDurationMinutes(60);
+    setAppointmentReminderMinutes(30);
     setNewTitle('');
     setNewContent('');
     setNewListItems([]);
@@ -7091,10 +7177,13 @@ function WorkspaceApp() {
 
   const addNote = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const finalizedListItems = noteMode === 'list'
-      ? [...newListItems, currentNewListItem].map(item => item.trim()).filter(Boolean)
-      : [];
-    if (!newTitle.trim() && !newContent.trim() && finalizedListItems.length === 0) return;
+    const isAppointment = todoCreationKind === 'appointment';
+    const finalizedListItems: string[] = [];
+    if (!newTitle.trim() && !newContent.trim()) return;
+    if (isAppointment && !newTitle.trim()) {
+      showAppMessage('Ajoute un titre au rendez-vous.');
+      return;
+    }
 
     const targetShareSpace = newTaskShareEnabled
       ? collaboration.spaces.find(space => space.id === newTaskShareSpaceId) || null
@@ -7110,7 +7199,18 @@ function WorkspaceApp() {
       let finalTargetDate = '';
       let finalPopupActive = false;
 
-      if (showPopupConfig && popupScheduleMode === 'relative' && (popupHours || popupMinutes)) {
+      if (isAppointment) {
+        const appointmentTime = getSafeTime(targetDate);
+        if (!appointmentTime) {
+          showAppMessage("Choisis la date et l'heure du rendez-vous.");
+          return;
+        }
+        if (appointmentTime <= Date.now()) {
+          showAppMessage("La date et l'heure du rendez-vous doivent être dans le futur.");
+          return;
+        }
+        finalTargetDate = new Date(appointmentTime).toISOString();
+      } else if (showPopupConfig && popupScheduleMode === 'relative' && (popupHours || popupMinutes)) {
         const hours = Math.max(0, Number.parseInt(popupHours || '0', 10) || 0);
         const minutes = Math.max(0, Number.parseInt(popupMinutes || '0', 10) || 0);
         const totalMinutes = hours * 60 + minutes;
@@ -7141,25 +7241,31 @@ function WorkspaceApp() {
       }
 
       const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
+      const appointmentMeta: AppointmentMeta | null = isAppointment
+        ? { version: 1, reminderMinutes: appointmentReminderMinutes }
+        : null;
+      const storedContent = joinTaskContent(newContent, null, appointmentMeta);
 
       const { data: createdTask, error } = await supabase.from('notes').insert([{
         title: newTitle.trim(),
-        content: newContent.trim(),
+        content: storedContent,
         importance,
         subtasks: finalizedListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false })),
-        is_list: noteMode === 'list',
-        reminder_active: activateReminder,
-        reminder_popup_active: reminderPopupActive,
+        is_list: false,
+        reminder_active: isAppointment ? false : activateReminder,
+        reminder_popup_active: isAppointment ? false : reminderPopupActive,
         daily_reminder_time: safeDailyTime,
         target_date: finalTargetDate,
         popup_active: finalPopupActive,
+        duration_minutes: isAppointment ? appointmentDurationMinutes : null,
         sort_order: nextTaskSortOrder(importance),
         space_id: targetShareSpace?.id || null,
       }]).select('id').single();
 
       if (error) throw error;
 
-      let creationSuccessMessage = '✅ Tâche créée avec succès !';
+      const createdItemLabel = isAppointment ? 'Rendez-vous' : 'Tâche';
+      let creationSuccessMessage = `✅ ${createdItemLabel} créé${isAppointment ? '' : 'e'} avec succès !`;
       if (targetShareSpace && createdTask?.id) {
         collaboration.setActiveSpaceId(targetShareSpace.id);
         try {
@@ -7169,10 +7275,10 @@ function WorkspaceApp() {
             newTitle.trim() || 'Nouvelle tâche'
           );
           creationSuccessMessage = shareResult.recipients
-            ? `✅ Tâche créée dans « ${targetShareSpace.name} » et notification envoyée.`
-            : `✅ Tâche créée dans l’espace « ${targetShareSpace.name} ».`;
+            ? `✅ ${createdItemLabel} créé${isAppointment ? '' : 'e'} dans « ${targetShareSpace.name} » et notification envoyée.`
+            : `✅ ${createdItemLabel} créé${isAppointment ? '' : 'e'} dans l’espace « ${targetShareSpace.name} ».`;
         } catch (shareError: any) {
-          creationSuccessMessage = `✅ Tâche créée dans l’espace « ${targetShareSpace.name} ».`;
+          creationSuccessMessage = `✅ ${createdItemLabel} créé${isAppointment ? '' : 'e'} dans l’espace « ${targetShareSpace.name} ».`;
           showAppMessage(
             'La tâche est bien partagée, mais la notification n’a pas pu être envoyée : ' +
             (shareError?.message || 'erreur inconnue')
@@ -7206,10 +7312,26 @@ function WorkspaceApp() {
         }
       }
 
+      if (isAppointment && createdTask?.id) {
+        await addAppointmentDirectlyToCalendar({
+          id: String(createdTask.id),
+          title: newTitle.trim(),
+          content: storedContent,
+          target_date: finalTargetDate,
+          duration_minutes: appointmentDurationMinutes,
+        }, appointmentReminderMinutes);
+        creationSuccessMessage = targetShareSpace
+          ? `✅ Rendez-vous créé dans « ${targetShareSpace.name} » et calendrier préparé !`
+          : '✅ Rendez-vous créé et calendrier préparé !';
+      }
+
       setNewTitle('');
       setNewContent('');
       setImportance('vert');
       setNoteMode('text');
+      setTodoCreationKind('task');
+      setAppointmentDurationMinutes(60);
+      setAppointmentReminderMinutes(30);
       setNewListItems([]);
       setCurrentNewListItem('');
       setNewTaskShareEnabled(false);
@@ -7229,7 +7351,7 @@ function WorkspaceApp() {
       setCollapsedPriorities(prev => ({ ...prev, [importance]: false }));
 
       await fetchNotes();
-      navigateNotesChild('#tasks');
+      closeTodoCreation();
       setSuccessMessage(creationSuccessMessage);
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
@@ -7591,7 +7713,7 @@ function WorkspaceApp() {
       setNewListItems([]);
       setCurrentNewListItem('');
       await fetchNotes();
-      navigateNotesChild('#tasks');
+      closeTodoCreation();
       setSuccessMessage('✅ Tâche créée avec succès par IA !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
@@ -7696,8 +7818,88 @@ function WorkspaceApp() {
     };
   };
 
+  type CalendarEventSource = Pick<Note, 'id' | 'title' | 'content' | 'target_date' | 'duration_minutes'>;
+
+  const buildCalendarEventICS = (note: CalendarEventSource, reminderMinutes?: number | null) => {
+    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
+    if (!dates) return '';
+
+    const uid = `${note.id}@suivi-note`;
+    const dtstamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Suivi Note//FR',
+      'CALSCALE:GREGORIAN',
+      'BEGIN:VEVENT',
+      `UID:${escapeICS(uid)}`,
+      `DTSTAMP:${dtstamp}`,
+      `SUMMARY:${escapeICS(note.title || 'Rendez-vous')}`,
+      `DESCRIPTION:${escapeICS(getVisibleTaskContent(note.content))}`,
+      `DTSTART:${dates.start}`,
+      `DTEND:${dates.end}`,
+    ];
+
+    if (typeof reminderMinutes === 'number' && Number.isFinite(reminderMinutes) && reminderMinutes > 0) {
+      lines.push(
+        'BEGIN:VALARM',
+        `TRIGGER:-PT${Math.round(reminderMinutes)}M`,
+        'ACTION:DISPLAY',
+        `DESCRIPTION:${escapeICS(note.title || 'Rendez-vous')}`,
+        'END:VALARM',
+      );
+    }
+
+    lines.push('END:VEVENT', 'END:VCALENDAR');
+    return lines.join('\r\n');
+  };
+
+  const downloadCalendarEventICS = (note: CalendarEventSource, reminderMinutes?: number | null) => {
+    const icsContent = buildCalendarEventICS(note, reminderMinutes);
+    if (!icsContent) return;
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeTitle = (note.title || 'rendez-vous').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'rendez-vous';
+    link.href = url;
+    link.download = `${safeTitle}.ics`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const addAppointmentDirectlyToCalendar = async (note: CalendarEventSource, reminderMinutes?: number | null) => {
+    const icsContent = buildCalendarEventICS(note, reminderMinutes);
+    if (!icsContent) return;
+
+    const safeTitle = (note.title || 'rendez-vous').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'rendez-vous';
+    const file = new File([icsContent], `${safeTitle}.ics`, { type: 'text/calendar' });
+
+    try {
+      if (typeof navigator.share === 'function' && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({
+          title: note.title || 'Rendez-vous',
+          text: 'Ajouter ce rendez-vous à mon calendrier',
+          files: [file],
+        });
+        return;
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        showAppMessage('Le rendez-vous est enregistré. Son ajout au calendrier a été annulé.');
+        return;
+      }
+      console.warn('Ajout au calendrier indisponible :', error);
+    }
+
+    downloadCalendarEventICS(note, reminderMinutes);
+    showAppMessage("Le rendez-vous est enregistré. Le fichier .ics a été préparé pour l'ajouter au calendrier.");
+  };
+
   const getGoogleCalendarLink = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '');
+    const dates = formatDatesForCalendar(note.target_date || '', note.duration_minutes);
     if (!dates) return '#';
 
     const title = encodeURIComponent(note.title || 'Note');
@@ -7710,35 +7912,8 @@ function WorkspaceApp() {
   };
 
   const downloadICS = (note: Note) => {
-    const dates = formatDatesForCalendar(note.target_date || '');
-    if (!dates) return;
-
-    const uid = `${note.id}@suivi-note`;
-    const dtstamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-    const icsContent = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//Suivi Note//FR',
-      'BEGIN:VEVENT',
-      `UID:${escapeICS(uid)}`,
-      `DTSTAMP:${dtstamp}`,
-      `SUMMARY:${escapeICS(note.title || 'Note')}`,
-      `DESCRIPTION:${escapeICS(getVisibleTaskContent(note.content))}`,
-      `DTSTART:${dates.start}`,
-      `DTEND:${dates.end}`,
-      'END:VEVENT',
-      'END:VCALENDAR',
-    ].join('\r\n');
-
-    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'rendez-vous.ics';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const reminderMinutes = splitTaskContent(note.content || '').appointmentMeta?.reminderMinutes;
+    downloadCalendarEventICS(note, reminderMinutes);
   };
   
   const saveEdit = async (id: string, consumeHistory = true): Promise<boolean> => {
@@ -7782,7 +7957,13 @@ function WorkspaceApp() {
       : '09:00';
 
     const previousNote = notes.find(note => note.id === id);
-    const previousMemoPayload = splitTaskContent(previousNote?.content || '').memoPayload;
+    const previousContentParts = splitTaskContent(previousNote?.content || '');
+    const previousMemoPayload = previousContentParts.memoPayload;
+    const previousAppointmentMeta = previousContentParts.appointmentMeta;
+    if (previousAppointmentMeta && !finalTargetDate) {
+      showAppMessage("La date et l'heure sont obligatoires pour un rendez-vous.");
+      return false;
+    }
     const emailReminderChanged = Boolean(
       editingReminderActive &&
       (!previousNote?.reminder_active || previousNote?.daily_reminder_time !== safeDailyTime)
@@ -7794,9 +7975,16 @@ function WorkspaceApp() {
 
     const updatePayload: Record<string, any> = {
       title: editingTitle.trim(),
-      content: joinTaskContent(editingContent, previousMemoPayload),
+      content: joinTaskContent(
+        editingContent,
+        previousMemoPayload,
+        previousAppointmentMeta
+          ? { version: 1, reminderMinutes: editingAppointmentReminderMinutes }
+          : null,
+      ),
       target_date: finalTargetDate,
       popup_active: finalPopupActive,
+      duration_minutes: previousAppointmentMeta ? editingAppointmentDurationMinutes : previousNote?.duration_minutes,
       importance: editingImportance,
       sort_order: previousNote && previousNote.importance !== editingImportance
         ? nextTaskSortOrder(editingImportance)
@@ -7857,9 +8045,12 @@ function WorkspaceApp() {
   taskEditorAutoSaveRef.current = saveEdit;
 
   const startEditing = (note: Note) => {
+    const appointmentMeta = splitTaskContent(note.content || '').appointmentMeta;
     armTaskEditorHistory(note.id);
     setEditingId(note.id); setEditingTitle(note.title || ''); setEditingContent(getVisibleTaskContent(note.content));
     setEditingTargetDate(note.target_date || ''); setEditingPopupActive(note.popup_active || false);
+    setEditingAppointmentDurationMinutes(note.duration_minutes && note.duration_minutes > 0 ? note.duration_minutes : 60);
+    setEditingAppointmentReminderMinutes(appointmentMeta?.reminderMinutes ?? 30);
     setEditingImportance(note.importance || 'vert'); setEditingReminderActive(note.reminder_active || false);
     setEditingReminderPopupActive(note.reminder_popup_active || false); setEditingDailyTime(note.daily_reminder_time || '09:00');
     setShowEditingAdvancedSettings(false);
@@ -8112,7 +8303,7 @@ function WorkspaceApp() {
   };
 
   const renderNoteItem = (note: Note) => {
-    const { visibleContent, memoPayload } = splitTaskContent(note.content || '');
+    const { visibleContent, memoPayload, appointmentMeta } = splitTaskContent(note.content || '');
     return (
     <li
       id={`note-${note.id}`}
@@ -8142,6 +8333,11 @@ function WorkspaceApp() {
           <span className="text-[11px] font-black">🔔 Rappel programmé</span>
         </div>
       )}
+      {appointmentMeta && editingId !== note.id && (
+        <div className={`self-start px-2.5 py-1 rounded-lg border shadow-sm ${showArchived === true ? 'bg-gray-100 border-gray-300 text-gray-500' : 'bg-[#F2E7DC] border-[#D9C8B7] text-[#6D5140]'}`}>
+          <span className="text-[11px] font-black">📅 Rendez-vous</span>
+        </div>
+      )}
 
       <div className="flex items-start gap-2 flex-1 mt-1">
         {editingId === note.id ? (
@@ -8161,6 +8357,41 @@ function WorkspaceApp() {
               <option value="rouge">🔴 Priorité Urgente</option>
             </select>
 
+            {appointmentMeta && (
+              <div className="rounded-2xl border border-[#D6C8B8] bg-[#F6F0EA] p-3 flex flex-col gap-2">
+                <label className="text-[11px] font-black text-[#6D5B4C]">
+                  Date et heure *
+                  <input
+                    type="datetime-local"
+                    required
+                    value={editingTargetDate ? (() => {
+                      const ts = getSafeTime(editingTargetDate); if (!ts) return '';
+                      const d = new Date(ts); const pad = (n: number) => n.toString().padStart(2, '0');
+                      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    })() : ''}
+                    onChange={(event) => setEditingTargetDate(event.target.value ? new Date(event.target.value).toISOString() : '')}
+                    className="mt-1 w-full rounded-xl border border-[#D8C8B6] bg-white p-2.5 text-sm font-bold text-[#4A463F]"
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-[11px] font-black text-[#6D5B4C]">
+                    Durée
+                    <select value={editingAppointmentDurationMinutes} onChange={(event) => setEditingAppointmentDurationMinutes(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-[#D8C8B6] bg-white p-2 text-xs font-bold text-[#4A463F]">
+                      <option value={15}>15 min</option><option value={30}>30 min</option><option value={45}>45 min</option><option value={60}>1 heure</option><option value={90}>1 h 30</option><option value={120}>2 heures</option><option value={180}>3 heures</option>
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-black text-[#6D5B4C]">
+                    Rappel
+                    <span className="mt-1 flex items-center overflow-hidden rounded-xl border border-[#D8C8B6] bg-white">
+                      <input type="number" min="0" step="5" value={editingAppointmentReminderMinutes ?? ''} onChange={(event) => setEditingAppointmentReminderMinutes(event.target.value === '' ? null : Math.max(0, Number(event.target.value)))} placeholder="Aucun" className="min-w-0 flex-1 bg-transparent p-2 text-xs font-bold text-[#4A463F] outline-none" />
+                      <span className="pr-2 text-[9px] font-black text-[#807164]">min avant</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {!appointmentMeta && (
             <div className="flex flex-col mt-1" data-edit-reminder-settings>
               <button
                 type="button"
@@ -8305,6 +8536,7 @@ function WorkspaceApp() {
                 </div>
               )}
             </div>
+            )}
             <div className="flex gap-2 mt-1">
               <button onClick={() => void saveEdit(note.id)} className="bg-green-500 hover:bg-green-600 text-white px-2 py-1.5 text-xs rounded font-bold flex-1">Enregistrer</button>
               <button onClick={() => closeTaskEditorWithoutSaving(true)} className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-2 py-1.5 text-xs rounded font-bold flex-1">Annuler</button>
@@ -8348,14 +8580,16 @@ function WorkspaceApp() {
             <span className={`text-[11px] font-bold ${showArchived === true ? 'text-gray-500' : 'text-blue-800'}`}>
               📅 {new Date(getSafeTime(note.target_date)).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
               {note.popup_active && ' 🔔'}
+              {appointmentMeta && note.duration_minutes ? ` · ${note.duration_minutes >= 60 ? `${Math.floor(note.duration_minutes / 60)} h${note.duration_minutes % 60 ? ` ${note.duration_minutes % 60} min` : ''}` : `${note.duration_minutes} min`}` : ''}
+              {appointmentMeta?.reminderMinutes ? ` · rappel ${appointmentMeta.reminderMinutes >= 1440 ? '1 jour' : appointmentMeta.reminderMinutes >= 60 ? `${appointmentMeta.reminderMinutes / 60} h` : `${appointmentMeta.reminderMinutes} min`} avant` : ''}
             </span>
-            <button onClick={() => clearNoteDate(note.id)} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>
+            {!appointmentMeta && <button onClick={() => clearNoteDate(note.id)} className="text-red-500 hover:bg-red-100 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors">✖ Annuler</button>}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {enableGoogleCal && (
               <a href={getGoogleCalendarLink(note)} target="_blank" rel="noopener noreferrer" className={`text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center ${showArchived === true ? 'bg-gray-400 hover:bg-gray-500' : 'bg-blue-600 hover:bg-blue-700'}`}>Google Agenda</a>
             )}
-            {enableICal && (
+            {(enableICal || appointmentMeta) && (
               <button onClick={() => downloadICS(note)} className={`text-white px-2 py-1 rounded text-[10px] font-bold transition-colors text-center ${showArchived === true ? 'bg-gray-400 hover:bg-gray-500' : 'bg-purple-600 hover:bg-purple-700'}`}>Fichier (.ics)</button>
             )}
           </div>
@@ -8490,11 +8724,15 @@ function WorkspaceApp() {
                 </div>
                 <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                   <strong className="text-[#4E5847]">👥 Espaces de partage</strong>
-                  <p className="mt-1">Le bouton avec tes initiales ouvre Compte et partage. Tu peux créer ou rejoindre plusieurs espaces. Quand tu partages une tâche, choisis son espace : ses membres peuvent alors la voir et la modifier, et reçoivent une notification. Tout ce qui n’est pas partagé reste personnel.</p>
+                  <p className="mt-1">Tu peux transmettre un planning, une tâche, un rendez-vous, une note… à un ou plusieurs membres d’un espace partagé. Pour faire entrer un membre dans un espace, crée un code d’invitation et envoie-lui ce code. Après avoir téléchargé l’application, il pourra rejoindre ton groupe de partage grâce à ce code. Les éléments non partagés restent personnels.</p>
                 </div>
               </div>
             ) : (
               <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#67574A]">✅ Tâche ou 📅 Rendez-vous</strong>
+                  <p className="mt-1">Crée une tâche simple, ou choisis Rendez-vous pour rendre la date et l’heure obligatoires. Le rendez-vous propose une durée, un rappel en minutes et son ajout automatique au calendrier. Les listes et dessins se créent dans Notes puis peuvent être déplacés ici.</p>
+                </div>
                 <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
                   <strong className="text-[#4E5847]">📨 E-mail immédiat</strong>
                   <p className="mt-1">Envoie immédiatement un e-mail de rappel à ton adresse. Pratique pour retrouver la tâche directement dans ta boîte mail, par exemple à ton arrivée au bureau.</p>
@@ -8998,7 +9236,7 @@ function WorkspaceApp() {
               <p><strong>Ajouter au calendrier :</strong> depuis l’export, l’application peut transmettre directement le planning à une application calendrier quand le téléphone l’autorise.</p>
               <p><strong>Créer dans À faire :</strong> choisis une semaine, vérifie les tâches chronologiquement, décoche celles qui ne sont pas utiles et adapte leur priorité avant de les créer.</p>
               <p><strong>Partager :</strong> envoie le fichier .ics à un autre utilisateur pour qu’il puisse l’importer, l’adapter et sauvegarder sa propre version.</p>
-              <p><strong>Espace de partage :</strong> partage directement un planning dans l’un de tes espaces pour que ses membres puissent le voir et le modifier dans l’application. Ils reçoivent une notification, tandis que les plannings non partagés restent personnels.</p>
+              <p><strong>Espace de partage :</strong> tu peux transmettre un planning, une tâche, un rendez-vous, une note… à un ou plusieurs membres d’un espace partagé. Pour faire entrer un membre dans un espace, crée un code d’invitation et envoie-lui ce code. Après avoir téléchargé l’application, il pourra rejoindre ton groupe de partage grâce à ce code.</p>
             </div>
           </div>
         </div>
@@ -9569,7 +9807,7 @@ function WorkspaceApp() {
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
                   <p><strong>↗ Déplacer dans À faire :</strong> active cette action dans l’éditeur. La note quitte alors Notes et devient une tâche, sans doublon.</p>
                   <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
-                  <p><strong>👥 Espaces de partage :</strong> ouvre le bouton avec tes initiales pour créer ou rejoindre plusieurs espaces. Au partage d’une note, choisis précisément l’espace concerné. Ses membres pourront la consulter et la modifier, tandis que les notes non partagées restent personnelles.</p>
+                  <p><strong>👥 Espaces de partage :</strong> tu peux transmettre un planning, une tâche, un rendez-vous, une note… à un ou plusieurs membres d’un espace partagé. Pour faire entrer un membre dans un espace, crée un code d’invitation et envoie-lui ce code. Après avoir téléchargé l’application, il pourra rejoindre ton groupe de partage grâce à ce code. Les éléments non partagés restent personnels.</p>
                 </div>
               </div>
             </div>
@@ -10766,50 +11004,91 @@ function WorkspaceApp() {
 
           {activeTab === 'create' && !isFocusMode && (
             <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
-              <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour à À faire</button>
-              <div className="grid grid-cols-3 gap-2">
-                <button type="button" onClick={() => setNoteMode('text')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'text' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>📝 Note</button>
-                <button type="button" onClick={() => setNoteMode('list')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'list' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>☑ Liste</button>
-                <button type="button" onClick={openNewDrawingFromCreation} className="rounded-xl border py-2 text-xs font-black bg-white border-[#DDD5C7]">✏️ Dessin</button>
+              <button type="button" onClick={closeTodoCreation} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour à À faire</button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTodoCreationKind('task');
+                    setNoteMode('text');
+                    setTargetDate('');
+                    setAppointmentDurationMinutes(60);
+                    setAppointmentReminderMinutes(30);
+                  }}
+                  className={`rounded-xl border py-2.5 text-xs font-black ${todoCreationKind === 'task' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}
+                >✅ Tâche</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTodoCreationKind('appointment');
+                    setNoteMode('text');
+                    setShowAdvancedSettings(false);
+                    setShowPopupConfig(false);
+                    setShowDailyConfig(false);
+                    setShowCalendarConfig(false);
+                  }}
+                  className={`rounded-xl border py-2.5 text-xs font-black ${todoCreationKind === 'appointment' ? 'bg-[#E6DDD2] border-[#D6C8B8]' : 'bg-white border-[#DDD5C7]'}`}
+                >📅 Rendez-vous</button>
               </div>
               <div className="flex flex-col gap-2">
                 <div className="relative flex items-center w-full">
-                  <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder="Titre (optionnel)" className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <input type="text" value={newTitle} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewTitle(e.target.value)} placeholder={todoCreationKind === 'appointment' ? 'Titre du rendez-vous' : 'Titre (optionnel)'} className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] font-semibold text-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                   <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
                 <div className="relative w-full">
-                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Décris ce que tu dois faire..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder={todoCreationKind === 'appointment' ? 'Lieu, informations utiles… (facultatif)' : 'Décris ce que tu dois faire...'} className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                   <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
               </div>
 
-              {noteMode === 'list' && (
-                <div className="rounded-2xl border border-[#DED5C8] bg-[#F8F5EF] p-3 flex flex-col gap-2">
-                  {newListItems.map((item, index) => (
-                    <div key={`${item}-${index}`} className="flex items-start gap-2 rounded-xl bg-white border border-[#E1D9CE] px-3 py-2 text-sm font-semibold">
-                      <span className="opacity-60">☐</span>
-                      <span className="flex-1 break-words">{item}</span>
-                      <button type="button" onClick={() => setNewListItems(items => items.filter((_, itemIndex) => itemIndex !== index))} className="text-[#A5524A] font-black">×</button>
-                    </div>
-                  ))}
-                  <div className="flex gap-2">
-                    <textarea
-                      rows={1}
-                      value={currentNewListItem}
-                      onChange={(event) => setCurrentNewListItem(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter' || (event.nativeEvent as any).isComposing) return;
-                        event.preventDefault();
-                        const value = currentNewListItem.trim();
-                        if (!value) return;
-                        setNewListItems(items => [...items, value]);
-                        setCurrentNewListItem('');
-                      }}
-                      placeholder="Ajouter une ligne puis Entrée"
-                      className="flex-1 min-h-[42px] resize-none rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold whitespace-pre-wrap break-words"
+              {todoCreationKind === 'appointment' && (
+                <div className="rounded-2xl border border-[#D6C8B8] bg-[#F6F0EA] p-3 flex flex-col gap-3">
+                  <div>
+                    <label className="block mb-1 text-[11px] font-black uppercase tracking-wide text-[#6D5B4C]">Date et heure *</label>
+                    <input
+                      type="datetime-local"
+                      required
+                      value={targetDate}
+                      onChange={(event) => setTargetDate(event.target.value)}
+                      className="w-full rounded-xl border border-[#D8C8B6] bg-white p-3 text-sm font-bold text-[#4A463F] focus:outline-none focus:ring-2 focus:ring-[#D6C8B8]"
                     />
-                    <button type="button" onClick={() => { const value = currentNewListItem.trim(); if (!value) return; setNewListItems(items => [...items, value]); setCurrentNewListItem(''); }} className="w-10 h-10 rounded-xl bg-[#D8DEC9] font-black">＋</button>
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[11px] font-black text-[#6D5B4C]">
+                      Durée
+                      <select
+                        value={appointmentDurationMinutes}
+                        onChange={(event) => setAppointmentDurationMinutes(Number(event.target.value))}
+                        className="mt-1 w-full rounded-xl border border-[#D8C8B6] bg-white p-2.5 text-sm font-bold text-[#4A463F]"
+                      >
+                        <option value={15}>15 min</option>
+                        <option value={30}>30 min</option>
+                        <option value={45}>45 min</option>
+                        <option value={60}>1 heure</option>
+                        <option value={90}>1 h 30</option>
+                        <option value={120}>2 heures</option>
+                        <option value={180}>3 heures</option>
+                      </select>
+                    </label>
+                    <label className="text-[11px] font-black text-[#6D5B4C]">
+                      Rappel
+                      <span className="mt-1 flex items-center overflow-hidden rounded-xl border border-[#D8C8B6] bg-white">
+                        <input
+                          type="number"
+                          min="0"
+                          step="5"
+                          value={appointmentReminderMinutes ?? ''}
+                          onChange={(event) => setAppointmentReminderMinutes(event.target.value === '' ? null : Math.max(0, Number(event.target.value)))}
+                          placeholder="Aucun"
+                          className="min-w-0 flex-1 bg-transparent p-2.5 text-sm font-bold text-[#4A463F] outline-none"
+                        />
+                        <span className="pr-2 text-[10px] font-black text-[#807164]">min avant</span>
+                      </span>
+                    </label>
+                  </div>
+                  <p className="rounded-xl bg-white/70 px-3 py-2 text-[11px] font-semibold leading-relaxed text-[#6D6258]">
+                    📲 À l’enregistrement, l’application proposera automatiquement d’ajouter ce rendez-vous au calendrier. Si l’ajout direct n’est pas disponible, un fichier .ics sera préparé.
+                  </p>
                 </div>
               )}
 
@@ -10841,7 +11120,7 @@ function WorkspaceApp() {
                   />
                   <span>
                     <span className="block text-sm font-black text-[#46513F]">👥 Partager dans un espace et notifier</span>
-                    <span className="mt-0.5 block text-[10px] font-semibold leading-relaxed text-[#756E63]">La tâche sera visible et modifiable par les membres de l’espace choisi.</span>
+                    <span className="mt-0.5 block text-[10px] font-semibold leading-relaxed text-[#756E63]">{todoCreationKind === 'appointment' ? 'Le rendez-vous' : 'La tâche'} sera visible et modifiable par les membres de l’espace choisi.</span>
                   </span>
                 </label>
 
@@ -10861,12 +11140,15 @@ function WorkspaceApp() {
                 )}
               </div>
 
+              {todoCreationKind === 'task' && (
               <div className="border-b border-gray-200 pb-3 mt-1">
                 <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-3 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-md ${isAiProcessing ? 'bg-[#8E8796] text-white animate-pulse' : listeningMode === 'ai' ? 'bg-[#8E8796] text-white animate-pulse scale-[1.02]' : 'bg-[#ECE8EF] text-[#5F5867] border border-[#D8D1DE] hover:bg-[#E3DDE8]'}`}>
                   <span className="text-xl">🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
                 </button>
               </div>
+              )}
 
+              {todoCreationKind === 'task' && (
               <div className="flex flex-col mt-2" data-create-reminder-settings>
                 <button type="button" onClick={() => setShowAdvancedSettings(!showAdvancedSettings)} className="w-full bg-[#EEE8DD] text-[#5F584F] hover:bg-[#E5DED2] font-black py-2.5 px-3 rounded-xl text-sm flex justify-between items-center transition-colors border border-[#DED5C8]">
                   <span>⚙️ Paramétrage des rappels</span><span>{showAdvancedSettings ? '▲' : '▼'}</span>
@@ -10999,7 +11281,8 @@ function WorkspaceApp() {
                   </div>
                 )}
               </div>
-              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0 && !currentNewListItem.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : 'Créer dans À faire'}</button>
+              )}
+              <button type="submit" disabled={loading || isAiProcessing || (todoCreationKind === 'appointment' ? (!newTitle.trim() || !targetDate) : (!newTitle.trim() && !newContent.trim()))} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : todoCreationKind === 'appointment' ? 'Créer le rendez-vous' : 'Créer dans À faire'}</button>
             </form>
           )}
 
