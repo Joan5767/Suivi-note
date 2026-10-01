@@ -204,6 +204,14 @@ interface AppPromptDialog {
   inputMode?: 'text' | 'numeric';
 }
 
+type ShareType = 'note' | 'memo' | 'planning';
+
+interface ShareSpaceDialog {
+  type: ShareType;
+  id: string;
+  label: string;
+}
+
 const getSafeTime = (dateStr?: string | null) => {
   if (!dateStr) return 0;
   const s = dateStr.trim().replace(' ', 'T');
@@ -1453,6 +1461,8 @@ function WorkspaceApp() {
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
   const [newEntryIsTodo, setNewEntryIsTodo] = useState(true);
+  const [newTaskShareEnabled, setNewTaskShareEnabled] = useState(false);
+  const [newTaskShareSpaceId, setNewTaskShareSpaceId] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Notes, Mémos & Listes : espace de conservation façon Google Keep.
@@ -1706,6 +1716,8 @@ function WorkspaceApp() {
   const [confirmDialog, setConfirmDialog] = useState<AppConfirmDialog | null>(null);
   const [confirmDialogLoading, setConfirmDialogLoading] = useState(false);
   const [appMessage, setAppMessage] = useState<string | null>(null);
+  const [shareSpaceDialog, setShareSpaceDialog] = useState<ShareSpaceDialog | null>(null);
+  const [selectedShareSpaceId, setSelectedShareSpaceId] = useState('');
   const [promptDialog, setPromptDialog] = useState<AppPromptDialog | null>(null);
   const [promptValue, setPromptValue] = useState('');
   const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
@@ -2238,6 +2250,8 @@ function WorkspaceApp() {
         }
         if (typeof draft.currentNewListItem === 'string') setCurrentNewListItem(draft.currentNewListItem);
         if (typeof draft.newEntryIsTodo === 'boolean') setNewEntryIsTodo(draft.newEntryIsTodo);
+        if (typeof draft.newTaskShareEnabled === 'boolean') setNewTaskShareEnabled(draft.newTaskShareEnabled);
+        if (typeof draft.newTaskShareSpaceId === 'string') setNewTaskShareSpaceId(draft.newTaskShareSpaceId);
 
         if (typeof draft.showAdvancedSettings === 'boolean') setShowAdvancedSettings(draft.showAdvancedSettings);
         if (typeof draft.sendImmediateEmail === 'boolean') setSendImmediateEmail(draft.sendImmediateEmail);
@@ -2293,6 +2307,8 @@ function WorkspaceApp() {
           newListItems,
           currentNewListItem,
           newEntryIsTodo,
+          newTaskShareEnabled,
+          newTaskShareSpaceId,
           showAdvancedSettings,
           sendImmediateEmail,
           showPopupConfig,
@@ -2322,6 +2338,8 @@ function WorkspaceApp() {
     newListItems,
     currentNewListItem,
     newEntryIsTodo,
+    newTaskShareEnabled,
+    newTaskShareSpaceId,
     showAdvancedSettings,
     sendImmediateEmail,
     showPopupConfig,
@@ -2737,6 +2755,11 @@ function WorkspaceApp() {
     }
 
     const handleMemoSelectionPopState = () => {
+      // Le panneau Compte et partage gère sa propre entrée d'historique. Tant
+      // qu'il est visible, Retour Android doit uniquement le fermer : aucun
+      // éditeur ni aucune rubrique située derrière ne doit bouger.
+      if (document.querySelector('[data-collaboration-panel]')) return;
+
       // L'aperçu d'un planning est un niveau de navigation à part entière.
       // Retour Android le ferme et laisse l'utilisateur dans les plannings
       // sauvegardés au lieu de remonter directement jusqu'à Notes.
@@ -3498,7 +3521,6 @@ function WorkspaceApp() {
     return true;
   };
 
-  type ShareType = 'note' | 'memo' | 'planning';
   const shareTable = (type: ShareType) => type === 'note' ? 'notes' : type === 'memo' ? 'memo_notes' : 'planning_templates';
   const refreshShareType = async (type: ShareType) => {
     if (type === 'note') await fetchNotes();
@@ -3514,8 +3536,8 @@ function WorkspaceApp() {
     if (!response.ok) throw new Error(result?.error || 'Notification impossible.');
     return result as { recipients?: number };
   };
-  const shareEntity = async (type: ShareType, id: string, label: string) => {
-    const space = collaboration.activeSpace;
+  const shareEntity = async (type: ShareType, id: string, label: string, targetSpaceId: string) => {
+    const space = collaboration.spaces.find(item => item.id === targetSpaceId) || null;
     if (!space) { collaboration.openPanel(); showAppMessage("Crée ou rejoins d'abord un espace partagé."); return; }
     setLoading(true);
     try {
@@ -3523,9 +3545,34 @@ function WorkspaceApp() {
       if (error) throw error;
       const result = await notifyShared(type, id, label);
       await refreshShareType(type);
-      showAppMessage(result.recipients ? '✅ Élément partagé et notification envoyée.' : '✅ Élément ajouté à votre espace partagé.');
+      collaboration.setActiveSpaceId(space.id);
+      setShareSpaceDialog(null);
+      showAppMessage(result.recipients
+        ? `✅ Élément partagé dans « ${space.name} » et notification envoyée.`
+        : `✅ Élément ajouté à l’espace « ${space.name} ».`);
     } catch (error: any) { showAppMessage('Partage impossible : ' + (error?.message || 'erreur inconnue')); }
     finally { setLoading(false); }
+  };
+
+  const requestShareSpaceChoice = (type: ShareType, id: string, label: string) => {
+    if (collaboration.spaces.length === 0) {
+      collaboration.openPanel();
+      showAppMessage("Crée ou rejoins d'abord un espace partagé.");
+      return;
+    }
+    const preferredSpaceId = collaboration.activeSpace?.id || collaboration.spaces[0].id;
+    setSelectedShareSpaceId(preferredSpaceId);
+    setShareSpaceDialog({ type, id, label: label.trim() || 'Élément sans titre' });
+  };
+
+  const confirmShareSpaceChoice = async () => {
+    if (!shareSpaceDialog || !selectedShareSpaceId || loading) return;
+    await shareEntity(
+      shareSpaceDialog.type,
+      shareSpaceDialog.id,
+      shareSpaceDialog.label,
+      selectedShareSpaceId
+    );
   };
   const notifyAgain = async (type: ShareType, id: string, label: string) => {
     try { await notifyShared(type, id, label); showAppMessage('🔔 Notification envoyée à l’espace partagé.'); }
@@ -3539,19 +3586,7 @@ function WorkspaceApp() {
   };
 
   const requestPlanningShareConfirmation = (template: PlanningTemplate) => {
-    const space = collaboration.activeSpace;
-    if (!space) {
-      collaboration.openPanel();
-      showAppMessage("Crée ou rejoins d'abord un espace partagé.");
-      return;
-    }
-    requestAppConfirmation({
-      title: 'Partager ce planning ?',
-      message: `Veux-tu partager « ${template.name} » dans l’espace partagé « ${space.name} » et notifier ses membres ?`,
-      confirmLabel: 'Partager et notifier',
-      tone: 'sage',
-      onConfirm: () => shareEntity('planning', template.id, template.name),
-    });
+    requestShareSpaceChoice('planning', template.id, template.name);
   };
 
   const requestPlanningPrivateConfirmation = (template: PlanningTemplate) => {
@@ -7033,6 +7068,14 @@ function WorkspaceApp() {
       : [];
     if (!newTitle.trim() && !newContent.trim() && finalizedListItems.length === 0) return;
 
+    const targetShareSpace = newEntryIsTodo && newTaskShareEnabled
+      ? collaboration.spaces.find(space => space.id === newTaskShareSpaceId) || null
+      : null;
+    if (newEntryIsTodo && newTaskShareEnabled && !targetShareSpace) {
+      showAppMessage('Choisis un espace partagé valide avant de créer la tâche.');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -7102,7 +7145,7 @@ function WorkspaceApp() {
 
       const safeDailyTime = /^\d{2}:\d{2}$/.test(dailyTime) ? dailyTime : '09:00';
 
-      const { error } = await supabase.from('notes').insert([{
+      const { data: createdTask, error } = await supabase.from('notes').insert([{
         title: newTitle.trim(),
         content: newContent.trim(),
         importance,
@@ -7114,9 +7157,31 @@ function WorkspaceApp() {
         target_date: finalTargetDate,
         popup_active: finalPopupActive,
         sort_order: nextTaskSortOrder(importance),
-      }]);
+        space_id: targetShareSpace?.id || null,
+      }]).select('id').single();
 
       if (error) throw error;
+
+      let creationSuccessMessage = '✅ Tâche créée avec succès !';
+      if (targetShareSpace && createdTask?.id) {
+        collaboration.setActiveSpaceId(targetShareSpace.id);
+        try {
+          const shareResult = await notifyShared(
+            'note',
+            String(createdTask.id),
+            newTitle.trim() || 'Nouvelle tâche'
+          );
+          creationSuccessMessage = shareResult.recipients
+            ? `✅ Tâche créée dans « ${targetShareSpace.name} » et notification envoyée.`
+            : `✅ Tâche créée dans l’espace « ${targetShareSpace.name} ».`;
+        } catch (shareError: any) {
+          creationSuccessMessage = `✅ Tâche créée dans l’espace « ${targetShareSpace.name} ».`;
+          showAppMessage(
+            'La tâche est bien partagée, mais la notification n’a pas pu être envoyée : ' +
+            (shareError?.message || 'erreur inconnue')
+          );
+        }
+      }
 
       if (sendImmediateEmail && !DEMO_MODE) {
         try {
@@ -7150,6 +7215,8 @@ function WorkspaceApp() {
       setNoteMode('text');
       setNewListItems([]);
       setCurrentNewListItem('');
+      setNewTaskShareEnabled(false);
+      setNewTaskShareSpaceId('');
       setSendImmediateEmail(false);
       setShowPopupConfig(false);
       setPopupScheduleMode('relative');
@@ -7166,7 +7233,7 @@ function WorkspaceApp() {
 
       await fetchNotes();
       navigateNotesChild('#tasks');
-      setSuccessMessage('✅ Tâche créée avec succès !');
+      setSuccessMessage(creationSuccessMessage);
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {
       showAppMessage("Erreur Supabase : " + (error?.message || "erreur inconnue"));
@@ -8308,7 +8375,7 @@ function WorkspaceApp() {
               <button onClick={() => { startEditing(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-gray-700 hover:bg-gray-50 border-b border-gray-100">✏️ Modifier</button>
               <button onClick={() => { void moveTaskToNotes(note); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">📝 Passer dans Notes</button>
               {!note.space_id
-                ? <button onClick={() => { void shareEntity('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">👥 Partager dans l’espace et notifier</button>
+                ? <button onClick={() => { requestShareSpaceChoice('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">👥 Partager dans l’espace et notifier</button>
                 : <>
                     <button onClick={() => { void notifyAgain('note', note.id, note.title); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#4B5843] hover:bg-[#EDF1E7] border-b border-gray-100">🔔 Notifier l’espace partagé</button>
                     {note.owner_id === collaboration.user.id && <button onClick={() => { void makePersonal('note', note.id); setOpenMenuId(null); }} className="px-4 py-2.5 text-left text-xs font-bold text-[#655E54] hover:bg-[#F1EEE7] border-b border-gray-100">🔒 Rendre personnelle</button>}
@@ -8508,6 +8575,76 @@ function WorkspaceApp() {
               >
                 {promptDialog.confirmLabel || 'Valider'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CHOIX DE L'ESPACE AU MOMENT DU PARTAGE */}
+      {shareSpaceDialog && (
+        <div
+          className="fixed inset-0 bg-black/40 z-[14200] flex items-center justify-center p-4 backdrop-blur-[2px]"
+          onClick={() => !loading && setShareSpaceDialog(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl p-5 text-[#4A463F]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black text-[#46513F]">Partager dans quel espace ?</h2>
+                <p className="mt-1 text-xs font-semibold text-[#81786C] truncate">{shareSpaceDialog.label}</p>
+              </div>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setShareSpaceDialog(null)}
+                className="w-8 h-8 rounded-full bg-[#EAE4D9] text-[#62594E] font-black flex-shrink-0 disabled:opacity-50"
+                aria-label="Fermer"
+              >×</button>
+            </div>
+
+            <p className="mt-4 text-xs leading-relaxed text-[#6A6258]">
+              Seuls les membres de l’espace choisi pourront voir et modifier cet élément. Ils recevront aussi une notification.
+            </p>
+
+            <div className="mt-4 flex max-h-64 flex-col gap-2 overflow-y-auto">
+              {collaboration.spaces.map(space => {
+                const selected = selectedShareSpaceId === space.id;
+                return (
+                  <button
+                    key={space.id}
+                    type="button"
+                    onClick={() => setSelectedShareSpaceId(space.id)}
+                    className={`w-full rounded-2xl border px-3 py-3 text-left transition-colors ${
+                      selected
+                        ? 'border-[#87977D] bg-[#E5EBDD] ring-2 ring-[#C8D2BC]'
+                        : 'border-[#DDD5C7] bg-white/70 hover:bg-[#F4F0E9]'
+                    }`}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 truncate text-sm font-black text-[#46513F]">{space.name}</span>
+                      <span className={`w-5 h-5 flex-shrink-0 rounded-full border flex items-center justify-center text-[11px] font-black ${selected ? 'border-[#6F7B64] bg-[#6F7B64] text-white' : 'border-[#BDB5A9] text-transparent'}`}>✓</span>
+                    </span>
+                    <span className="mt-0.5 block text-[10px] font-semibold text-[#81786C]">{space.role === 'owner' ? 'Espace dont tu es propriétaire' : 'Espace rejoint'}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setShareSpaceDialog(null)}
+                className="rounded-xl bg-[#EEE8DD] px-3 py-3 text-sm font-black text-[#62594E] disabled:opacity-50"
+              >Annuler</button>
+              <button
+                type="button"
+                disabled={loading || !selectedShareSpaceId}
+                onClick={() => void confirmShareSpaceChoice()}
+                className="rounded-xl bg-[#5D6B53] px-3 py-3 text-sm font-black text-white disabled:opacity-50"
+              >{loading ? 'Partage…' : 'Partager et notifier'}</button>
             </div>
           </div>
         </div>
@@ -9729,7 +9866,7 @@ function WorkspaceApp() {
                   const memo = memoEntries.find(item => item.id === editingMemoId);
                   if (!memo) return null;
                   return !memo.space_id ? (
-                    <button type="button" onClick={() => void shareEntity('memo', memo.id, memoDraftTitle || memo.title)} className="mt-4 w-full rounded-xl bg-[#D8E2CF] px-3 py-2.5 text-xs font-black text-[#3F4C39]">👥 Partager dans l’espace et notifier</button>
+                    <button type="button" onClick={() => requestShareSpaceChoice('memo', memo.id, memoDraftTitle || memo.title)} className="mt-4 w-full rounded-xl bg-[#D8E2CF] px-3 py-2.5 text-xs font-black text-[#3F4C39]">👥 Partager dans l’espace et notifier</button>
                   ) : (
                     <div className="mt-4 flex gap-2">
                       <button type="button" onClick={() => void notifyAgain('memo', memo.id, memoDraftTitle || memo.title)} className="flex-1 rounded-xl bg-[#D8E2CF] px-2 py-2.5 text-[11px] font-black">🔔 Notifier l’espace partagé</button>
@@ -10630,7 +10767,15 @@ function WorkspaceApp() {
               <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour à À faire</button>
               <div className={`rounded-2xl border p-3 ${newEntryIsTodo ? 'bg-[#EDF1E7] border-[#C8D2BC]' : 'bg-[#F1EEE7] border-[#DDD5C7]'}`}>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={newEntryIsTodo} onChange={(event) => setNewEntryIsTodo(event.target.checked)} className="w-5 h-5 accent-[#6F7B64]" />
+                  <input
+                    type="checkbox"
+                    checked={newEntryIsTodo}
+                    onChange={(event) => {
+                      setNewEntryIsTodo(event.target.checked);
+                      if (!event.target.checked) setNewTaskShareEnabled(false);
+                    }}
+                    className="w-5 h-5 accent-[#6F7B64]"
+                  />
                   <span className="font-black text-sm">✓ À faire</span>
                 </label>
                 <p className="mt-1 text-[10px] font-bold text-[#756E63]">{newEntryIsTodo ? 'Cet élément apparaîtra uniquement dans À faire.' : 'Cet élément sera conservé uniquement dans Notes.'}</p>
@@ -10688,6 +10833,46 @@ function WorkspaceApp() {
                   <option value="orange">🟠 Priorité Importante</option>
                   <option value="rouge">🔴 Priorité Urgente</option>
                 </select>
+              </div>
+
+              <div className={`rounded-2xl border p-3 transition-colors ${newTaskShareEnabled ? 'border-[#BFCBB4] bg-[#EDF1E7]' : 'border-[#DED5C8] bg-[#F8F5EF]'}`}>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newTaskShareEnabled}
+                    onChange={(event) => {
+                      if (event.target.checked && collaboration.spaces.length === 0) {
+                        collaboration.openPanel();
+                        return;
+                      }
+                      const enabled = event.target.checked;
+                      setNewTaskShareEnabled(enabled);
+                      if (enabled && !collaboration.spaces.some(space => space.id === newTaskShareSpaceId)) {
+                        setNewTaskShareSpaceId(collaboration.activeSpace?.id || collaboration.spaces[0]?.id || '');
+                      }
+                    }}
+                    className="mt-0.5 w-5 h-5 accent-[#6F7B64]"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-[#46513F]">👥 Partager dans un espace et notifier</span>
+                    <span className="mt-0.5 block text-[10px] font-semibold leading-relaxed text-[#756E63]">La tâche sera visible et modifiable par les membres de l’espace choisi.</span>
+                  </span>
+                </label>
+
+                {newTaskShareEnabled && collaboration.spaces.length > 0 && (
+                  <label className="mt-3 block text-[10px] font-black uppercase tracking-wide text-[#687260]">
+                    Choisir l’espace
+                    <select
+                      value={newTaskShareSpaceId}
+                      onChange={(event) => setNewTaskShareSpaceId(event.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black normal-case tracking-normal text-[#46513F]"
+                    >
+                      {collaboration.spaces.map(space => (
+                        <option key={space.id} value={space.id}>{space.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
               </div>
 
               <div className="border-b border-gray-200 pb-3 mt-1">

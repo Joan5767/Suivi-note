@@ -158,6 +158,41 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<CollaborationNotification[]>([]);
   const [panelOpen, setPanelOpen] = useState(false);
   const currentUserIdRef = useRef<string | null>(null);
+  const panelOpenRef = useRef(false);
+
+  const openPanel = () => {
+    if (panelOpenRef.current) return;
+    panelOpenRef.current = true;
+    setPanelOpen(true);
+    if (typeof window !== 'undefined' && !window.history.state?.collaborationPanel) {
+      window.history.pushState(
+        { ...(window.history.state || {}), collaborationPanel: true },
+        '',
+        window.location.href
+      );
+    }
+  };
+
+  const closePanel = () => {
+    if (!panelOpenRef.current) return;
+    if (typeof window !== 'undefined' && window.history.state?.collaborationPanel) {
+      window.history.back();
+      return;
+    }
+    panelOpenRef.current = false;
+    setPanelOpen(false);
+  };
+
+  useEffect(() => {
+    const closePanelOnBack = () => {
+      if (!panelOpenRef.current) return;
+      panelOpenRef.current = false;
+      setPanelOpen(false);
+    };
+
+    window.addEventListener('popstate', closePanelOnBack);
+    return () => window.removeEventListener('popstate', closePanelOnBack);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -179,6 +214,7 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
       // false laisserait l'écran bloqué, car l'effet dépendant de user.id ne se
       // relance pas. On réinitialise uniquement lors d'un vrai changement de compte.
       if (accountChanged || event === 'SIGNED_OUT') {
+        panelOpenRef.current = false;
         setPanelOpen(false);
         setWorkspaceReady(false);
       }
@@ -322,7 +358,7 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
     members,
     unreadCount: notifications.filter(item => !item.read_at).length,
     setActiveSpaceId,
-    openPanel: () => setPanelOpen(true),
+    openPanel,
     refreshWorkspace: loadWorkspace,
     getAccessToken,
   }) : null, [user, displayName, spaces, activeSpace, members, notifications]);
@@ -340,7 +376,7 @@ export function CollaborationProvider({ children }: { children: ReactNode }) {
       {children}
       <CollaborationPanel
         open={panelOpen}
-        onClose={() => setPanelOpen(false)}
+        onClose={closePanel}
         notifications={notifications}
         setNotifications={setNotifications}
       />
@@ -388,6 +424,7 @@ function CollaborationPanel({
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showCreateSpace, setShowCreateSpace] = useState(false);
+  const [showRemoveSpaceConfirm, setShowRemoveSpaceConfirm] = useState(false);
 
   if (!open) return null;
 
@@ -431,6 +468,48 @@ function CollaborationPanel({
     setBusy(false);
   };
 
+  const removeActiveSpace = async () => {
+    const space = collaboration.activeSpace;
+    if (!space) return;
+
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (space.role === 'owner') {
+        const { error } = await supabase.from('shared_spaces').delete().eq('id', space.id);
+        if (error) throw error;
+      } else {
+        // Les éléments créés par la personne qui quitte l'espace redeviennent
+        // personnels avant de supprimer son appartenance au groupe.
+        const unshareResults = await Promise.all([
+          supabase.from('notes').update({ space_id: null, assigned_to: null }).eq('space_id', space.id).eq('owner_id', collaboration.user.id),
+          supabase.from('memo_notes').update({ space_id: null }).eq('space_id', space.id).eq('owner_id', collaboration.user.id),
+          supabase.from('planning_templates').update({ space_id: null }).eq('space_id', space.id).eq('owner_id', collaboration.user.id),
+        ]);
+        const unshareError = unshareResults.find(result => result.error)?.error;
+        if (unshareError) throw unshareError;
+
+        const { error } = await supabase
+          .from('space_members')
+          .delete()
+          .eq('space_id', space.id)
+          .eq('user_id', collaboration.user.id);
+        if (error) throw error;
+      }
+
+      setInviteCode('');
+      setShowRemoveSpaceConfirm(false);
+      await collaboration.refreshWorkspace();
+      setMessage(space.role === 'owner'
+        ? `L’espace « ${space.name} » a été supprimé. Les éléments partagés sont redevenus personnels pour leurs propriétaires.`
+        : `Tu as quitté l’espace « ${space.name} ».`);
+    } catch (error: any) {
+      setMessage('Impossible de modifier cet espace : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const markAllRead = async () => {
     const unreadIds = notifications.filter(item => !item.read_at).map(item => item.id);
     if (unreadIds.length === 0) return;
@@ -453,7 +532,7 @@ function CollaborationPanel({
   };
 
   return (
-    <div className="fixed inset-0 z-[16000] bg-black/35 backdrop-blur-[2px] p-4 flex items-start justify-end" onClick={onClose}>
+    <div data-collaboration-panel className="fixed inset-0 z-[16000] bg-black/35 backdrop-blur-[2px] p-4 flex items-start justify-end" onClick={onClose}>
       <section className="mt-[max(48px,env(safe-area-inset-top))] w-full max-w-sm max-h-[calc(100vh-80px)] overflow-y-auto rounded-[26px] border border-[#D8D0C4] bg-[#FBF9F4] p-5 text-[#4A463F] shadow-2xl" onClick={event => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-3 mb-4">
           <div><h2 className="text-lg font-black text-[#46513F]">Compte et partage</h2><p className="text-[11px] font-semibold text-[#81786C]">{collaboration.user.email}</p></div>
@@ -469,6 +548,7 @@ function CollaborationPanel({
                 collaboration.setActiveSpaceId(event.target.value);
                 setInviteCode('');
                 setMessage(null);
+                setShowRemoveSpaceConfirm(false);
               }}
               className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black"
             >
@@ -508,6 +588,35 @@ function CollaborationPanel({
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <button type="button" disabled={busy} onClick={() => { setShowCreateSpace(false); setSpaceName('Notre espace'); }} className="rounded-xl bg-[#EEE8DD] px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
                   <button type="button" disabled={busy || !spaceName.trim()} onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button>
+                </div>
+              </div>
+            )}
+            {!showRemoveSpaceConfirm ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => { setShowRemoveSpaceConfirm(true); setMessage(null); }}
+                className="mt-3 w-full rounded-xl px-3 py-2 text-[11px] font-black text-[#8A5B50] hover:bg-[#F3E2DD] disabled:opacity-50"
+              >
+                {collaboration.activeSpace?.role === 'owner' ? 'Supprimer cet espace' : 'Quitter cet espace'}
+              </button>
+            ) : (
+              <div className="mt-3 rounded-xl border border-[#DEC0B9] bg-[#F8EDEA] p-3">
+                <p className="text-xs font-black text-[#7B4E43]">
+                  {collaboration.activeSpace?.role === 'owner'
+                    ? `Supprimer définitivement « ${collaboration.activeSpace?.name} » ?`
+                    : `Quitter « ${collaboration.activeSpace?.name} » ?`}
+                </p>
+                <p className="mt-1 text-[10px] font-semibold leading-relaxed text-[#80665E]">
+                  {collaboration.activeSpace?.role === 'owner'
+                    ? 'Les membres perdront l’accès à cet espace. Les notes, tâches et plannings ne seront pas effacés : ils redeviendront personnels pour leurs propriétaires.'
+                    : 'Tu ne verras plus les éléments de cet espace. Ceux que tu as créés redeviendront personnels.'}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button type="button" disabled={busy} onClick={() => setShowRemoveSpaceConfirm(false)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
+                  <button type="button" disabled={busy} onClick={() => void removeActiveSpace()} className="rounded-xl bg-[#D9ADA2] px-3 py-2 text-xs font-black text-[#6F4036] disabled:opacity-50">
+                    {busy ? 'Patiente…' : collaboration.activeSpace?.role === 'owner' ? 'Supprimer' : 'Quitter'}
+                  </button>
                 </div>
               </div>
             )}
