@@ -1460,7 +1460,6 @@ function WorkspaceApp() {
   const [importance, setImportance] = useState<'vert' | 'orange' | 'rouge'>('vert');
   const [newListItems, setNewListItems] = useState<string[]>([]);
   const [currentNewListItem, setCurrentNewListItem] = useState('');
-  const [newEntryIsTodo, setNewEntryIsTodo] = useState(true);
   const [newTaskShareEnabled, setNewTaskShareEnabled] = useState(false);
   const [newTaskShareSpaceId, setNewTaskShareSpaceId] = useState('');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -2249,7 +2248,6 @@ function WorkspaceApp() {
           setNewListItems(draft.newListItems.filter((item: unknown): item is string => typeof item === 'string'));
         }
         if (typeof draft.currentNewListItem === 'string') setCurrentNewListItem(draft.currentNewListItem);
-        if (typeof draft.newEntryIsTodo === 'boolean') setNewEntryIsTodo(draft.newEntryIsTodo);
         if (typeof draft.newTaskShareEnabled === 'boolean') setNewTaskShareEnabled(draft.newTaskShareEnabled);
         if (typeof draft.newTaskShareSpaceId === 'string') setNewTaskShareSpaceId(draft.newTaskShareSpaceId);
 
@@ -2306,7 +2304,6 @@ function WorkspaceApp() {
           noteMode,
           newListItems,
           currentNewListItem,
-          newEntryIsTodo,
           newTaskShareEnabled,
           newTaskShareSpaceId,
           showAdvancedSettings,
@@ -2337,7 +2334,6 @@ function WorkspaceApp() {
     noteMode,
     newListItems,
     currentNewListItem,
-    newEntryIsTodo,
     newTaskShareEnabled,
     newTaskShareSpaceId,
     showAdvancedSettings,
@@ -2703,6 +2699,13 @@ function WorkspaceApp() {
         setMemoFiltersOpen(false);
       }
 
+      // Dès que l'utilisateur quitte À faire, les trois groupes retrouvent leur
+      // état replié. Le retour ultérieur dans la rubrique repart ainsi d'une vue
+      // simple, quel que soit le moyen de navigation utilisé (barre, geste ou Retour).
+      if (!['#tasks', '#tasks-create', '#tasks-history', '#tasks-focus'].includes(hash)) {
+        setCollapsedPriorities({ rouge: true, orange: true, vert: true });
+      }
+
       const directNoteMatch = /^#note-(.+)$/.exec(hash);
       if (directNoteMatch) {
         const noteId = decodeURIComponent(directNoteMatch[1]);
@@ -2777,9 +2780,22 @@ function WorkspaceApp() {
           const tasksUrl = `${window.location.pathname}${window.location.search}#tasks`;
           window.history.replaceState({ ...(window.history.state || {}), primaryAway: true }, '', tasksUrl);
         }
+
+        // La fermeture est immédiate à l'écran ; la sauvegarde continue ensuite
+        // en arrière-plan. Si une valeur est invalide, l'éditeur est restauré.
+        taskEditorOpenRef.current = null;
+        setEditingId(null);
+        setShowEditingAdvancedSettings(false);
+        setShowEditingPopupConfig(false);
+        setShowEditingDailyConfig(false);
+        setShowEditingExactDateConfig(false);
         void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
-          if (!saved && typeof window !== 'undefined' && !window.history.state?.taskEditor) {
-            window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
+          if (!saved && typeof window !== 'undefined') {
+            taskEditorOpenRef.current = taskId;
+            setEditingId(taskId);
+            if (!window.history.state?.taskEditor) {
+              window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
+            }
           }
         });
         return;
@@ -3036,6 +3052,9 @@ function WorkspaceApp() {
   };
 
   const navigatePrimarySection = (targetHash: '#notes' | '#tasks' | '#planning') => {
+    if (targetHash !== '#tasks') {
+      setCollapsedPriorities({ rouge: true, orange: true, vert: true });
+    }
     const taskId = taskEditorOpenRef.current;
     if (targetHash === '#notes' && taskId) {
       void taskEditorAutoSaveRef.current(taskId, false).then((saved) => {
@@ -3102,7 +3121,6 @@ function WorkspaceApp() {
   };
 
   const openTodoCreation = () => {
-    setNewEntryIsTodo(true);
     setNoteMode('text');
     setNewTitle('');
     setNewContent('');
@@ -4822,8 +4840,18 @@ function WorkspaceApp() {
 
   const armTaskEditorHistory = (id: string) => {
     taskEditorOpenRef.current = id;
-    if (typeof window === 'undefined' || window.history.state?.taskEditor) return;
-    window.history.pushState({ ...(window.history.state || {}), taskEditor: true }, '', window.location.href);
+    if (typeof window === 'undefined') return;
+
+    const tasksUrl = `${window.location.pathname}${window.location.search}#tasks`;
+    const baseState = {
+      ...clearTransientHistoryFlags(window.history.state || {}),
+      primaryAway: true,
+    };
+
+    // Nettoie un éventuel marqueur resté d'une ancienne édition et garantit que
+    // l'entrée située juste sous l'éditeur correspond toujours à l'accueil À faire.
+    window.history.replaceState(baseState, '', tasksUrl);
+    window.history.pushState({ ...baseState, taskEditor: true }, '', tasksUrl);
   };
 
   const closeTaskEditorWithoutSaving = (consumeHistory = true) => {
@@ -5041,7 +5069,7 @@ function WorkspaceApp() {
       items: noteMode === 'list' ? [...newListItems, currentNewListItem].map(text => text.trim()).filter(Boolean).map(text => ({ id: crypto.randomUUID(), text, completed: false })) : [],
       color: 'sage',
       pinned: false,
-      isTodo: newEntryIsTodo,
+      isTodo: true,
       importance,
       drawing: { ...EMPTY_DRAW_NOTE, objects: [] },
     });
@@ -7068,10 +7096,10 @@ function WorkspaceApp() {
       : [];
     if (!newTitle.trim() && !newContent.trim() && finalizedListItems.length === 0) return;
 
-    const targetShareSpace = newEntryIsTodo && newTaskShareEnabled
+    const targetShareSpace = newTaskShareEnabled
       ? collaboration.spaces.find(space => space.id === newTaskShareSpaceId) || null
       : null;
-    if (newEntryIsTodo && newTaskShareEnabled && !targetShareSpace) {
+    if (newTaskShareEnabled && !targetShareSpace) {
       showAppMessage('Choisis un espace partagé valide avant de créer la tâche.');
       return;
     }
@@ -7079,37 +7107,6 @@ function WorkspaceApp() {
     setLoading(true);
 
     try {
-      if (!newEntryIsTodo) {
-        const now = new Date().toISOString();
-        const memoItems = finalizedListItems.map(text => ({ id: crypto.randomUUID(), text, completed: false }));
-        const { error: memoError } = await supabase.from('memo_notes').insert([{
-          title: newTitle.trim(),
-          content: newContent.trim(),
-          memo_type: noteMode,
-          items: memoItems,
-          is_drawing: false,
-          drawing_data: { ...EMPTY_DRAW_NOTE, objects: [] },
-          color: 'sage',
-          pinned: false,
-          archived: false,
-          archive_folder_id: null,
-          sort_order: nextMemoSortOrder(false, false),
-          updated_at: now,
-        }]);
-        if (memoError) throw memoError;
-
-        setNewTitle('');
-        setNewContent('');
-        setNoteMode('text');
-        setNewListItems([]);
-        setCurrentNewListItem('');
-        await fetchMemos();
-        navigatePrimarySection('#notes');
-        setSuccessMessage('✅ Élément conservé dans Notes.');
-        window.setTimeout(() => setSuccessMessage(null), 3000);
-        return;
-      }
-
       let finalTargetDate = '';
       let finalPopupActive = false;
 
@@ -7675,7 +7672,6 @@ function WorkspaceApp() {
     }
 
     setAiProposal(null);
-    setNewEntryIsTodo(true);
     navigateNotesCreate();
   };
 
@@ -8492,6 +8488,10 @@ function WorkspaceApp() {
                   <strong className="text-[#4E5847]">✅ Terminer / supprimer</strong>
                   <p className="mt-1">Une tâche retirée quitte la liste active. Tu peux la retrouver dans l’historique pendant 30 jours, puis la réactiver ou l’effacer définitivement.</p>
                 </div>
+                <div className="rounded-2xl bg-white border border-[#E1D9CE] p-3">
+                  <strong className="text-[#4E5847]">👥 Espaces de partage</strong>
+                  <p className="mt-1">Le bouton avec tes initiales ouvre Compte et partage. Tu peux créer ou rejoindre plusieurs espaces. Quand tu partages une tâche, choisis son espace : ses membres peuvent alors la voir et la modifier, et reçoivent une notification. Tout ce qui n’est pas partagé reste personnel.</p>
+                </div>
               </div>
             ) : (
               <div className="space-y-3 text-sm text-[#655E54] leading-relaxed">
@@ -8998,6 +8998,7 @@ function WorkspaceApp() {
               <p><strong>Ajouter au calendrier :</strong> depuis l’export, l’application peut transmettre directement le planning à une application calendrier quand le téléphone l’autorise.</p>
               <p><strong>Créer dans À faire :</strong> choisis une semaine, vérifie les tâches chronologiquement, décoche celles qui ne sont pas utiles et adapte leur priorité avant de les créer.</p>
               <p><strong>Partager :</strong> envoie le fichier .ics à un autre utilisateur pour qu’il puisse l’importer, l’adapter et sauvegarder sa propre version.</p>
+              <p><strong>Espace de partage :</strong> partage directement un planning dans l’un de tes espaces pour que ses membres puissent le voir et le modifier dans l’application. Ils reçoivent une notification, tandis que les plannings non partagés restent personnels.</p>
             </div>
           </div>
         </div>
@@ -9568,6 +9569,7 @@ function WorkspaceApp() {
                   <p><strong>🗑 Supprimer :</strong> une note retirée reste récupérable dans l’historique pendant 30 jours, puis elle est automatiquement effacée.</p>
                   <p><strong>↗ Déplacer dans À faire :</strong> active cette action dans l’éditeur. La note quitte alors Notes et devient une tâche, sans doublon.</p>
                   <p><strong>✎ DrawNote :</strong> dessine librement, ajoute des formes et du texte. La couleur de fond et la corbeille restent accessibles en bas.</p>
+                  <p><strong>👥 Espaces de partage :</strong> ouvre le bouton avec tes initiales pour créer ou rejoindre plusieurs espaces. Au partage d’une note, choisis précisément l’espace concerné. Ses membres pourront la consulter et la modifier, tandis que les notes non partagées restent personnelles.</p>
                 </div>
               </div>
             </div>
@@ -10765,21 +10767,6 @@ function WorkspaceApp() {
           {activeTab === 'create' && !isFocusMode && (
             <form onSubmit={addNote} className="flex flex-col gap-2 mb-6 p-4 rounded-[24px] border bg-[#FBFAF7] border-[#DED7CC] shadow-[0_6px_24px_rgba(89,73,59,0.06)]">
               <button type="button" onClick={() => navigateNotesChild('#tasks')} className="self-start mb-1 text-[#756E63] hover:text-[#4F4A43] font-bold text-sm">← Retour à À faire</button>
-              <div className={`rounded-2xl border p-3 ${newEntryIsTodo ? 'bg-[#EDF1E7] border-[#C8D2BC]' : 'bg-[#F1EEE7] border-[#DDD5C7]'}`}>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={newEntryIsTodo}
-                    onChange={(event) => {
-                      setNewEntryIsTodo(event.target.checked);
-                      if (!event.target.checked) setNewTaskShareEnabled(false);
-                    }}
-                    className="w-5 h-5 accent-[#6F7B64]"
-                  />
-                  <span className="font-black text-sm">✓ À faire</span>
-                </label>
-                <p className="mt-1 text-[10px] font-bold text-[#756E63]">{newEntryIsTodo ? 'Cet élément apparaîtra uniquement dans À faire.' : 'Cet élément sera conservé uniquement dans Notes.'}</p>
-              </div>
               <div className="grid grid-cols-3 gap-2">
                 <button type="button" onClick={() => setNoteMode('text')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'text' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>📝 Note</button>
                 <button type="button" onClick={() => setNoteMode('list')} className={`rounded-xl border py-2 text-xs font-black ${noteMode === 'list' ? 'bg-[#D8DEC9] border-[#BFC9B2]' : 'bg-white border-[#DDD5C7]'}`}>☑ Liste</button>
@@ -10791,7 +10778,7 @@ function WorkspaceApp() {
                   <button type="button" onClick={() => toggleDictation('title')} className={`absolute right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'title' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
                 <div className="relative w-full">
-                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder={newEntryIsTodo ? 'Décris ce que tu dois faire...' : 'Écris ce que tu veux conserver...'} className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
+                  <textarea value={newContent} onFocus={() => setShowAdvancedSettings(false)} onChange={(e) => setNewContent(e.target.value)} placeholder="Décris ce que tu dois faire..." className="w-full border border-[#D8D0C4] p-3 pr-16 rounded-xl text-[#4A463F] resize-y min-h-[120px] text-base bg-white focus:outline-none focus:ring-2 focus:ring-[#C8D2BC]" disabled={loading || isAiProcessing} />
                   <button type="button" onClick={() => toggleDictation('content')} className={`absolute top-2 right-2 p-3 text-xl rounded-full shadow-md transition-all ${listeningMode === 'content' ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>🎙️</button>
                 </div>
               </div>
@@ -10826,7 +10813,6 @@ function WorkspaceApp() {
                 </div>
               )}
 
-              {newEntryIsTodo && (<>
               <div className="flex items-center w-full mt-1">
                 <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
                   <option value="vert">🟢 Priorité Normale</option>
@@ -11013,8 +10999,7 @@ function WorkspaceApp() {
                   </div>
                 )}
               </div>
-              </>)}
-              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0 && !currentNewListItem.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : newEntryIsTodo ? 'Créer dans À faire' : 'Conserver dans Notes'}</button>
+              <button type="submit" disabled={loading || isAiProcessing || (!newTitle.trim() && !newContent.trim() && newListItems.length === 0 && !currentNewListItem.trim())} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : 'Créer dans À faire'}</button>
             </form>
           )}
 

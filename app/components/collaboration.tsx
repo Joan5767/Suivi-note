@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
@@ -406,6 +406,115 @@ export function CollaborationButton() {
   );
 }
 
+function SwipeNotification({
+  notification,
+  onOpen,
+  onDelete,
+}: {
+  notification: CollaborationNotification;
+  onOpen: () => void;
+  onDelete: () => Promise<boolean>;
+}) {
+  const dragStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const offsetRef = useRef(0);
+  const ignoreClickRef = useRef(false);
+  const [offsetX, setOffsetX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const resetPosition = () => {
+    offsetRef.current = 0;
+    setOffsetX(0);
+    setDragging(false);
+    dragStartRef.current = null;
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (deleting || event.button !== 0) return;
+    dragStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    ignoreClickRef.current = false;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStartRef.current;
+    if (!start || start.pointerId !== event.pointerId || deleting) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+
+    if (!dragging) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        dragStartRef.current = null;
+        return;
+      }
+      setDragging(true);
+      ignoreClickRef.current = true;
+    }
+
+    if (event.cancelable) event.preventDefault();
+    const nextOffset = Math.max(-150, Math.min(150, dx));
+    offsetRef.current = nextOffset;
+    setOffsetX(nextOffset);
+  };
+
+  const finishSwipe = async (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStartRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const shouldDelete = Math.abs(offsetRef.current) >= 72;
+    dragStartRef.current = null;
+    setDragging(false);
+
+    if (!shouldDelete) {
+      offsetRef.current = 0;
+      setOffsetX(0);
+      return;
+    }
+
+    setDeleting(true);
+    const direction = offsetRef.current < 0 ? -1 : 1;
+    setOffsetX(direction * Math.max(window.innerWidth, 420));
+    const deleted = await onDelete();
+    if (!deleted) {
+      setDeleting(false);
+      resetPosition();
+    }
+  };
+
+  return (
+    <div className="relative overflow-hidden rounded-xl bg-[#D98B7D]" style={{ touchAction: 'pan-y' }}>
+      <div className="absolute inset-0 flex items-center justify-center text-[11px] font-black text-white">🗑 Supprimer</div>
+      <div
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(event) => void finishSwipe(event)}
+        onPointerCancel={resetPosition}
+        style={{
+          transform: `translate3d(${offsetX}px, 0, 0)`,
+          transition: dragging ? 'none' : 'transform 180ms ease-out',
+        }}
+      >
+        <button
+          type="button"
+          onClick={(event) => {
+            if (ignoreClickRef.current) {
+              event.preventDefault();
+              ignoreClickRef.current = false;
+              return;
+            }
+            onOpen();
+          }}
+          className={`w-full rounded-xl border px-3 py-2.5 text-left ${notification.read_at ? 'border-[#E2DBD0] bg-[#FBF9F4] opacity-80' : 'border-[#BFC9B4] bg-[#EEF1E8]'}`}
+          aria-label={`${notification.title}. Ouvrir, ou glisser latéralement pour supprimer.`}
+        >
+          <div className="text-xs font-black">{notification.title}</div>
+          {notification.body && <div className="mt-0.5 text-[11px] font-semibold text-[#756E63] line-clamp-2">{notification.body}</div>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CollaborationPanel({
   open,
   onClose,
@@ -423,8 +532,18 @@ function CollaborationPanel({
   const [inviteCode, setInviteCode] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showSpacesMenu, setShowSpacesMenu] = useState(false);
   const [showCreateSpace, setShowCreateSpace] = useState(false);
   const [showRemoveSpaceConfirm, setShowRemoveSpaceConfirm] = useState(false);
+  const [showAccountSettings, setShowAccountSettings] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState(collaboration.displayName);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [confirmDeleteAllNotifications, setConfirmDeleteAllNotifications] = useState(false);
+
+  useEffect(() => {
+    if (open) setDisplayNameDraft(collaboration.displayName);
+  }, [open, collaboration.displayName]);
 
   if (!open) return null;
 
@@ -518,6 +637,89 @@ function CollaborationPanel({
     setNotifications(notifications.map(item => item.read_at ? item : { ...item, read_at: readAt }));
   };
 
+  const deleteNotification = async (notificationId: string) => {
+    const { error } = await supabase
+      .from('collaboration_notifications')
+      .delete()
+      .eq('id', notificationId)
+      .eq('recipient_id', collaboration.user.id);
+    if (error) {
+      setMessage('Impossible de supprimer cette notification : ' + error.message);
+      return false;
+    }
+    const remainingNotifications = notifications.filter(item => item.id !== notificationId);
+    setNotifications(remainingNotifications);
+    if (remainingNotifications.length === 0) setConfirmDeleteAllNotifications(false);
+    return true;
+  };
+
+  const deleteAllNotifications = async () => {
+    if (notifications.length === 0) return;
+    setBusy(true);
+    setMessage(null);
+    const { error } = await supabase
+      .from('collaboration_notifications')
+      .delete()
+      .eq('recipient_id', collaboration.user.id);
+    if (error) setMessage('Impossible de supprimer les notifications : ' + error.message);
+    else {
+      setNotifications([]);
+      setConfirmDeleteAllNotifications(false);
+      setMessage('Toutes les notifications ont été supprimées.');
+    }
+    setBusy(false);
+  };
+
+  const updateDisplayName = async () => {
+    const cleanName = displayNameDraft.trim();
+    if (cleanName.length < 2 || cleanName.length > 60) {
+      setMessage('Le nom doit contenir entre 2 et 60 caractères.');
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update({ display_name: cleanName, updated_at: new Date().toISOString() })
+        .eq('id', collaboration.user.id);
+      if (profileError) throw profileError;
+
+      const { error: authError } = await supabase.auth.updateUser({
+        data: { ...collaboration.user.user_metadata, display_name: cleanName },
+      });
+      if (authError) throw authError;
+
+      await collaboration.refreshWorkspace();
+      setMessage('Nom d’utilisateur modifié.');
+    } catch (error: any) {
+      setMessage('Impossible de modifier le nom : ' + (error?.message || 'erreur inconnue'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updatePassword = async () => {
+    if (newPassword.length < 8) {
+      setMessage('Le nouveau mot de passe doit contenir au moins 8 caractères.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setMessage('Les deux mots de passe ne correspondent pas.');
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) setMessage('Impossible de modifier le mot de passe : ' + error.message);
+    else {
+      setNewPassword('');
+      setConfirmPassword('');
+      setMessage('Mot de passe modifié avec succès.');
+    }
+    setBusy(false);
+  };
+
   const openNotification = async (notification: CollaborationNotification) => {
     if (!notification.read_at) {
       const readAt = new Date().toISOString();
@@ -539,111 +741,153 @@ function CollaborationPanel({
           <button type="button" onClick={onClose} className="w-8 h-8 rounded-full bg-[#EEE8DD] font-black">✕</button>
         </div>
 
-        {collaboration.spaces.length > 0 ? (
-          <div className="rounded-2xl border border-[#CCD5C2] bg-[#EEF1E8] p-3 mb-4">
-            <label className="text-[10px] uppercase tracking-wide font-black text-[#687260]">Espace partagé actif</label>
-            <select
-              value={collaboration.activeSpace?.id || ''}
-              onChange={event => {
-                collaboration.setActiveSpaceId(event.target.value);
-                setInviteCode('');
-                setMessage(null);
-                setShowRemoveSpaceConfirm(false);
-              }}
-              className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black"
-            >
-              {collaboration.spaces.map(space => <option key={space.id} value={space.id}>{space.name}</option>)}
-            </select>
-            <p className="mt-1.5 text-[10px] font-semibold leading-relaxed text-[#737C6B]">
-              Les nouveaux partages seront envoyés uniquement aux membres de cet espace.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {collaboration.members.map(member => <span key={member.user_id} className="rounded-full bg-white/80 border border-[#D8DEC9] px-2.5 py-1 text-[10px] font-black">{member.display_name}{member.user_id === collaboration.user.id ? ' · moi' : ''}</span>)}
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button type="button" disabled={busy} onClick={() => void createInvite()} className="rounded-xl bg-[#5D6B53] px-3 py-2.5 text-xs font-black text-white disabled:opacity-50">Inviter</button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setShowCreateSpace(value => !value);
-                  setMessage(null);
-                }}
-                className="rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-xs font-black text-[#4B5843] disabled:opacity-50"
-              >
-                + Nouvel espace
-              </button>
-            </div>
-            {inviteCode && <div className="mt-2 rounded-xl border border-[#D8C8AE] bg-[#FFF7E8] p-3 text-center"><div className="text-[10px] font-black uppercase text-[#81786C]">Code valable 7 jours</div><div className="mt-1 text-2xl tracking-[0.18em] font-black text-[#4A463F]">{inviteCode}</div></div>}
-            {showCreateSpace && (
-              <div className="mt-3 rounded-xl border border-[#D8D0C4] bg-[#FBF9F4] p-3">
-                <div className="text-xs font-black mb-2">Créer un autre espace</div>
-                <input
-                  value={spaceName}
-                  onChange={event => setSpaceName(event.target.value)}
-                  maxLength={80}
-                  placeholder="Ex. : Couple, Famille, Travail"
-                  className="w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold"
-                />
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <button type="button" disabled={busy} onClick={() => { setShowCreateSpace(false); setSpaceName('Notre espace'); }} className="rounded-xl bg-[#EEE8DD] px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
-                  <button type="button" disabled={busy || !spaceName.trim()} onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button>
-                </div>
-              </div>
-            )}
-            {!showRemoveSpaceConfirm ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => { setShowRemoveSpaceConfirm(true); setMessage(null); }}
-                className="mt-3 w-full rounded-xl px-3 py-2 text-[11px] font-black text-[#8A5B50] hover:bg-[#F3E2DD] disabled:opacity-50"
-              >
-                {collaboration.activeSpace?.role === 'owner' ? 'Supprimer cet espace' : 'Quitter cet espace'}
-              </button>
-            ) : (
-              <div className="mt-3 rounded-xl border border-[#DEC0B9] bg-[#F8EDEA] p-3">
-                <p className="text-xs font-black text-[#7B4E43]">
-                  {collaboration.activeSpace?.role === 'owner'
-                    ? `Supprimer définitivement « ${collaboration.activeSpace?.name} » ?`
-                    : `Quitter « ${collaboration.activeSpace?.name} » ?`}
-                </p>
-                <p className="mt-1 text-[10px] font-semibold leading-relaxed text-[#80665E]">
-                  {collaboration.activeSpace?.role === 'owner'
-                    ? 'Les membres perdront l’accès à cet espace. Les notes, tâches et plannings ne seront pas effacés : ils redeviendront personnels pour leurs propriétaires.'
-                    : 'Tu ne verras plus les éléments de cet espace. Ceux que tu as créés redeviendront personnels.'}
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button type="button" disabled={busy} onClick={() => setShowRemoveSpaceConfirm(false)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
-                  <button type="button" disabled={busy} onClick={() => void removeActiveSpace()} className="rounded-xl bg-[#D9ADA2] px-3 py-2 text-xs font-black text-[#6F4036] disabled:opacity-50">
-                    {busy ? 'Patiente…' : collaboration.activeSpace?.role === 'owner' ? 'Supprimer' : 'Quitter'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-[#D8D0C4] bg-[#F4F0E9] p-3 mb-4">
-            <div className="text-xs font-black mb-2">Créer votre espace commun</div>
-            <div className="flex gap-2"><input value={spaceName} onChange={event => setSpaceName(event.target.value)} maxLength={80} className="min-w-0 flex-1 rounded-xl border border-[#D8D0C4] bg-white px-3 py-2 text-sm font-semibold" /><button disabled={busy || !spaceName.trim()} type="button" onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button></div>
-          </div>
-        )}
+        <div className="mb-4 overflow-hidden rounded-2xl border border-[#CCD5C2] bg-[#EEF1E8]">
+          <button
+            type="button"
+            onClick={() => setShowSpacesMenu(value => !value)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            aria-expanded={showSpacesMenu}
+          >
+            <span>
+              <span className="block text-[10px] font-black uppercase tracking-wide text-[#687260]">Espace partagé</span>
+              <span className="mt-0.5 block text-sm font-black text-[#46513F]">{collaboration.activeSpace?.name || 'Aucun espace sélectionné'}</span>
+            </span>
+            <span className="text-lg font-black text-[#687260]">{showSpacesMenu ? '▲' : '▼'}</span>
+          </button>
 
-        <div className="rounded-2xl border border-[#D8D0C4] bg-white/60 p-3 mb-4">
-          <div className="text-xs font-black mb-2">Rejoindre avec un code</div>
-          <div className="flex gap-2"><input value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase())} maxLength={8} placeholder="CODE" className="min-w-0 flex-1 rounded-xl border border-[#D8D0C4] bg-white px-3 py-2 text-sm font-black uppercase tracking-widest" /><button disabled={busy || !joinCode.trim()} type="button" onClick={() => void joinSpace()} className="rounded-xl bg-[#E2D6C7] px-3 py-2 text-xs font-black disabled:opacity-40">Rejoindre</button></div>
+          {showSpacesMenu && (
+            <div className="border-t border-[#CCD5C2] p-3">
+              {collaboration.spaces.length > 0 ? (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    {collaboration.spaces.map(space => {
+                      const selected = collaboration.activeSpace?.id === space.id;
+                      return (
+                        <button
+                          key={space.id}
+                          type="button"
+                          onClick={() => {
+                            collaboration.setActiveSpaceId(space.id);
+                            setInviteCode('');
+                            setMessage(null);
+                            setShowRemoveSpaceConfirm(false);
+                          }}
+                          className={`flex items-center justify-between rounded-xl border px-3 py-2.5 text-left text-sm font-black ${selected ? 'border-[#87977D] bg-white text-[#46513F]' : 'border-transparent bg-white/45 text-[#687260]'}`}
+                        >
+                          <span className="truncate">{space.name}</span>
+                          {selected && <span>✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="mt-2 text-[10px] font-semibold leading-relaxed text-[#737C6B]">Les nouveaux partages seront envoyés uniquement aux membres de l’espace sélectionné.</p>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {collaboration.members.map(member => <span key={member.user_id} className="rounded-full border border-[#D8DEC9] bg-white/80 px-2.5 py-1 text-[10px] font-black">{member.display_name}{member.user_id === collaboration.user.id ? ' · moi' : ''}</span>)}
+                  </div>
+                  <button type="button" disabled={busy} onClick={() => void createInvite()} className="mt-3 w-full rounded-xl bg-[#5D6B53] px-3 py-2.5 text-xs font-black text-white disabled:opacity-50">Créer un code d’invitation</button>
+                  {inviteCode && <div className="mt-2 rounded-xl border border-[#D8C8AE] bg-[#FFF7E8] p-3 text-center"><div className="text-[10px] font-black uppercase text-[#81786C]">Code valable 7 jours</div><div className="mt-1 text-2xl font-black tracking-[0.18em] text-[#4A463F]">{inviteCode}</div></div>}
+                </>
+              ) : (
+                <p className="rounded-xl bg-white/55 px-3 py-3 text-center text-[11px] font-semibold text-[#756E63]">Crée ton premier espace ou rejoins-en un avec un code.</p>
+              )}
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => { setShowCreateSpace(value => !value); setMessage(null); }}
+                className="mt-3 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-xs font-black text-[#4B5843] disabled:opacity-50"
+              >+ Créer un espace</button>
+
+              {showCreateSpace && (
+                <div className="mt-2 rounded-xl border border-[#D8D0C4] bg-[#FBF9F4] p-3">
+                  <input value={spaceName} onChange={event => setSpaceName(event.target.value)} maxLength={80} placeholder="Ex. : Couple, Famille, Travail" className="w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold" />
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button type="button" disabled={busy} onClick={() => { setShowCreateSpace(false); setSpaceName('Notre espace'); }} className="rounded-xl bg-[#EEE8DD] px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
+                    <button type="button" disabled={busy || !spaceName.trim()} onClick={() => void createSpace()} className="rounded-xl bg-[#5D6B53] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Créer</button>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-3 rounded-xl border border-[#D8D0C4] bg-white/60 p-3">
+                <div className="mb-2 text-xs font-black">Ajouter un code reçu</div>
+                <div className="flex gap-2"><input value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase())} maxLength={8} placeholder="CODE" className="min-w-0 flex-1 rounded-xl border border-[#D8D0C4] bg-white px-3 py-2 text-sm font-black uppercase tracking-widest" /><button disabled={busy || !joinCode.trim()} type="button" onClick={() => void joinSpace()} className="rounded-xl bg-[#E2D6C7] px-3 py-2 text-xs font-black disabled:opacity-40">Rejoindre</button></div>
+              </div>
+
+              {collaboration.activeSpace && (!showRemoveSpaceConfirm ? (
+                <button type="button" disabled={busy} onClick={() => { setShowRemoveSpaceConfirm(true); setMessage(null); }} className="mt-3 w-full rounded-xl px-3 py-2 text-[11px] font-black text-[#8A5B50] hover:bg-[#F3E2DD] disabled:opacity-50">
+                  {collaboration.activeSpace.role === 'owner' ? 'Supprimer cet espace' : 'Quitter cet espace'}
+                </button>
+              ) : (
+                <div className="mt-3 rounded-xl border border-[#DEC0B9] bg-[#F8EDEA] p-3">
+                  <p className="text-xs font-black text-[#7B4E43]">{collaboration.activeSpace.role === 'owner' ? `Supprimer définitivement « ${collaboration.activeSpace.name} » ?` : `Quitter « ${collaboration.activeSpace.name} » ?`}</p>
+                  <p className="mt-1 text-[10px] font-semibold leading-relaxed text-[#80665E]">{collaboration.activeSpace.role === 'owner' ? 'Les membres perdront l’accès à cet espace. Les éléments partagés redeviendront personnels pour leurs propriétaires.' : 'Tu ne verras plus les éléments de cet espace. Ceux que tu as créés redeviendront personnels.'}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button type="button" disabled={busy} onClick={() => setShowRemoveSpaceConfirm(false)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-[#62594E] disabled:opacity-50">Annuler</button>
+                    <button type="button" disabled={busy} onClick={() => void removeActiveSpace()} className="rounded-xl bg-[#D9ADA2] px-3 py-2 text-xs font-black text-[#6F4036] disabled:opacity-50">{busy ? 'Patiente…' : collaboration.activeSpace.role === 'owner' ? 'Supprimer' : 'Quitter'}</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {message && <div className="mb-4 rounded-xl bg-[#F5ECDD] border border-[#D8C8AE] px-3 py-2 text-xs font-bold">{message}</div>}
 
+        <div className="mb-4 overflow-hidden rounded-2xl border border-[#D8D0C4] bg-white/60">
+          <button type="button" onClick={() => setShowAccountSettings(value => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left" aria-expanded={showAccountSettings}>
+            <span>
+              <span className="block text-[10px] font-black uppercase tracking-wide text-[#81786C]">Mon compte</span>
+              <span className="mt-0.5 block text-sm font-black text-[#4A463F]">Nom et mot de passe</span>
+            </span>
+            <span className="text-lg font-black text-[#81786C]">{showAccountSettings ? '▲' : '▼'}</span>
+          </button>
+
+          {showAccountSettings && (
+            <div className="border-t border-[#E2DBD0] p-3">
+              <label className="text-[10px] font-black uppercase tracking-wide text-[#687260]">
+                Nom d’utilisateur
+                <input value={displayNameDraft} onChange={event => setDisplayNameDraft(event.target.value)} maxLength={60} autoComplete="name" className="mt-1.5 w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold normal-case tracking-normal text-[#4A463F]" />
+              </label>
+              <button type="button" disabled={busy || displayNameDraft.trim() === collaboration.displayName} onClick={() => void updateDisplayName()} className="mt-2 w-full rounded-xl bg-[#D8DEC9] px-3 py-2.5 text-xs font-black text-[#3F4C39] disabled:opacity-45">Enregistrer le nom</button>
+
+              <div className="my-4 border-t border-[#E2DBD0]" />
+
+              <div className="text-[10px] font-black uppercase tracking-wide text-[#687260]">Changer le mot de passe</div>
+              <input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={8} autoComplete="new-password" placeholder="Nouveau mot de passe" className="mt-1.5 w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold text-[#4A463F]" />
+              <input type="password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} minLength={8} autoComplete="new-password" placeholder="Confirmer le mot de passe" className="mt-2 w-full rounded-xl border border-[#D8D0C4] bg-white px-3 py-2.5 text-sm font-semibold text-[#4A463F]" />
+              <button type="button" disabled={busy || !newPassword || !confirmPassword} onClick={() => void updatePassword()} className="mt-2 w-full rounded-xl bg-[#5D6B53] px-3 py-2.5 text-xs font-black text-white disabled:opacity-45">Modifier le mot de passe</button>
+            </div>
+          )}
+        </div>
+
         <div className="border-t border-[#E2DBD0] pt-4">
-          <div className="flex items-center justify-between gap-2 mb-2"><h3 className="text-xs font-black">Notifications reçues</h3>{notifications.some(item => !item.read_at) && <button type="button" onClick={() => void markAllRead()} className="text-[10px] font-black underline">Tout marquer comme lu</button>}</div>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-black">Notifications reçues</h3>
+            <div className="flex items-center gap-3">
+              {notifications.some(item => !item.read_at) && <button type="button" onClick={() => void markAllRead()} className="text-[10px] font-black underline">Tout marquer comme lu</button>}
+              {notifications.length > 0 && <button type="button" onClick={() => setConfirmDeleteAllNotifications(true)} className="text-[10px] font-black text-[#9A574C] underline">Tout supprimer</button>}
+            </div>
+          </div>
+          {confirmDeleteAllNotifications && (
+            <div className="mb-3 rounded-xl border border-[#DEC0B9] bg-[#F8EDEA] p-3">
+              <p className="text-xs font-black text-[#7B4E43]">Supprimer toutes les notifications ?</p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button type="button" disabled={busy} onClick={() => setConfirmDeleteAllNotifications(false)} className="rounded-lg bg-white px-2 py-2 text-[11px] font-black">Annuler</button>
+                <button type="button" disabled={busy} onClick={() => void deleteAllNotifications()} className="rounded-lg bg-[#D9ADA2] px-2 py-2 text-[11px] font-black text-[#6F4036] disabled:opacity-50">{busy ? 'Suppression…' : 'Tout supprimer'}</button>
+              </div>
+            </div>
+          )}
+          {notifications.length > 0 && <p className="mb-2 text-[10px] font-semibold text-[#81786C]">Glisse une notification sur le côté pour la supprimer.</p>}
           <div className="flex flex-col gap-2">
             {notifications.length === 0 && <p className="rounded-xl bg-[#F4F0E9] px-3 py-4 text-center text-[11px] font-semibold text-[#81786C]">Aucune notification partagée.</p>}
             {notifications.slice(0, 12).map(notification => (
-              <button key={notification.id} type="button" onClick={() => void openNotification(notification)} className={`rounded-xl border px-3 py-2.5 text-left ${notification.read_at ? 'border-[#E2DBD0] bg-white/45 opacity-70' : 'border-[#BFC9B4] bg-[#EEF1E8]'}`}>
-                <div className="text-xs font-black">{notification.title}</div>
-                {notification.body && <div className="mt-0.5 text-[11px] font-semibold text-[#756E63] line-clamp-2">{notification.body}</div>}
-              </button>
+              <SwipeNotification
+                key={notification.id}
+                notification={notification}
+                onOpen={() => void openNotification(notification)}
+                onDelete={() => deleteNotification(notification.id)}
+              />
             ))}
           </div>
         </div>
