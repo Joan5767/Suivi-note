@@ -6961,7 +6961,7 @@ function WorkspaceApp() {
     const planning = getExportPlanning();
     const blocks = normalizeWeeklyBlocks(planning.blocks).filter(block => block.kind !== 'marker' && block.title.trim());
     if (blocks.length === 0) {
-      showAppMessage("Ce planning ne contient aucune tâche à créer dans À faire. Les repères horaires ne sont pas exportés.");
+      showAppMessage("Ce planning ne contient aucun rendez-vous à créer dans À faire. Les repères horaires ne sont pas exportés.");
       return;
     }
 
@@ -7013,7 +7013,7 @@ function WorkspaceApp() {
   const createPlanningTasksInTodos = async () => {
     const selectedRows = getPlanningTodoRows().filter(row => row.selected);
     if (selectedRows.length === 0) {
-      showAppMessage('Sélectionne au moins une tâche à créer dans À faire.');
+      showAppMessage('Sélectionne au moins un rendez-vous à créer dans À faire.');
       return;
     }
 
@@ -7024,7 +7024,7 @@ function WorkspaceApp() {
     };
     const payload = selectedRows.map(({ block, date, importance }) => ({
       title: block.title.trim(),
-      content: (block.description || '').trim(),
+      content: joinTaskContent((block.description || '').trim(), null, { version: 1, reminderMinutes: 30 }),
       importance,
       subtasks: [],
       is_list: false,
@@ -7052,10 +7052,10 @@ function WorkspaceApp() {
       setPlanningTodoSelections({});
       setPlanningTodoTouchedSelections({});
       setPlanningTodoPriorities({});
-      setSuccessMessage(`✅ ${payload.length} tâche${payload.length > 1 ? 's' : ''} créée${payload.length > 1 ? 's' : ''} dans À faire.`);
+      setSuccessMessage(`✅ ${payload.length} rendez-vous créé${payload.length > 1 ? 's' : ''} dans À faire.`);
       window.setTimeout(() => setSuccessMessage(null), 3500);
     } catch (error: any) {
-      showAppMessage("Impossible de créer les tâches : " + (error?.message || 'erreur inconnue'));
+      showAppMessage("Impossible de créer les rendez-vous : " + (error?.message || 'erreur inconnue'));
     } finally {
       setPlanningTodoExporting(false);
     }
@@ -7246,6 +7246,19 @@ function WorkspaceApp() {
         : null;
       const storedContent = joinTaskContent(newContent, null, appointmentMeta);
 
+      // L'ouverture du calendrier doit partir directement du clic sur « Créer ».
+      // On la déclenche donc avant le premier appel réseau, tant que le navigateur
+      // considère encore l'action comme une interaction explicite de l'utilisateur.
+      if (isAppointment) {
+        await addAppointmentDirectlyToCalendar({
+          id: crypto.randomUUID(),
+          title: newTitle.trim(),
+          content: storedContent,
+          target_date: finalTargetDate,
+          duration_minutes: appointmentDurationMinutes,
+        }, appointmentReminderMinutes);
+      }
+
       const { data: createdTask, error } = await supabase.from('notes').insert([{
         title: newTitle.trim(),
         content: storedContent,
@@ -7313,13 +7326,6 @@ function WorkspaceApp() {
       }
 
       if (isAppointment && createdTask?.id) {
-        await addAppointmentDirectlyToCalendar({
-          id: String(createdTask.id),
-          title: newTitle.trim(),
-          content: storedContent,
-          target_date: finalTargetDate,
-          duration_minutes: appointmentDurationMinutes,
-        }, appointmentReminderMinutes);
         creationSuccessMessage = targetShareSpace
           ? `✅ Rendez-vous créé dans « ${targetShareSpace.name} » et calendrier préparé !`
           : '✅ Rendez-vous créé et calendrier préparé !';
@@ -7492,7 +7498,9 @@ function WorkspaceApp() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: finalTranscript,
+          text: todoCreationKind === 'appointment'
+            ? `Créer un rendez-vous à ajouter au calendrier. ${finalTranscript}`
+            : finalTranscript,
           currentDate: new Date().toLocaleString('fr-FR'),
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           timezoneOffsetMinutes: new Date().getTimezoneOffset(),
@@ -7629,6 +7637,7 @@ function WorkspaceApp() {
     setLoading(true);
 
     try {
+      const isAppointment = todoCreationKind === 'appointment';
       const popupIso = toValidIso(data?.popup_time);
       const calendarIso = toValidIso(data?.calendar_time);
 
@@ -7642,8 +7651,13 @@ function WorkspaceApp() {
         return;
       }
 
-      const targetDateValue = popupIso || calendarIso;
-      const isPopupActive = Boolean(popupIso);
+      if (isAppointment && !calendarIso) {
+        showAppMessage("La dictée n'a pas permis d'identifier la date et l'heure du rendez-vous. Choisis « Modifier manuellement » pour les compléter.");
+        return;
+      }
+
+      const targetDateValue = isAppointment ? calendarIso : (popupIso || calendarIso);
+      const isPopupActive = !isAppointment && Boolean(popupIso);
       const listItems = normalizeAiListItems(data?.list_items);
       const isList = Boolean(data?.is_list || listItems.length > 0);
       const reminderChannels = getAiReminderChannels(data || {});
@@ -7659,11 +7673,27 @@ function WorkspaceApp() {
           ? data.importance
           : 'vert';
 
-      const aiListText = isList ? listItems.map(text => `☐ ${text}`).join('\n') : '';
-      const aiContent = [
+      const aiListText = !isAppointment && isList ? listItems.map(text => `☐ ${text}`).join('\n') : '';
+      const visibleAiContent = [
         typeof data?.content === 'string' ? data.content.trim() : '',
         aiListText,
       ].filter(Boolean).join('\n\n');
+      const inferredAppointmentReminder = isAppointment && calendarIso && popupIso
+        ? Math.max(0, Math.round((getSafeTime(calendarIso) - getSafeTime(popupIso)) / 60_000))
+        : appointmentReminderMinutes;
+      const aiContent = isAppointment
+        ? joinTaskContent(visibleAiContent, null, { version: 1, reminderMinutes: inferredAppointmentReminder })
+        : visibleAiContent;
+
+      if (isAppointment) {
+        await addAppointmentDirectlyToCalendar({
+          id: crypto.randomUUID(),
+          title: typeof data?.title === 'string' ? data.title.trim() : '',
+          content: aiContent,
+          target_date: targetDateValue,
+          duration_minutes: appointmentDurationMinutes,
+        }, inferredAppointmentReminder);
+      }
 
       const { error } = await supabase.from('notes').insert([{
         title: typeof data?.title === 'string' ? data.title.trim() : '',
@@ -7671,11 +7701,12 @@ function WorkspaceApp() {
         importance: safeImportance,
         subtasks: [],
         is_list: false,
-        reminder_active: dailyReminderActive && reminderChannels.email,
-        reminder_popup_active: dailyReminderActive && reminderChannels.popup,
+        reminder_active: !isAppointment && dailyReminderActive && reminderChannels.email,
+        reminder_popup_active: !isAppointment && dailyReminderActive && reminderChannels.popup,
         daily_reminder_time: dailyReminderTime,
         target_date: targetDateValue,
         popup_active: isPopupActive,
+        duration_minutes: isAppointment ? appointmentDurationMinutes : null,
         sort_order: nextTaskSortOrder(safeImportance),
       }]);
 
@@ -7710,11 +7741,14 @@ function WorkspaceApp() {
       setAiProposal(null);
       setNewTitle('');
       setNewContent('');
+      setTodoCreationKind('task');
+      setAppointmentDurationMinutes(60);
+      setAppointmentReminderMinutes(30);
       setNewListItems([]);
       setCurrentNewListItem('');
       await fetchNotes();
       closeTodoCreation();
-      setSuccessMessage('✅ Tâche créée avec succès par IA !');
+      setSuccessMessage(isAppointment ? '✅ Rendez-vous créé avec succès par IA !' : '✅ Tâche créée avec succès par IA !');
       window.setTimeout(() => setSuccessMessage(null), 3000);
     } catch (e: any) {
       showAppMessage("Erreur lors de la création IA : " + (e?.message || "erreur inconnue"));
@@ -7768,7 +7802,21 @@ function WorkspaceApp() {
       setShowAdvancedSettings(true);
     }
     
-    if (data?.popup_time) {
+    if (todoCreationKind === 'appointment' && data?.calendar_time) {
+      const calendarTime = getSafeTime(data.calendar_time);
+      const popupTime = getSafeTime(data.popup_time);
+
+      if (calendarTime > 0) {
+        const d = new Date(calendarTime);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        setTargetDate(
+          `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+        );
+        if (popupTime > 0 && popupTime < calendarTime) {
+          setAppointmentReminderMinutes(Math.max(0, Math.round((calendarTime - popupTime) / 60_000)));
+        }
+      }
+    } else if (data?.popup_time) {
       const popupTime = getSafeTime(data.popup_time);
       const diffMs = popupTime - Date.now();
 
@@ -9234,7 +9282,7 @@ function WorkspaceApp() {
               <p><strong>Importer un fichier .ics :</strong> récupère dans l’application les événements d’un calendrier compatible, puis modifie-les comme les autres tâches du planning.</p>
               <p><strong>Exporter :</strong> crée un fichier .ics universel que tu peux conserver, envoyer à une autre personne ou ouvrir dans Google Agenda, Apple Calendrier et Outlook.</p>
               <p><strong>Ajouter au calendrier :</strong> depuis l’export, l’application peut transmettre directement le planning à une application calendrier quand le téléphone l’autorise.</p>
-              <p><strong>Créer dans À faire :</strong> choisis une semaine, vérifie les tâches chronologiquement, décoche celles qui ne sont pas utiles et adapte leur priorité avant de les créer.</p>
+              <p><strong>Créer les rendez-vous dans À faire :</strong> choisis une semaine, vérifie les rendez-vous chronologiquement, décoche ceux qui ne sont pas utiles et adapte leur priorité avant de les créer.</p>
               <p><strong>Partager :</strong> envoie le fichier .ics à un autre utilisateur pour qu’il puisse l’importer, l’adapter et sauvegarder sa propre version.</p>
               <p><strong>Espace de partage :</strong> tu peux transmettre un planning, une tâche, un rendez-vous, une note… à un ou plusieurs membres d’un espace partagé. Pour faire entrer un membre dans un espace, crée un code d’invitation et envoie-lui ce code. Après avoir téléchargé l’application, il pourra rejoindre ton groupe de partage grâce à ce code.</p>
             </div>
@@ -9280,7 +9328,7 @@ function WorkspaceApp() {
               <div className="mb-4 rounded-2xl bg-[#F1ECE3] border border-[#DED5C8] p-3 text-xs leading-relaxed text-[#6D6458]">
                 <p><strong>Fichier .ics :</strong> format universel que tu peux conserver, envoyer ou importer plus tard dans Google Agenda, Apple Calendrier ou Outlook.</p>
                 <p className="mt-2"><strong>Ajouter au calendrier :</strong> le téléphone tente d'ouvrir directement son menu de partage/import vers une application calendrier. Si le navigateur ne le permet pas, l'app revient automatiquement au fichier .ics.</p>
-                <p className="mt-2"><strong>Créer dans À faire :</strong> transforme les tâches du planning en tâches datées pour la semaine choisie, après vérification de la liste et des priorités.</p>
+                <p className="mt-2"><strong>Créer les rendez-vous dans À faire :</strong> transforme les tâches du planning en rendez-vous datés pour la semaine choisie, après vérification de la liste et des priorités.</p>
                 {exportPlanningTemplate && <p className="mt-2"><strong>Espace partagé :</strong> rend ce planning visible aux membres de ton espace et leur envoie une notification.</p>}
               </div>
             )}
@@ -9326,14 +9374,14 @@ function WorkspaceApp() {
                 Ajouter directement au calendrier
               </button>
               <button onClick={openPlanningTodoExport} className="w-full rounded-2xl bg-[#DCE4D4] hover:bg-[#CEDAC5] text-[#35412F] font-black py-3 px-4 transition-colors text-sm">
-                ✅ Créer les tâches dans À faire
+                📅 Créer les rendez-vous dans À faire
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODALE : CRÉER LES TÂCHES DU PLANNING DANS À FAIRE */}
+      {/* MODALE : CRÉER LES RENDEZ-VOUS DU PLANNING DANS À FAIRE */}
       {showPlanningTodoExportModal && planningTodoExportContext && (() => {
         const rows = getPlanningTodoRows();
         const selectedCount = rows.filter(row => row.selected).length;
@@ -9347,7 +9395,7 @@ function WorkspaceApp() {
             <div className="w-full max-w-lg max-h-[92vh] overflow-hidden rounded-[28px] bg-[#FBF9F4] border border-[#DDD5C7] shadow-2xl text-[#4A463F] flex flex-col" onClick={(event) => event.stopPropagation()}>
               <div className="flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-[#E3DCD1]">
                 <div className="min-w-0">
-                  <h2 className="text-lg font-black text-[#46513F]">Créer les tâches de la semaine</h2>
+                  <h2 className="text-lg font-black text-[#46513F]">Créer les rendez-vous de la semaine</h2>
                   <p className="mt-0.5 text-xs font-semibold text-[#7A7166] truncate">{planningTodoExportContext.name}</p>
                 </div>
                 <button type="button" onClick={closePlanningTodoExport} disabled={planningTodoExporting} className="w-8 h-8 flex-shrink-0 rounded-full bg-[#EAE4D9] text-[#62594E] font-black disabled:opacity-50" aria-label="Fermer">×</button>
@@ -9403,7 +9451,7 @@ function WorkspaceApp() {
 
                 {duplicateCount > 0 && (
                   <p className="mt-3 rounded-xl border border-[#E5D5B5] bg-[#FFF8E8] px-3 py-2 text-[10px] font-semibold text-[#79623D]">
-                    {duplicateCount} tâche{duplicateCount > 1 ? 's semblent' : ' semble'} déjà présente{duplicateCount > 1 ? 's' : ''} dans À faire pour cette semaine. {duplicateCount > 1 ? 'Elles sont décochées' : 'Elle est décochée'} par défaut.
+                    {duplicateCount} rendez-vous semble{duplicateCount > 1 ? 'nt' : ''} déjà présent{duplicateCount > 1 ? 's' : ''} dans À faire pour cette semaine. {duplicateCount > 1 ? 'Ils sont décochés' : 'Il est décoché'} par défaut.
                   </p>
                 )}
 
@@ -9450,7 +9498,7 @@ function WorkspaceApp() {
               <div className="border-t border-[#E3DCD1] bg-[#FBF9F4] p-4 sm:px-5 flex gap-2">
                 <button type="button" onClick={closePlanningTodoExport} disabled={planningTodoExporting} className="flex-1 rounded-xl bg-[#EEE9E0] py-3 text-sm font-black text-[#665F55] disabled:opacity-50">Annuler</button>
                 <button type="button" onClick={() => void createPlanningTasksInTodos()} disabled={planningTodoExporting || selectedCount === 0} className="flex-[1.45] rounded-xl bg-[#C8D2BC] py-3 px-2 text-sm font-black text-[#35412F] disabled:opacity-50">
-                  {planningTodoExporting ? 'Création…' : `Créer ${selectedCount} tâche${selectedCount > 1 ? 's' : ''}`}
+                  {planningTodoExporting ? 'Création…' : `Créer ${selectedCount} rendez-vous`}
                 </button>
               </div>
             </div>
@@ -11041,6 +11089,20 @@ function WorkspaceApp() {
                 </div>
               </div>
 
+              <div className="flex items-center w-full mt-1">
+                <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
+                  <option value="vert">🟢 Priorité Normale</option>
+                  <option value="orange">🟠 Priorité Importante</option>
+                  <option value="rouge">🔴 Priorité Urgente</option>
+                </select>
+              </div>
+
+              <div className="border-b border-gray-200 pb-3 mt-1">
+                <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-3 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-md ${isAiProcessing ? 'bg-[#8E8796] text-white animate-pulse' : listeningMode === 'ai' ? 'bg-[#8E8796] text-white animate-pulse scale-[1.02]' : 'bg-[#ECE8EF] text-[#5F5867] border border-[#D8D1DE] hover:bg-[#E3DDE8]'}`}>
+                  <span className="text-xl">🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
+                </button>
+              </div>
+
               {todoCreationKind === 'appointment' && (
                 <div className="rounded-2xl border border-[#D6C8B8] bg-[#F6F0EA] p-3 flex flex-col gap-3">
                   <div>
@@ -11056,96 +11118,22 @@ function WorkspaceApp() {
                   <div className="grid grid-cols-2 gap-2">
                     <label className="text-[11px] font-black text-[#6D5B4C]">
                       Durée
-                      <select
-                        value={appointmentDurationMinutes}
-                        onChange={(event) => setAppointmentDurationMinutes(Number(event.target.value))}
-                        className="mt-1 w-full rounded-xl border border-[#D8C8B6] bg-white p-2.5 text-sm font-bold text-[#4A463F]"
-                      >
-                        <option value={15}>15 min</option>
-                        <option value={30}>30 min</option>
-                        <option value={45}>45 min</option>
-                        <option value={60}>1 heure</option>
-                        <option value={90}>1 h 30</option>
-                        <option value={120}>2 heures</option>
-                        <option value={180}>3 heures</option>
+                      <select value={appointmentDurationMinutes} onChange={(event) => setAppointmentDurationMinutes(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-[#D8C8B6] bg-white p-2.5 text-sm font-bold text-[#4A463F]">
+                        <option value={15}>15 min</option><option value={30}>30 min</option><option value={45}>45 min</option><option value={60}>1 heure</option><option value={90}>1 h 30</option><option value={120}>2 heures</option><option value={180}>3 heures</option>
                       </select>
                     </label>
                     <label className="text-[11px] font-black text-[#6D5B4C]">
                       Rappel
                       <span className="mt-1 flex items-center overflow-hidden rounded-xl border border-[#D8C8B6] bg-white">
-                        <input
-                          type="number"
-                          min="0"
-                          step="5"
-                          value={appointmentReminderMinutes ?? ''}
-                          onChange={(event) => setAppointmentReminderMinutes(event.target.value === '' ? null : Math.max(0, Number(event.target.value)))}
-                          placeholder="Aucun"
-                          className="min-w-0 flex-1 bg-transparent p-2.5 text-sm font-bold text-[#4A463F] outline-none"
-                        />
+                        <input type="number" min="0" step="5" value={appointmentReminderMinutes ?? ''} onChange={(event) => setAppointmentReminderMinutes(event.target.value === '' ? null : Math.max(0, Number(event.target.value)))} placeholder="Aucun" className="min-w-0 flex-1 bg-transparent p-2.5 text-sm font-bold text-[#4A463F] outline-none" />
                         <span className="pr-2 text-[10px] font-black text-[#807164]">min avant</span>
                       </span>
                     </label>
                   </div>
                   <p className="rounded-xl bg-white/70 px-3 py-2 text-[11px] font-semibold leading-relaxed text-[#6D6258]">
-                    📲 À l’enregistrement, l’application proposera automatiquement d’ajouter ce rendez-vous au calendrier. Si l’ajout direct n’est pas disponible, un fichier .ics sera préparé.
+                    📲 En créant le rendez-vous, le téléphone ouvrira immédiatement l’ajout au calendrier. Le rappel choisi sera ensuite envoyé par l’application calendrier.
                   </p>
                 </div>
-              )}
-
-              <div className="flex items-center w-full mt-1">
-                <select value={importance} onChange={(e) => setImportance(e.target.value as any)} disabled={isAiProcessing} className="w-full border border-[#D8D0C4] p-2.5 rounded-xl text-[#4A463F] bg-white cursor-pointer text-sm font-bold">
-                  <option value="vert">🟢 Priorité Normale</option>
-                  <option value="orange">🟠 Priorité Importante</option>
-                  <option value="rouge">🔴 Priorité Urgente</option>
-                </select>
-              </div>
-
-              <div className={`rounded-2xl border p-3 transition-colors ${newTaskShareEnabled ? 'border-[#BFCBB4] bg-[#EDF1E7]' : 'border-[#DED5C8] bg-[#F8F5EF]'}`}>
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={newTaskShareEnabled}
-                    onChange={(event) => {
-                      if (event.target.checked && collaboration.spaces.length === 0) {
-                        collaboration.openPanel();
-                        return;
-                      }
-                      const enabled = event.target.checked;
-                      setNewTaskShareEnabled(enabled);
-                      if (enabled && !collaboration.spaces.some(space => space.id === newTaskShareSpaceId)) {
-                        setNewTaskShareSpaceId(collaboration.activeSpace?.id || collaboration.spaces[0]?.id || '');
-                      }
-                    }}
-                    className="mt-0.5 w-5 h-5 accent-[#6F7B64]"
-                  />
-                  <span>
-                    <span className="block text-sm font-black text-[#46513F]">👥 Partager dans un espace et notifier</span>
-                    <span className="mt-0.5 block text-[10px] font-semibold leading-relaxed text-[#756E63]">{todoCreationKind === 'appointment' ? 'Le rendez-vous' : 'La tâche'} sera visible et modifiable par les membres de l’espace choisi.</span>
-                  </span>
-                </label>
-
-                {newTaskShareEnabled && collaboration.spaces.length > 0 && (
-                  <label className="mt-3 block text-[10px] font-black uppercase tracking-wide text-[#687260]">
-                    Choisir l’espace
-                    <select
-                      value={newTaskShareSpaceId}
-                      onChange={(event) => setNewTaskShareSpaceId(event.target.value)}
-                      className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black normal-case tracking-normal text-[#46513F]"
-                    >
-                      {collaboration.spaces.map(space => (
-                        <option key={space.id} value={space.id}>{space.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-
-              {todoCreationKind === 'task' && (
-              <div className="border-b border-gray-200 pb-3 mt-1">
-                <button type="button" onClick={() => toggleDictation('ai')} disabled={(listeningMode !== 'none' && listeningMode !== 'ai') || isAiProcessing} className={`w-full py-3 px-3 text-sm rounded-xl flex items-center justify-center gap-2 font-bold transition-all shadow-md ${isAiProcessing ? 'bg-[#8E8796] text-white animate-pulse' : listeningMode === 'ai' ? 'bg-[#8E8796] text-white animate-pulse scale-[1.02]' : 'bg-[#ECE8EF] text-[#5F5867] border border-[#D8D1DE] hover:bg-[#E3DDE8]'}`}>
-                  <span className="text-xl">🤖</span> {isAiProcessing ? 'L\'IA réfléchit...' : listeningMode === 'ai' ? 'Cliquer pour arrêter l\'analyse' : 'Dictée intelligente (IA tout-en-un)'}
-                </button>
-              </div>
               )}
 
               {todoCreationKind === 'task' && (
@@ -11282,6 +11270,41 @@ function WorkspaceApp() {
                 )}
               </div>
               )}
+
+              <div className={`rounded-2xl border p-3 transition-colors ${newTaskShareEnabled ? 'border-[#BFCBB4] bg-[#EDF1E7]' : 'border-[#DED5C8] bg-[#F8F5EF]'}`}>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newTaskShareEnabled}
+                    onChange={(event) => {
+                      if (event.target.checked && collaboration.spaces.length === 0) {
+                        collaboration.openPanel();
+                        return;
+                      }
+                      const enabled = event.target.checked;
+                      setNewTaskShareEnabled(enabled);
+                      if (enabled && !collaboration.spaces.some(space => space.id === newTaskShareSpaceId)) {
+                        setNewTaskShareSpaceId(collaboration.activeSpace?.id || collaboration.spaces[0]?.id || '');
+                      }
+                    }}
+                    className="mt-0.5 w-5 h-5 accent-[#6F7B64]"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-[#46513F]">👥 Partager dans un espace et notifier</span>
+                    <span className="mt-0.5 block text-[10px] font-semibold leading-relaxed text-[#756E63]">{todoCreationKind === 'appointment' ? 'Le rendez-vous' : 'La tâche'} sera visible et modifiable par les membres de l’espace choisi.</span>
+                  </span>
+                </label>
+
+                {newTaskShareEnabled && collaboration.spaces.length > 0 && (
+                  <label className="mt-3 block text-[10px] font-black uppercase tracking-wide text-[#687260]">
+                    Choisir l’espace
+                    <select value={newTaskShareSpaceId} onChange={(event) => setNewTaskShareSpaceId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-[#C8D0B8] bg-white px-3 py-2.5 text-sm font-black normal-case tracking-normal text-[#46513F]">
+                      {collaboration.spaces.map(space => <option key={space.id} value={space.id}>{space.name}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
+
               <button type="submit" disabled={loading || isAiProcessing || (todoCreationKind === 'appointment' ? (!newTitle.trim() || !targetDate) : (!newTitle.trim() && !newContent.trim()))} className="mt-2 bg-[#AEBB9E] text-[#2F3A2B] px-4 py-2.5 rounded-xl font-black text-sm hover:bg-[#A2B292] disabled:opacity-50 transition-colors w-full shadow-sm border border-[#9FAC90]">{loading ? 'Enregistrement...' : isAiProcessing ? 'Patientez...' : todoCreationKind === 'appointment' ? 'Créer le rendez-vous' : 'Créer dans À faire'}</button>
             </form>
           )}
